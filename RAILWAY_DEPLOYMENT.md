@@ -3,6 +3,21 @@
 ## Prerequisites
 - Railway account (https://railway.app)
 - GitHub repository pushed to remote
+- MongoDB Atlas account with database created
+
+## IMPORTANT: MongoDB Atlas Network Access Setup
+
+**BEFORE deploying to Railway**, you MUST whitelist Railway's IP addresses in MongoDB Atlas:
+
+1. Go to MongoDB Atlas (https://cloud.mongodb.com)
+2. Select your cluster
+3. Click "Network Access" in the left sidebar
+4. Click "Add IP Address"
+5. Click "Allow Access from Anywhere"
+6. Or manually add: `0.0.0.0/0` (CIDR)
+7. Click "Confirm"
+
+**Note:** `0.0.0.0/0` allows connections from any IP. For production, you may want to restrict this to Railway's specific IP ranges, but this requires Railway's NAT gateway feature on paid plans.
 
 ## Deployment Steps
 
@@ -78,9 +93,10 @@ Once deployed, you can access:
 - Check Railway logs for errors
 
 ### Database Connection Issues
-- Verify DATABASE_URL is correct
-- Check MongoDB Atlas network access (allow Railway IPs or use 0.0.0.0/0)
-- Ensure database user has correct permissions
+- **MOST COMMON:** MongoDB Atlas blocking connection - add `0.0.0.0/0` to Network Access (see setup section above)
+- Verify DATABASE_URL is correct and doesn't have any extra spaces
+- Ensure database user has correct permissions (readWrite role)
+- Check MongoDB Atlas cluster is running (not paused)
 
 ### Puppeteer Issues
 - The Dockerfile includes all necessary Chromium dependencies
