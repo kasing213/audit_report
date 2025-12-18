@@ -1,0 +1,17 @@
+Milestone: OpenAI-assisted audit translator wired in
+
+- Added OpenAI translator (default model gpt-4o-mini via OPENAI_API_KEY/OPENAI_MODEL) with JSON normalization and fallback to rule-based parser when the API fails or is unset.
+- Parser/bot flow is now async to store OpenAI results; raw_text is preserved even for AI outputs.
+- Added prestart build hook so npm start auto-builds dist; npm run dev remains for ts-node.
+- start-bot.sh loads .env, checks DATABASE_URL/TELEGRAM_BOT_TOKEN/OPENAI_API_KEY, then runs dev mode.
+- Reminder: disable BotFather privacy mode so the bot can read all group text messages (not just /commands).
+
+How to run
+- Development: npm run dev
+- Production-ish: npm start (auto-builds first)
+- Script: ./start-bot.sh (dev mode with env checks)
+
+Optional next steps / ideas
+- Add a minimal HTML report of recent audit logs and render to PDF using Puppeteer for daily summaries.
+- Persist OpenAI response logs (redacted) in a separate collection for debugging/model quality tracking.
+- Add health endpoint or telemetry to detect when Telegram/Mongo/OpenAI are unreachable.

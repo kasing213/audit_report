@@ -1,0 +1,11 @@
+Mixed batch for OpenAI model testing (should produce multiple JSON objects; ignore vague lines):
+
+1) 2 customers today
+2) Chanthy 0883522088 from Facebook page, followed by JR, interested in delivery
+3) Yeay Thy លេខទូរសព្ទ 0883522088 page amazon follow JR (duplicate phone to see dedupe behavior)
+4) រ៉េត 0977765432 TikTok page, callback tomorrow
+5) Vanna 012334455 from IG, meeting booked Friday, followed by Lina
+6) Busy day, lots of chats (should be ignored)
+7) Sokha 099112233, FB ad, enquiry only
+8) 3 customers today: Dara 010203040, FB live; Sopheak 011223344, TT ads; Pheakdey 012334455, FB page, followed by Kim
+9) Invalid junk line with no data

@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables (CRITICAL - contains secrets)
+.env
+.env.*
+!.env.example
+
+# Logs (may contain sensitive data)
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# IDE settings
+.vscode/
+.idea/
+.DS_Store
+
+# Claude Code local settings
+.claude/
+
+# MCP configuration (contains local paths and may reference secrets)
+.mcp.json
+
+# Windows artifacts
+NUL
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.temp
+.cache/
