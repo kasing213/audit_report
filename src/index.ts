@@ -22,7 +22,8 @@ async function main(): Promise<void> {
     Logger.info('Telegram bot started successfully');
 
     Logger.info('Starting API server...');
-    const apiServer = new ApiServer(3001);
+    const port = parseInt(process.env.PORT || '3001', 10);
+    const apiServer = new ApiServer(port);
     apiServer.start();
 
     // Setup daily report scheduler
