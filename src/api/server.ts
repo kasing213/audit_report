@@ -65,7 +65,7 @@ export class ApiServer {
   }
 
   public start(): void {
-    this.app.listen(this.port, () => {
+    this.app.listen(this.port, '0.0.0.0', () => {
       Logger.info(`API server running on port ${this.port}`);
       Logger.info(`Reports available at:`);
       Logger.info(`  Daily JPG: http://localhost:${this.port}/reports/daily/jpg?date=YYYY-MM-DD`);
