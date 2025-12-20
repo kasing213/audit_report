@@ -11,6 +11,13 @@ async function main(): Promise<void> {
   try {
     Logger.info('Starting Audit Sales System...');
 
+    // Start API server first for health checks (non-blocking)
+    Logger.info('Starting API server...');
+    const port = parseInt(process.env.PORT || '3001', 10);
+    const apiServer = new ApiServer(port);
+    apiServer.start();
+    Logger.info('API server started successfully');
+
     Logger.info('Connecting to database...');
     const db = DatabaseConnection.getInstance();
     await db.connect();
@@ -20,11 +27,6 @@ async function main(): Promise<void> {
     const telegramBot = new TelegrafBotService();
     await telegramBot.start();
     Logger.info('Telegram bot started successfully');
-
-    Logger.info('Starting API server...');
-    const port = parseInt(process.env.PORT || '3001', 10);
-    const apiServer = new ApiServer(port);
-    apiServer.start();
 
     // Setup daily report scheduler
     const reportChatId = process.env.REPORT_CHAT_ID;
