@@ -37,6 +37,12 @@ export class SalesCaseRepository {
     }).toArray();
   }
 
+  async getSalesCasesByCreatedAtRange(start: Date, end: Date): Promise<SalesCaseDocument[]> {
+    return await this.salesCollection.find({
+      created_at: { $gte: start, $lte: end }
+    }).toArray();
+  }
+
   async getAuditLogs(limit: number = 100): Promise<AuditLog[]> {
     return await this.auditCollection
       .find({})
