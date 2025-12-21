@@ -13,7 +13,7 @@ export class TelegrafBotService {
   private repository: SalesCaseRepository;
   private reportCooldownMs: number;
   private lastReportAt: Map<number, number>;
-  private pendingReportRange: Map<number, { chatId: number; expiresAt: number }>;
+  private pendingReportRange: Map<number, { chatId: number; expiresAt: number; type: 'report' | 'follow' }>;
 
   constructor() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -44,7 +44,7 @@ export class TelegrafBotService {
 
         const args = (ctx.message && 'text' in ctx.message) ? ctx.message.text.split(' ').slice(1) : [];
         if (args.length === 0) {
-          this.pendingReportRange.set(userId, { chatId: ctx.chat?.id as number, expiresAt: Date.now() + 5 * 60 * 1000 });
+          this.pendingReportRange.set(userId, { chatId: ctx.chat?.id as number, expiresAt: Date.now() + 5 * 60 * 1000, type: 'report' });
           await ctx.reply('Send a date range (YYYY-MM-DD YYYY-MM-DD) or a number of days (e.g., 7). Example: 2025-12-10 2025-12-18');
           return;
         }
@@ -56,6 +56,33 @@ export class TelegrafBotService {
       } catch (error) {
         Logger.error('Error handling /report command', error as Error);
         await ctx.reply('Failed to generate report.');
+      }
+    });
+
+    this.bot.command('follow', async (ctx: Context) => {
+      try {
+        const userId = ctx.from?.id || 0;
+        if (!this.canRequestReport(userId)) {
+          const waitMs = this.reportCooldownMs - (Date.now() - (this.lastReportAt.get(userId) || 0));
+          const waitSec = Math.ceil(waitMs / 1000);
+          await ctx.reply(`Please wait ${waitSec}s before requesting another report.`);
+          return;
+        }
+
+        const args = (ctx.message && 'text' in ctx.message) ? ctx.message.text.split(' ').slice(1) : [];
+        if (args.length === 0) {
+          this.pendingReportRange.set(userId, { chatId: ctx.chat?.id as number, expiresAt: Date.now() + 5 * 60 * 1000, type: 'follow' });
+          await ctx.reply('Send a date range (YYYY-MM-DD YYYY-MM-DD) or a number of days (e.g., 7). Example: 2025-12-10 2025-12-18');
+          return;
+        }
+
+        const days = this.parseDaysArg(args[0]);
+        const reply = await this.buildFollowReport(days);
+        this.lastReportAt.set(userId, Date.now());
+        await ctx.reply(reply);
+      } catch (error) {
+        Logger.error('Error handling /follow command', error as Error);
+        await ctx.reply('Failed to generate follow report.');
       }
     });
 
@@ -138,10 +165,18 @@ export class TelegrafBotService {
 
     try {
       let reply: string;
-      if (parsed.type === 'days') {
-        reply = await this.buildReport(parsed.days);
+      if (pending.type === 'follow') {
+        if (parsed.type === 'days') {
+          reply = await this.buildFollowReport(parsed.days);
+        } else {
+          reply = await this.buildFollowReportRange(parsed.start, parsed.end, undefined, parsed.startTime, parsed.endTime);
+        }
       } else {
-        reply = await this.buildReportRange(parsed.start, parsed.end);
+        if (parsed.type === 'days') {
+          reply = await this.buildReport(parsed.days);
+        } else {
+          reply = await this.buildReportRange(parsed.start, parsed.end, undefined, parsed.startTime, parsed.endTime);
+        }
       }
       this.lastReportAt.set(userId, Date.now());
       await ctx.reply(reply);
@@ -278,6 +313,73 @@ export class TelegrafBotService {
       `- top pages: ${pageLine}`,
       `- top followed_by: ${followerLine}`
     ].join('\n');
+  }
+
+  private async buildFollowReport(days: number): Promise<string> {
+    const endDate = getTodayDate();
+    const startDate = getDateNDaysAgo(days - 1);
+    return this.buildFollowReportRange(startDate, endDate, days);
+  }
+
+  private async buildFollowReportRange(startDate: string, endDate: string, daysHint?: number, startTime?: string, endTime?: string): Promise<string> {
+    let normalizedStart = startDate;
+    let normalizedEnd = endDate;
+
+    if (normalizedStart > normalizedEnd) {
+      [normalizedStart, normalizedEnd] = [normalizedEnd, normalizedStart];
+    }
+
+    let startDateTime = toZonedDateTime(normalizedStart, startTime || '00:00');
+    let endDateTime = toZonedDateTime(normalizedEnd, endTime || '23:59');
+
+    if (!startDateTime || !endDateTime) {
+      return 'Invalid date/time format. Use YYYY-MM-DD or YYYY-MM-DD HH:MM.';
+    }
+
+    if (startDateTime > endDateTime) {
+      const tmp = startDateTime;
+      startDateTime = endDateTime;
+      endDateTime = tmp;
+    }
+
+    const cases = await this.repository.getSalesCasesByCreatedAtRange(startDateTime, endDateTime);
+
+    if (cases.length === 0) {
+      const label = daysHint ? `${daysHint}d` : `${normalizedStart} to ${normalizedEnd}`;
+      return `Report (${label}): no cases found.`;
+    }
+
+    const totalCases = cases.length;
+    const uniquePhones = new Set(cases.map(c => c.phone_number).filter(Boolean)).size;
+    const byPage = this.topCounts(cases.map(c => c.page).filter(Boolean));
+    const byFollower = this.topCounts(cases.map(c => c.case_followed_by).filter(Boolean));
+    const avgConfidence = (cases.reduce((sum, c) => sum + (c.confidence || 0), 0) / totalCases).toFixed(2);
+
+    // Build detailed lists
+    const phoneList = [...new Set(cases.map(c => c.phone_number).filter(Boolean))];
+    const pageList = [...new Set(cases.map(c => c.page).filter(Boolean))];
+    const followerList = [...new Set(cases.map(c => c.case_followed_by).filter(Boolean))];
+
+    const phonesSection = phoneList.length > 0
+      ? `\n\nPhone Numbers (${phoneList.length}):\n${phoneList.map((p, i) => `${i + 1}. ${p}`).join('\n')}`
+      : '\n\nPhone Numbers: none';
+
+    const pagesSection = pageList.length > 0
+      ? `\n\nPages (${pageList.length}):\n${pageList.map((p, i) => `${i + 1}. ${p}`).join('\n')}`
+      : '\n\nPages: none';
+
+    const followersSection = followerList.length > 0
+      ? `\n\nFollowed By (${followerList.length}):\n${followerList.map((f, i) => `${i + 1}. ${f}`).join('\n')}`
+      : '\n\nFollowed By: none';
+
+    const header = `Report (${daysHint ? `${daysHint}d` : `${normalizedStart}${startTime ? ' ' + startTime : ''} to ${normalizedEnd}${endTime ? ' ' + endTime : ''}`}):
+- total cases: ${totalCases}
+- unique customers (by phone): ${uniquePhones}
+- avg confidence: ${avgConfidence}
+- top pages: ${byPage.map(([k, v]) => `${k}:${v}`).join(', ')}
+- top followed_by: ${byFollower.map(([k, v]) => `${k}:${v}`).join(', ')}`;
+
+    return header + phonesSection + pagesSection + followersSection;
   }
 
   private topCounts(items: (string | null)[]): Array<[string, number]> {
