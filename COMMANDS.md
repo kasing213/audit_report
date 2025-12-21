@@ -102,13 +102,113 @@ grep "2025-01-16" audit-sales.log
 
 ## 🤖 Telegram Bot Commands
 
-### Get Chat ID (for setup)
+### User Commands (Send in Telegram Chat)
+
+#### `/report` - Summary Report
+Get a summary report with total cases, unique customers, average confidence, and top pages/followers.
+
+**Usage:**
+```
+/report              → Bot prompts for date range
+/report 7            → Last 7 days (quick)
+/report 30           → Last 30 days (max)
+```
+
+**After `/report` (no args), reply with:**
+- Date range: `2025-12-10 2025-12-18`
+- Date range with times: `2025-12-18 09:00 2025-12-18 18:00`
+- Single date: `2025-12-18` (for same day)
+- Days count: `7`
+
+**Example Output:**
+```
+Report (7d, 2025-12-14 to 2025-12-21):
+- total cases: 10
+- unique customers (by phone): 6
+- avg confidence: 0.94
+- top pages: amazon:1, Facebook:1, Amazon:1, TikTok:1, IG:1
+- top followed_by: JR:3, Lina:1, Kim:1
+```
+
+**Rate Limit:** 1 request per user every 5 minutes
+
+---
+
+#### `/follow` - Detailed Follow-up Report
+Get a detailed report with summary stats PLUS complete numbered lists of all phone numbers, pages, and staff.
+
+**Usage:**
+```
+/follow              → Bot prompts for date range
+/follow 7            → Last 7 days with detailed lists
+/follow 30           → Last 30 days with detailed lists
+```
+
+**After `/follow` (no args), reply with:**
+- Same format as `/report` (see above)
+
+**Example Output:**
+```
+Report (2025-12-18 to 2025-12-18):
+- total cases: 10
+- unique customers (by phone): 6
+- avg confidence: 0.94
+- top pages: amazon:1, Facebook:1, Amazon:1, TikTok:1, IG:1
+- top followed_by: JR:3, Lina:1, Kim:1
+
+Phone Numbers (6):
+1. 012345678
+2. 023456789
+3. 034567890
+4. 045678901
+5. 056789012
+6. 067890123
+
+Pages (5):
+1. amazon
+2. Facebook
+3. Amazon
+4. TikTok
+5. IG
+
+Followed By (3):
+1. JR
+2. Lina
+3. Kim
+```
+
+**Rate Limit:** 1 request per user every 5 minutes (shared with `/report`)
+
+---
+
+#### Sales Message Processing
+The bot automatically processes sales messages sent to the chat. No command needed.
+
+**Message Format (examples):**
+```
+3 customers today, John 012345678 from Facebook, followed by Kasing, interested
+
+Busy day! Customer Mary 023456789 from TikTok, JR following
+
+2 customers: Alice 034567890 Page: Amazon, Kim handling
+```
+
+**Bot Response:**
+- Saves to database if valid sales case
+- Logs ignored messages
+- No reply (silent processing)
+
+---
+
+### Setup Commands (Admin)
+
+#### Get Chat ID (for setup)
 1. Add bot to your group/chat
 2. Send any message
 3. Check: `https://api.telegram.org/bot<BOT_TOKEN>/getUpdates`
 4. Find the chat ID in the response
 
-### Test Bot Connectivity
+#### Test Bot Connectivity
 ```bash
 # Test bot token
 curl "https://api.telegram.org/bot<BOT_TOKEN>/getMe"
