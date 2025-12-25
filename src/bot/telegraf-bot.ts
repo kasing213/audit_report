@@ -25,7 +25,7 @@ export class TelegrafBotService {
     this.bot = new Telegraf(token);
     this.messageHandlers = new MessageHandlers();
     this.repository = new SalesCaseRepository();
-    this.reportCooldownMs = 5 * 60 * 1000; // 5 minutes
+    this.reportCooldownMs = 30 * 1000; // 30 seconds
     this.lastReportAt = new Map();
     this.pendingReportRange = new Map();
     this.setupHandlers();

@@ -130,7 +130,7 @@ Report (7d, 2025-12-14 to 2025-12-21):
 - top followed_by: JR:3, Lina:1, Kim:1
 ```
 
-**Rate Limit:** 1 request per user every 5 minutes
+**Rate Limit:** 1 request per user every 30 seconds
 
 ---
 
@@ -177,7 +177,7 @@ Followed By (3):
 3. Kim
 ```
 
-**Rate Limit:** 1 request per user every 5 minutes (shared with `/report`)
+**Rate Limit:** 1 request per user every 30 seconds (shared with `/report`)
 
 ---
 
