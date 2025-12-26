@@ -18,14 +18,29 @@ export class CustomersCommand {
     step: 'awaiting_follower' | 'awaiting_month';
     follower?: string;
   }>;
+  private lastRequestAt: Map<number, number>;
+  private cooldownMs: number;
 
   constructor(repository: SalesCaseRepository) {
     this.repository = repository;
     this.pendingCustomersRequest = new Map();
+    this.lastRequestAt = new Map();
+    this.cooldownMs = 2 * 60 * 1000; // 2 minutes
   }
 
   async handleCommand(ctx: Context): Promise<void> {
     const userId = ctx.from?.id || 0;
+
+    // Check rate limit
+    const lastRequest = this.lastRequestAt.get(userId);
+    if (lastRequest) {
+      const timeSinceLastRequest = Date.now() - lastRequest;
+      if (timeSinceLastRequest < this.cooldownMs) {
+        const waitSeconds = Math.ceil((this.cooldownMs - timeSinceLastRequest) / 1000);
+        await ctx.reply(`Please wait ${waitSeconds}s before requesting another customer list.`);
+        return;
+      }
+    }
 
     // Start conversation flow
     this.pendingCustomersRequest.set(userId, {
@@ -78,6 +93,9 @@ export class CustomersCommand {
         // Generate and send report
         const reply = await this.buildCustomersReport(pending.follower!, month);
         await ctx.reply(reply);
+
+        // Update rate limit timestamp
+        this.lastRequestAt.set(userId, Date.now());
 
         // Clean up
         this.pendingCustomersRequest.delete(userId);
