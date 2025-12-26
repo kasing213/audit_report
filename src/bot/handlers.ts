@@ -15,8 +15,7 @@ interface TelegramMessage {
   date: number;
 }
 import { SalesCaseRepository } from '../database/repository';
-import { SalesCaseDocument } from '../database/models';
-import { SalesCase } from '../parser/types';
+import { LeadEventDocument } from '../database/models';
 import { Logger } from '../utils/logger';
 
 export class MessageHandlers {
@@ -50,7 +49,11 @@ export class MessageHandlers {
         parsed_result: null
       });
 
-      const parseResult = await this.parser.parseMessage(message.text);
+      const parseResult = await this.parser.parseMessage(
+        message.text,
+        String(messageId),
+        process.env.OPENAI_MODEL || 'gpt-4o-mini'
+      );
 
       await this.repository.logAudit({
         timestamp: new Date(),
@@ -67,26 +70,23 @@ export class MessageHandlers {
         return;
       }
 
-      const salesCaseDocs: SalesCaseDocument[] = parseResult.map((salesCase: SalesCase) => ({
-        ...salesCase,
-        created_at: new Date(),
-        telegram_message_id: messageId,
-        telegram_user_id: userId,
-        telegram_username: username
+      const leadEventDocs: LeadEventDocument[] = parseResult.map((leadEvent) => ({
+        ...leadEvent,
+        created_at: new Date()
       }));
 
-      await this.repository.saveSalesCases(salesCaseDocs);
+      await this.repository.saveLeadEvents(leadEventDocs);
 
-      Logger.info(`Saved ${salesCaseDocs.length} sales cases from message ${messageId}`);
+      Logger.info(`Saved ${leadEventDocs.length} lead events from message ${messageId}`);
 
       await this.repository.logAudit({
         timestamp: new Date(),
-        action: 'sales_cases_saved',
+        action: 'lead_events_saved',
         message_id: messageId,
         user_id: userId,
         username,
         original_message: message.text,
-        parsed_result: { count: salesCaseDocs.length, cases: salesCaseDocs }
+        parsed_result: { count: leadEventDocs.length, events: leadEventDocs }
       });
 
     } catch (error) {

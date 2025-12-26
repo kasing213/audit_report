@@ -3,7 +3,7 @@ import * as handlebars from 'handlebars';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import { ReportDataService } from './data-service';
-import { SalesCaseDocument } from '../database/models';
+import { LeadEventDocument } from '../database/models';
 import { Logger } from '../utils/logger';
 
 export class JpgReportGenerator {
@@ -35,14 +35,14 @@ export class JpgReportGenerator {
     });
   }
 
-  private async generateHtml(salesCases: SalesCaseDocument[], date: string): Promise<string> {
+  private async generateHtml(leadEvents: LeadEventDocument[], date: string): Promise<string> {
     this.setupHandlebarsHelpers();
     const template = await this.loadTemplate();
 
     const templateData = {
       date,
-      totalCases: salesCases.length,
-      salesCases,
+      totalCases: leadEvents.length,
+      leadEvents,
       generatedAt: new Date().toLocaleString()
     };
 
@@ -53,8 +53,8 @@ export class JpgReportGenerator {
     try {
       Logger.info(`Generating daily JPG report for ${date}`);
 
-      const salesCases = await this.dataService.getDailySalesCases(date);
-      const html = await this.generateHtml(salesCases, date);
+      const leadEvents = await this.dataService.getDailyLeadEvents(date);
+      const html = await this.generateHtml(leadEvents, date);
 
       const browser = await puppeteer.launch({
         headless: true,

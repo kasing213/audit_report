@@ -1,5 +1,5 @@
 import { SalesCaseRepository } from '../database/repository';
-import { SalesCaseDocument } from '../database/models';
+import { LeadEventDocument } from '../database/models';
 
 export class ReportDataService {
   private repository: SalesCaseRepository;
@@ -8,30 +8,40 @@ export class ReportDataService {
     this.repository = new SalesCaseRepository();
   }
 
-  public async getDailySalesCases(date: string): Promise<SalesCaseDocument[]> {
+  public async getDailyLeadEvents(date: string): Promise<LeadEventDocument[]> {
     try {
-      return await this.repository.getSalesCasesByDate(date);
+      // Query by date field directly
+      const db = this.repository['db'];
+      const collection = db.getDb().collection<LeadEventDocument>('leads_events');
+      return await collection.find({ date }).toArray();
     } catch (error) {
-      console.error('Error fetching daily sales cases:', error);
+      console.error('Error fetching daily lead events:', error);
       return [];
     }
   }
 
-  public async getMonthlySalesCases(year: number, month: number): Promise<SalesCaseDocument[]> {
+  public async getMonthlyLeadEvents(year: number, month: number): Promise<LeadEventDocument[]> {
     try {
       const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
-      const endDate = `${year}-${month.toString().padStart(2, '0')}-31`;
-      return await this.repository.getSalesCasesByDateRange(startDate, endDate);
+      // Calculate last day of month
+      const lastDay = new Date(year, month, 0).getDate();
+      const endDate = `${year}-${month.toString().padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+
+      const db = this.repository['db'];
+      const collection = db.getDb().collection<LeadEventDocument>('leads_events');
+      return await collection.find({
+        date: { $gte: startDate, $lte: endDate }
+      }).toArray();
     } catch (error) {
-      console.error('Error fetching monthly sales cases:', error);
+      console.error('Error fetching monthly lead events:', error);
       return [];
     }
   }
 
-  public async getMonthlySalesCasesByString(monthString: string): Promise<SalesCaseDocument[]> {
+  public async getMonthlyLeadEventsByString(monthString: string): Promise<LeadEventDocument[]> {
     try {
       const [year, month] = monthString.split('-').map(Number);
-      return await this.getMonthlySalesCases(year, month);
+      return await this.getMonthlyLeadEvents(year, month);
     } catch (error) {
       console.error('Error parsing month string:', error);
       return [];

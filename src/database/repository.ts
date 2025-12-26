@@ -1,46 +1,47 @@
 import { Collection } from 'mongodb';
 import DatabaseConnection from './connection';
-import { SalesCaseDocument, AuditLog } from './models';
+import { LeadEventDocument, AuditLog } from './models';
 
 export class SalesCaseRepository {
   private db = DatabaseConnection.getInstance();
-  private salesCollection: Collection<SalesCaseDocument>;
+  private leadsEventsCollection: Collection<LeadEventDocument>;
   private auditCollection: Collection<AuditLog>;
 
   constructor() {
     const database = this.db.getDb();
-    this.salesCollection = database.collection<SalesCaseDocument>('sales_cases');
+    this.leadsEventsCollection = database.collection<LeadEventDocument>('leads_events');
     this.auditCollection = database.collection<AuditLog>('audit_logs');
   }
 
-  async saveSalesCase(salesCase: SalesCaseDocument): Promise<void> {
-    await this.salesCollection.insertOne(salesCase);
+  async saveLeadEvent(leadEvent: LeadEventDocument): Promise<void> {
+    await this.leadsEventsCollection.insertOne(leadEvent);
   }
 
-  async saveSalesCases(salesCases: SalesCaseDocument[]): Promise<void> {
-    if (salesCases.length > 0) {
-      await this.salesCollection.insertMany(salesCases);
+  async saveLeadEvents(leadEvents: LeadEventDocument[]): Promise<void> {
+    if (leadEvents.length > 0) {
+      await this.leadsEventsCollection.insertMany(leadEvents);
     }
   }
 
-  async logAudit(auditLog: AuditLog): Promise<void> {
-    await this.auditCollection.insertOne(auditLog);
-  }
+  async getLeadEventsByFollowerAndMonth(follower: string, month: string): Promise<LeadEventDocument[]> {
+    const startDate = `${month}-01`;
+    const endDate = this.getMonthEndDate(month);
 
-  async getSalesCasesByDate(date: string): Promise<SalesCaseDocument[]> {
-    return await this.salesCollection.find({ date }).toArray();
-  }
-
-  async getSalesCasesByDateRange(startDate: string, endDate: string): Promise<SalesCaseDocument[]> {
-    return await this.salesCollection.find({
+    return await this.leadsEventsCollection.find({
+      follower: follower,
       date: { $gte: startDate, $lte: endDate }
     }).toArray();
   }
 
-  async getSalesCasesByCreatedAtRange(start: Date, end: Date): Promise<SalesCaseDocument[]> {
-    return await this.salesCollection.find({
-      created_at: { $gte: start, $lte: end }
-    }).toArray();
+  private getMonthEndDate(month: string): string {
+    // month format: YYYY-MM
+    const [year, monthNum] = month.split('-').map(Number);
+    const lastDay = new Date(year, monthNum, 0).getDate();
+    return `${month}-${String(lastDay).padStart(2, '0')}`;
+  }
+
+  async logAudit(auditLog: AuditLog): Promise<void> {
+    await this.auditCollection.insertOne(auditLog);
   }
 
   async getAuditLogs(limit: number = 100): Promise<AuditLog[]> {

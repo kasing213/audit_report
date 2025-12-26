@@ -1,4 +1,4 @@
-import { ParseResult, SalesCase } from './types';
+import { ParseResult, LeadEvent } from './types';
 import { Logger } from '../utils/logger';
 import { getTodayDate } from '../utils/time';
 
@@ -36,46 +36,49 @@ export class OpenAITranslator {
 
   private buildSystemPrompt(): string {
     return [
-      'You are a TRANSLATOR for audit records.',
-      'Convert raw Telegram sales messages into structured JSON for auditing and daily reporting.',
-      'You are NOT allowed to invent information, correct mistakes, infer missing data, calculate totals, or merge unrelated cases.',
-      'Rules (strict):',
+      'You are a TRANSLATOR for CRM event records.',
+      'Convert raw Telegram sales messages into structured JSON for a real-estate CRM system.',
+      'You are NOT allowed to invent information, correct mistakes, infer missing data, or merge unrelated cases.',
+      '',
+      'CRITICAL RULES (strict):',
       '1) Output JSON only. No explanations or markdown.',
-      '2) Preserve the exact raw message in "raw_text".',
-      '3) If data is missing or unclear, use null.',
-      '4) If the message does not describe a customer/sales case, return { "ignored": true }.',
-      '5) If multiple customers are mentioned, output one JSON object per customer.',
-      '6) Include a confidence score between 0.0 and 1.0 based on clarity.',
-      '7) Assume today’s date unless another date is explicitly stated.',
-      'Input characteristics: Text only, Khmer/English may be mixed, phone numbers are the primary identifier.',
+      '2) Do NOT infer or classify anything not explicitly stated.',
+      '3) Do NOT normalize text (preserve as-is).',
+      '4) If data is missing or unclear, use null.',
+      '5) If the message does not describe a customer interaction, return { "ignored": true }.',
+      '6) If multiple customers are mentioned, output one JSON object per customer.',
+      '7) Ignore greetings, emojis, and chatter.',
+      '8) Assume today\'s date unless another date is explicitly stated.',
+      '',
       'Return data exactly as:',
       '[',
       '  {',
-      '    "date": "YYYY-MM-DD or null",',
-      '    "number_of_customers": number or null,',
-      '    "customer_name": "string or null",',
-      '    "phone_number": "string or null",',
+      '    "date": "YYYY-MM-DD",',
+      '    "customer": {',
+      '      "name": "string or null",',
+      '      "phone": "string or null"',
+      '    },',
       '    "page": "string or null",',
-      '    "case_followed_by": "string or null",',
-      '    "comment": "string or null",',
-      '    "raw_text": "original input text",',
-      '    "confidence": number',
+      '    "follower": "string or null",',
+      '    "status_text": "string or null"',
       '  }',
       ']',
-      `Today is ${this.getCurrentDate()}.`
+      '',
+      `Today is ${this.getCurrentDate()}.`,
+      'The telegram_msg_id and model will be added by the system.'
     ].join('\n');
   }
 
-  public async translate(message: string): Promise<ParseResult | null> {
+  public async translate(message: string, telegramMsgId: string, model: string): Promise<ParseResult | null> {
     if (!this.apiKey) {
       return null;
     }
 
-    const result = await this.callModel(message, this.model, true);
+    const result = await this.callModel(message, this.model, true, telegramMsgId, model);
     return result;
   }
 
-  private async callModel(message: string, model: string, allowFallback: boolean): Promise<ParseResult | null> {
+  private async callModel(message: string, aiModel: string, allowFallback: boolean, telegramMsgId: string, sourceModel: string): Promise<ParseResult | null> {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
 
@@ -88,7 +91,7 @@ export class OpenAITranslator {
         },
         signal: controller.signal,
         body: JSON.stringify({
-          model,
+          model: aiModel,
           temperature: 0,
           messages: [
             { role: 'system', content: this.buildSystemPrompt() },
@@ -101,9 +104,9 @@ export class OpenAITranslator {
         const errorText = await response.text();
         const isInvalidModel = response.status === 400 && errorText.toLowerCase().includes('invalid model');
 
-        if (isInvalidModel && allowFallback && model !== this.defaultModel) {
-          Logger.warn(`OpenAI model "${model}" invalid. Falling back to default "${this.defaultModel}".`);
-          return await this.callModel(message, this.defaultModel, false);
+        if (isInvalidModel && allowFallback && aiModel !== this.defaultModel) {
+          Logger.warn(`OpenAI model "${aiModel}" invalid. Falling back to default "${this.defaultModel}".`);
+          return await this.callModel(message, this.defaultModel, false, telegramMsgId, sourceModel);
         }
 
         Logger.error(`OpenAI API error (${response.status}): ${errorText}`);
@@ -118,10 +121,10 @@ export class OpenAITranslator {
         return null;
       }
 
-      return this.parseAiContent(content, message);
+      return this.parseAiContent(content, telegramMsgId, sourceModel);
     } catch (error) {
       if (error instanceof Error && error.name === 'AbortError') {
-        Logger.warn(`OpenAI request timed out after ${this.requestTimeoutMs}ms for model "${model}".`);
+        Logger.warn(`OpenAI request timed out after ${this.requestTimeoutMs}ms for model "${aiModel}".`);
         return null;
       }
       Logger.error('Failed to call OpenAI API', error as Error);
@@ -131,7 +134,7 @@ export class OpenAITranslator {
     }
   }
 
-  private parseAiContent(content: string, rawText: string): ParseResult | null {
+  private parseAiContent(content: string, telegramMsgId: string, model: string): ParseResult | null {
     const cleaned = this.extractJson(content);
     if (!cleaned) {
       Logger.warn('Could not extract JSON from OpenAI response');
@@ -140,7 +143,7 @@ export class OpenAITranslator {
 
     try {
       const parsed = JSON.parse(cleaned) as unknown;
-      return this.normalizePayload(parsed, rawText);
+      return this.normalizePayload(parsed, telegramMsgId, model);
     } catch (error) {
       Logger.error('Failed to parse JSON from OpenAI response', error as Error);
       return null;
@@ -167,7 +170,7 @@ export class OpenAITranslator {
     return null;
   }
 
-  private normalizePayload(payload: unknown, rawText: string): ParseResult | null {
+  private normalizePayload(payload: unknown, telegramMsgId: string, model: string): ParseResult | null {
     if (this.isIgnored(payload)) {
       return { ignored: true };
     }
@@ -176,15 +179,15 @@ export class OpenAITranslator {
       return null;
     }
 
-    const normalizedCases = payload
-      .map((item) => this.normalizeCase(item, rawText))
-      .filter((item): item is SalesCase => item !== null);
+    const normalizedEvents = payload
+      .map((item) => this.normalizeLeadEvent(item, telegramMsgId, model))
+      .filter((item): item is LeadEvent => item !== null);
 
-    if (normalizedCases.length === 0) {
+    if (normalizedEvents.length === 0) {
       return { ignored: true };
     }
 
-    return normalizedCases;
+    return normalizedEvents;
   }
 
   private isIgnored(payload: unknown): payload is { ignored: true } {
@@ -195,7 +198,7 @@ export class OpenAITranslator {
     );
   }
 
-  private normalizeCase(item: unknown, rawText: string): SalesCase | null {
+  private normalizeLeadEvent(item: unknown, telegramMsgId: string, model: string): LeadEvent | null {
     if (!item || typeof item !== 'object') {
       return null;
     }
@@ -203,37 +206,39 @@ export class OpenAITranslator {
     const data = item as Record<string, unknown>;
     const today = this.getCurrentDate();
 
+    // Validate customer object
+    const customer = data.customer as Record<string, unknown> | undefined;
+    if (!customer || typeof customer !== 'object') {
+      // If customer is missing, try to construct from flat fields (for robustness)
+      return {
+        date: typeof data.date === 'string' ? data.date : today,
+        customer: {
+          name: null,
+          phone: null
+        },
+        page: typeof data.page === 'string' ? data.page : null,
+        follower: typeof data.follower === 'string' ? data.follower : null,
+        status_text: typeof data.status_text === 'string' ? data.status_text : null,
+        source: {
+          telegram_msg_id: telegramMsgId,
+          model: model
+        }
+      };
+    }
+
     return {
       date: typeof data.date === 'string' ? data.date : today,
-      number_of_customers: this.toNumber(data.number_of_customers),
-      customer_name: typeof data.customer_name === 'string' ? data.customer_name : null,
-      phone_number: typeof data.phone_number === 'string' ? data.phone_number : null,
+      customer: {
+        name: typeof customer.name === 'string' ? customer.name : null,
+        phone: typeof customer.phone === 'string' ? customer.phone : null
+      },
       page: typeof data.page === 'string' ? data.page : null,
-      case_followed_by: typeof data.case_followed_by === 'string' ? data.case_followed_by : null,
-      comment: typeof data.comment === 'string' ? data.comment : null,
-      raw_text: rawText,
-      confidence: this.toConfidence(data.confidence)
+      follower: typeof data.follower === 'string' ? data.follower : null,
+      status_text: typeof data.status_text === 'string' ? data.status_text : null,
+      source: {
+        telegram_msg_id: telegramMsgId,
+        model: model
+      }
     };
-  }
-
-  private toNumber(value: unknown): number | null {
-    if (typeof value === 'number' && Number.isFinite(value)) {
-      return value;
-    }
-
-    if (typeof value === 'string') {
-      const parsed = Number(value);
-      return Number.isFinite(parsed) ? parsed : null;
-    }
-
-    return null;
-  }
-
-  private toConfidence(value: unknown): number {
-    const numeric = this.toNumber(value);
-    if (numeric === null) {
-      return 0.5;
-    }
-    return Math.max(0, Math.min(1, numeric));
   }
 }

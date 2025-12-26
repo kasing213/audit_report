@@ -1,6 +1,6 @@
 import * as ExcelJS from 'exceljs';
 import { ReportDataService } from './data-service';
-import type { SalesCaseDocument } from '../database/models';
+import type { LeadEventDocument } from '../database/models';
 import { Logger } from '../utils/logger';
 
 export class ExcelReportGenerator {
@@ -23,11 +23,10 @@ export class ExcelReportGenerator {
       { header: 'Customer Name', key: 'customer_name', width: 20 },
       { header: 'Phone Number', key: 'phone_number', width: 15 },
       { header: 'Platform/Page', key: 'page', width: 15 },
-      { header: 'Followed By', key: 'case_followed_by', width: 15 },
-      { header: 'Comment', key: 'comment', width: 30 },
-      { header: 'Number of Customers', key: 'number_of_customers', width: 18 },
-      { header: 'Confidence', key: 'confidence', width: 12 },
-      { header: 'Telegram User', key: 'telegram_username', width: 15 }
+      { header: 'Follower', key: 'follower', width: 15 },
+      { header: 'Status', key: 'status_text', width: 30 },
+      { header: 'Source ID', key: 'telegram_msg_id', width: 15 },
+      { header: 'Model', key: 'model', width: 15 }
     ];
 
     // Style the header row
@@ -52,7 +51,7 @@ export class ExcelReportGenerator {
       const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
       Logger.info(`Generating monthly Excel report for ${monthName} ${year}`);
 
-      const salesCases: SalesCaseDocument[] = await this.dataService.getMonthlySalesCases(year, month);
+      const leadEvents: LeadEventDocument[] = await this.dataService.getMonthlyLeadEvents(year, month);
 
       const workbook = new ExcelJS.Workbook();
       workbook.creator = 'Audit Sales System';
@@ -61,16 +60,16 @@ export class ExcelReportGenerator {
       const worksheet = workbook.addWorksheet(`${monthName} ${year} Sales`);
 
       // Add title
-      worksheet.mergeCells('A1:J1');
+      worksheet.mergeCells('A1:I1');
       const titleCell = worksheet.getCell('A1');
       titleCell.value = `Sales Report - ${monthName} ${year}`;
       titleCell.font = { size: 16, bold: true, color: { argb: 'FF007bff' } };
       titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
       // Add summary
-      worksheet.mergeCells('A2:J2');
+      worksheet.mergeCells('A2:I2');
       const summaryCell = worksheet.getCell('A2');
-      summaryCell.value = `Total Sales Cases: ${salesCases.length}`;
+      summaryCell.value = `Total Lead Events: ${leadEvents.length}`;
       summaryCell.font = { size: 12, bold: true };
       summaryCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
@@ -98,18 +97,17 @@ export class ExcelReportGenerator {
       });
 
       // Add data starting from row 5
-      salesCases.forEach((salesCase, index) => {
+      leadEvents.forEach((leadEvent, index) => {
         const row = worksheet.getRow(index + 5);
-        row.getCell(1).value = salesCase.date as string || '';
-        row.getCell(2).value = this.formatTime(salesCase.created_at);
-        row.getCell(3).value = salesCase.customer_name || 'N/A';
-        row.getCell(4).value = salesCase.phone_number || 'N/A';
-        row.getCell(5).value = salesCase.page || 'N/A';
-        row.getCell(6).value = salesCase.case_followed_by || 'N/A';
-        row.getCell(7).value = salesCase.comment || 'N/A';
-        row.getCell(8).value = salesCase.number_of_customers || 0;
-        row.getCell(9).value = salesCase.confidence ? (salesCase.confidence * 100).toFixed(1) + '%' : 'N/A';
-        row.getCell(10).value = salesCase.telegram_username || 'N/A';
+        row.getCell(1).value = leadEvent.date || '';
+        row.getCell(2).value = this.formatTime(leadEvent.created_at);
+        row.getCell(3).value = leadEvent.customer.name || 'N/A';
+        row.getCell(4).value = leadEvent.customer.phone || 'N/A';
+        row.getCell(5).value = leadEvent.page || 'N/A';
+        row.getCell(6).value = leadEvent.follower || 'N/A';
+        row.getCell(7).value = leadEvent.status_text || 'N/A';
+        row.getCell(8).value = leadEvent.source.telegram_msg_id || 'N/A';
+        row.getCell(9).value = leadEvent.source.model || 'N/A';
 
         if ((index + 5) % 2 === 0) {
           row.eachCell((cell) => {

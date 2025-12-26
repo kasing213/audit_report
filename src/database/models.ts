@@ -1,11 +1,18 @@
-import { SalesCase } from '../parser/types';
-
-export interface SalesCaseDocument extends SalesCase {
+export interface LeadEventDocument {
   _id?: string;
+  date: string;
+  customer: {
+    name: string | null;
+    phone: string | null;
+  };
+  page: string | null;
+  follower: string | null;
+  status_text: string | null;
+  source: {
+    telegram_msg_id: string;
+    model: string;
+  };
   created_at: Date;
-  telegram_message_id?: number;
-  telegram_user_id?: number;
-  telegram_username?: string | undefined;
 }
 
 export interface AuditLog {
