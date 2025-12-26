@@ -115,7 +115,7 @@ export class CustomersCommand {
       const leadEvents = await this.repository.getLeadEventsByFollowerAndMonth(follower, month);
 
       if (leadEvents.length === 0) {
-        return `📋 Customer List\n👤 Follower: ${follower}\n📅 Month: ${this.formatMonth(month)}\n\nNo customers found.`;
+        return `Customer List\nFollower: ${follower}\nMonth: ${this.formatMonth(month)}\n\nNo customers found.`;
       }
 
       // Deduplicate by phone (keep latest date + status_text)
@@ -147,10 +147,10 @@ export class CustomersCommand {
 
       // Format output
       const header = [
-        '📋 Customer List',
-        `👤 Follower: ${follower}`,
-        `📅 Month: ${this.formatMonth(month)}`,
-        `👥 Total Customers: ${customers.length}`,
+        'Customer List',
+        `Follower: ${follower}`,
+        `Month: ${this.formatMonth(month)}`,
+        `Total: ${customers.length}`,
         ''
       ].join('\n');
 
@@ -158,17 +158,17 @@ export class CustomersCommand {
         const lines = [`${index + 1}) ${customer.name || 'Unknown'}`];
 
         if (customer.phone) {
-          lines.push(`📞 ${this.formatPhone(customer.phone)}`);
+          lines.push(`Phone: ${this.formatPhone(customer.phone)}`);
         }
 
         if (customer.page) {
-          lines.push(`📄 Page: ${customer.page}`);
+          lines.push(`Page: ${customer.page}`);
         }
 
-        lines.push(`📅 Date: ${customer.date}`);
+        lines.push(`Date: ${customer.date}`);
 
         if (customer.status_text) {
-          lines.push(`📝 Status: ${customer.status_text}`);
+          lines.push(`Status: ${customer.status_text}`);
         }
 
         return lines.join('\n');
