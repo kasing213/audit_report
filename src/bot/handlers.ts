@@ -16,6 +16,7 @@ interface TelegramMessage {
 }
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
+import { LeadEvent } from '../parser/types';
 import { Logger } from '../utils/logger';
 
 export class MessageHandlers {
@@ -70,10 +71,17 @@ export class MessageHandlers {
         return;
       }
 
-      const leadEventDocs: LeadEventDocument[] = parseResult.map((leadEvent) => ({
-        ...leadEvent,
-        created_at: new Date()
-      }));
+      // Enrich events with update detection
+      const enrichedEvents = await this.enrichWithUpdateDetection(parseResult);
+
+      // Remove is_update before saving (not part of schema)
+      const leadEventDocs: LeadEventDocument[] = enrichedEvents.map((leadEvent) => {
+        const { is_update, ...eventData } = leadEvent;
+        return {
+          ...eventData,
+          created_at: new Date()
+        };
+      });
 
       await this.repository.saveLeadEvents(leadEventDocs);
 
@@ -103,5 +111,47 @@ export class MessageHandlers {
         error: (error as Error).message
       });
     }
+  }
+
+  private async enrichWithUpdateDetection(events: LeadEvent[]): Promise<LeadEvent[]> {
+    const enrichedEvents: LeadEvent[] = [];
+
+    for (const event of events) {
+      // If not marked as update or no phone, keep as-is
+      if (!event.is_update || !event.customer.phone) {
+        enrichedEvents.push(event);
+        continue;
+      }
+
+      // Lookup existing customer by phone
+      const existingEvent = await this.repository.findLatestEventByPhone(event.customer.phone);
+
+      if (!existingEvent) {
+        // Phone not found, treat as new lead
+        Logger.info(`Update detected but phone ${event.customer.phone} not found, treating as new`);
+        enrichedEvents.push({ ...event, is_update: false });
+        continue;
+      }
+
+      // Enrich with historical data
+      const enrichedEvent: LeadEvent = {
+        ...event,
+        customer: {
+          name: event.customer.name || existingEvent.customer.name,
+          phone: event.customer.phone
+        },
+        page: event.page || existingEvent.page,
+        follower: event.follower || existingEvent.follower,
+        status_text: event.status_text  // Always use new status
+      };
+
+      Logger.info(
+        `Update: ${enrichedEvent.customer.phone}: ${existingEvent.status_text} → ${enrichedEvent.status_text}`
+      );
+
+      enrichedEvents.push(enrichedEvent);
+    }
+
+    return enrichedEvents;
   }
 }

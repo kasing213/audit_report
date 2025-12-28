@@ -1,6 +1,8 @@
 import { Collection } from 'mongodb';
 import DatabaseConnection from './connection';
 import { LeadEventDocument, AuditLog } from './models';
+import { ensureIndexes } from './indexes';
+import { Logger } from '../utils/logger';
 
 export class SalesCaseRepository {
   private db = DatabaseConnection.getInstance();
@@ -11,6 +13,11 @@ export class SalesCaseRepository {
     const database = this.db.getDb();
     this.leadsEventsCollection = database.collection<LeadEventDocument>('leads_events');
     this.auditCollection = database.collection<AuditLog>('audit_logs');
+
+    // Ensure indexes exist (non-blocking)
+    ensureIndexes(this.leadsEventsCollection).catch(err => {
+      Logger.error('Index creation warning', err as Error);
+    });
   }
 
   async saveLeadEvent(leadEvent: LeadEventDocument): Promise<void> {
@@ -38,6 +45,22 @@ export class SalesCaseRepository {
     const [year, monthNum] = month.split('-').map(Number);
     const lastDay = new Date(year, monthNum, 0).getDate();
     return `${month}-${String(lastDay).padStart(2, '0')}`;
+  }
+
+  async findLatestEventByPhone(phone: string): Promise<LeadEventDocument | null> {
+    if (!phone || phone.trim() === '') {
+      return null;
+    }
+
+    const normalizedPhone = phone.trim();
+
+    const events = await this.leadsEventsCollection
+      .find({ 'customer.phone': normalizedPhone })
+      .sort({ date: -1, created_at: -1 })
+      .limit(1)
+      .toArray();
+
+    return events.length > 0 ? events[0] : null;
   }
 
   async logAudit(auditLog: AuditLog): Promise<void> {
