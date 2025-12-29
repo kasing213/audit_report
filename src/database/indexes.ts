@@ -21,6 +21,15 @@ export async function ensureIndexes<T extends Document>(collection: Collection<T
       }
     );
 
+    // Compound index for follower + date (optimizes /customers command queries)
+    await collection.createIndex(
+      { follower: 1, date: -1 },
+      {
+        name: 'follower_date_idx',
+        sparse: false  // All documents should have follower + date
+      }
+    );
+
     Logger.info('Database indexes created successfully');
   } catch (error) {
     Logger.error('Failed to create indexes', error as Error);

@@ -1,7 +1,8 @@
 import { Collection } from 'mongodb';
 import DatabaseConnection from './connection';
-import { LeadEventDocument, AuditLog } from './models';
+import { LeadEventDocument, AuditLog, CustomerCase } from './models';
 import { ensureIndexes } from './indexes';
+import { buildCasesByFollowerAndMonthPipeline, buildMonthlyCasesSummaryPipeline } from './aggregations';
 import { Logger } from '../utils/logger';
 
 export class SalesCaseRepository {
@@ -61,6 +62,16 @@ export class SalesCaseRepository {
       .toArray();
 
     return events.length > 0 ? events[0] : null;
+  }
+
+  async getCasesByFollowerAndMonth(follower: string, month: string): Promise<CustomerCase[]> {
+    const pipeline = buildCasesByFollowerAndMonthPipeline(follower, month);
+    return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
+  }
+
+  async getMonthlyCasesSummary(year: number, month: number): Promise<CustomerCase[]> {
+    const pipeline = buildMonthlyCasesSummaryPipeline(year, month);
+    return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 
   async logAudit(auditLog: AuditLog): Promise<void> {

@@ -2,14 +2,6 @@ import { Context } from 'telegraf';
 import { SalesCaseRepository } from '../../database/repository';
 import { Logger } from '../../utils/logger';
 
-interface CustomerInfo {
-  name: string | null;
-  phone: string | null;
-  page: string | null;
-  date: string;
-  status_text: string | null;
-}
-
 export class CustomersCommand {
   private repository: SalesCaseRepository;
   private pendingCustomersRequest: Map<number, {
@@ -130,69 +122,48 @@ export class CustomersCommand {
 
   private async buildCustomersReport(follower: string, month: string): Promise<string> {
     try {
-      const leadEvents = await this.repository.getLeadEventsByFollowerAndMonth(follower, month);
+      const cases = await this.repository.getCasesByFollowerAndMonth(follower, month);
 
-      if (leadEvents.length === 0) {
-        return `Customer List\nFollower: ${follower}\nMonth: ${this.formatMonth(month)}\n\nNo customers found.`;
+      if (cases.length === 0) {
+        return `Customer List\nFollower: ${follower}\nMonth: ${this.formatMonth(month)}\n\nNo cases found.`;
       }
-
-      // Deduplicate by phone (keep latest date + status_text)
-      const customerMap = new Map<string, CustomerInfo>();
-
-      for (const event of leadEvents) {
-        const phone = event.customer.phone;
-
-        // Skip events without phone number
-        if (!phone) continue;
-
-        const existing = customerMap.get(phone);
-
-        // If no existing entry or this event is more recent, update
-        if (!existing || event.date > existing.date) {
-          customerMap.set(phone, {
-            name: event.customer.name,
-            phone: event.customer.phone,
-            page: event.page,
-            date: event.date,
-            status_text: event.status_text
-          });
-        }
-      }
-
-      // Sort by date (latest first)
-      const customers = Array.from(customerMap.values())
-        .sort((a, b) => b.date.localeCompare(a.date));
 
       // Format output
       const header = [
         'Customer List',
         `Follower: ${follower}`,
         `Month: ${this.formatMonth(month)}`,
-        `Total: ${customers.length}`,
+        `Total Cases: ${cases.length}`,
         ''
       ].join('\n');
 
-      const customerLines = customers.map((customer, index) => {
-        const lines = [`${index + 1}) ${customer.name || 'Unknown'}`];
+      const caseLines = cases.map((c, index) => {
+        const lines = [`${index + 1}) ${c.name || 'Unknown'}`];
 
-        if (customer.phone) {
-          lines.push(`Phone: ${this.formatPhone(customer.phone)}`);
+        if (c.phone) {
+          lines.push(`   Phone: ${this.formatPhone(c.phone)}`);
         }
 
-        if (customer.page) {
-          lines.push(`Page: ${customer.page}`);
+        if (c.page) {
+          lines.push(`   Page: ${c.page}`);
         }
 
-        lines.push(`Date: ${customer.date}`);
+        lines.push(`   First contact: ${c.first_contact_date}`);
 
-        if (customer.status_text) {
-          lines.push(`Status: ${customer.status_text}`);
+        if (c.last_update_date !== c.first_contact_date) {
+          lines.push(`   Last update: ${c.last_update_date}`);
         }
+
+        if (c.current_status) {
+          lines.push(`   Current status: ${c.current_status}`);
+        }
+
+        lines.push(`   Updates: ${c.total_events} event${c.total_events > 1 ? 's' : ''}`);
 
         return lines.join('\n');
       });
 
-      return header + customerLines.join('\n\n');
+      return header + caseLines.join('\n\n');
 
     } catch (error) {
       Logger.error('Error building customers report', error as Error);

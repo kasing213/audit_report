@@ -1,5 +1,5 @@
 import { SalesCaseRepository } from '../database/repository';
-import { LeadEventDocument } from '../database/models';
+import { LeadEventDocument, CustomerCase } from '../database/models';
 
 export class ReportDataService {
   private repository: SalesCaseRepository;
@@ -34,6 +34,15 @@ export class ReportDataService {
       }).toArray();
     } catch (error) {
       console.error('Error fetching monthly lead events:', error);
+      return [];
+    }
+  }
+
+  public async getMonthlyCasesSummary(year: number, month: number): Promise<CustomerCase[]> {
+    try {
+      return await this.repository.getMonthlyCasesSummary(year, month);
+    } catch (error) {
+      console.error('Error fetching monthly cases summary:', error);
       return [];
     }
   }
