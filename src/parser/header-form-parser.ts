@@ -62,11 +62,11 @@ export class HeaderFormParser {
     const aiResult = await this.callModel(trimmed, this.model, true);
     if (aiResult?.valid && aiResult.data) {
       const validated = this.validateHeaderData(aiResult.data);
-      if (validated.valid) {
+      if (validated.valid && validated.data) {
         return {
           valid: true,
           data: validated.data,
-          model: aiResult.model
+          ...(aiResult.model && { model: aiResult.model })
         };
       }
     }
