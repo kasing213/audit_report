@@ -2,6 +2,7 @@ import * as ExcelJS from 'exceljs';
 import { ReportDataService } from './data-service';
 import type { LeadEventDocument, CustomerCase } from '../database/models';
 import { Logger } from '../utils/logger';
+import { formatReasonDisplay } from '../constants/reason-codes';
 
 export class ExcelReportGenerator {
   private dataService: ReportDataService;
@@ -24,7 +25,7 @@ export class ExcelReportGenerator {
       { header: 'Phone Number', key: 'phone_number', width: 15 },
       { header: 'Platform/Page', key: 'page', width: 15 },
       { header: 'Follower', key: 'follower', width: 15 },
-      { header: 'Status', key: 'status_text', width: 30 },
+      { header: 'Reason', key: 'status_text', width: 30 },
       { header: 'Source ID', key: 'telegram_msg_id', width: 15 },
       { header: 'Model', key: 'model', width: 15 }
     ];
@@ -121,7 +122,7 @@ export class ExcelReportGenerator {
       row.getCell(4).value = c.follower || 'N/A';
       row.getCell(5).value = c.first_contact_date;
       row.getCell(6).value = c.last_update_date;
-      row.getCell(7).value = c.current_status || 'N/A';
+      row.getCell(7).value = formatReasonDisplay(c.current_reason_code ?? null, c.current_status);
       row.getCell(8).value = c.total_events;
 
       // Alternating row colors
@@ -195,7 +196,7 @@ export class ExcelReportGenerator {
       row.getCell(4).value = leadEvent.customer.phone || 'N/A';
       row.getCell(5).value = leadEvent.page || 'N/A';
       row.getCell(6).value = leadEvent.follower || 'N/A';
-      row.getCell(7).value = leadEvent.status_text || 'N/A';
+      row.getCell(7).value = formatReasonDisplay(leadEvent.reason_code ?? null, leadEvent.status_text);
       row.getCell(8).value = leadEvent.source.telegram_msg_id || 'N/A';
       row.getCell(9).value = leadEvent.source.model || 'N/A';
 

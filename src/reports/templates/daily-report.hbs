@@ -90,7 +90,7 @@
             <h3>Summary: {{totalCases}} sales case(s) recorded</h3>
         </div>
 
-        {{#if salesCases.length}}
+        {{#if leadEvents.length}}
         <table>
             <thead>
                 <tr>
@@ -99,18 +99,18 @@
                     <th>Phone Number</th>
                     <th>Platform/Page</th>
                     <th>Followed By</th>
-                    <th>Comment</th>
+                    <th>Reason</th>
                 </tr>
             </thead>
             <tbody>
-                {{#each salesCases}}
+                {{#each leadEvents}}
                 <tr>
                     <td>{{formatTime this.created_at}}</td>
-                    <td>{{this.customer_name}}</td>
-                    <td>{{this.phone_number}}</td>
+                    <td>{{this.customer.name}}</td>
+                    <td>{{this.customer.phone}}</td>
                     <td>{{this.page}}</td>
-                    <td>{{this.case_followed_by}}</td>
-                    <td>{{this.comment}}</td>
+                    <td>{{this.follower}}</td>
+                    <td>{{formatReason this.reason_code this.status_text}}</td>
                 </tr>
                 {{/each}}
             </tbody>

@@ -5,6 +5,7 @@ import * as path from 'path';
 import { ReportDataService } from './data-service';
 import { LeadEventDocument } from '../database/models';
 import { Logger } from '../utils/logger';
+import { formatReasonDisplay } from '../constants/reason-codes';
 
 export class JpgReportGenerator {
   private dataService: ReportDataService;
@@ -32,6 +33,10 @@ export class JpgReportGenerator {
         hour: '2-digit',
         minute: '2-digit'
       });
+    });
+
+    handlebars.registerHelper('formatReason', (reasonCode?: string | null, statusText?: string | null) => {
+      return formatReasonDisplay(reasonCode ?? null, statusText ?? null);
     });
   }
 

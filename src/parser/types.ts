@@ -2,6 +2,8 @@ export interface IgnoredMessage {
   ignored: true;
 }
 
+import { ReasonCode } from '../constants/reason-codes';
+
 export interface LeadEvent {
   date: string;  // YYYY-MM-DD
   customer: {
@@ -11,6 +13,8 @@ export interface LeadEvent {
   page: string | null;
   follower: string | null;
   status_text: string | null;
+  reason_code?: ReasonCode | null;
+  note?: string | null;
   source: {
     telegram_msg_id: string;
     model: string;
