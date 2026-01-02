@@ -8,6 +8,8 @@ export interface LeadEventDocument {
   page: string | null;
   follower: string | null;
   status_text: string | null;
+  reason_code?: string | null;
+  note?: string | null;
   source: {
     telegram_msg_id: string;
     model: string;
@@ -35,9 +37,12 @@ export interface CustomerCase {
   first_contact_date: string;      // YYYY-MM-DD
   last_update_date: string;         // YYYY-MM-DD
   current_status: string | null;
+  current_reason_code?: string | null;
   history: Array<{
     date: string;
     status: string | null;
+    reason_code?: string | null;
+    note?: string | null;
     created_at: Date;
   }>;
   total_events: number;

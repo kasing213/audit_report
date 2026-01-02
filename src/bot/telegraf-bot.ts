@@ -1,17 +1,17 @@
 import { Telegraf, Context } from 'telegraf';
-import { MessageHandlers } from './handlers';
 import { Logger } from '../utils/logger';
 import { SalesCaseRepository } from '../database/repository';
 import { CustomersCommand } from './commands/customers-command';
+import { SalesEntryFlow } from './flows/sales-entry-flow';
 import dotenv from 'dotenv';
 
 dotenv.config();
 
 export class TelegrafBotService {
   private bot: Telegraf;
-  private messageHandlers: MessageHandlers;
   private repository: SalesCaseRepository;
   private customersCommand: CustomersCommand;
+  private salesEntryFlow: SalesEntryFlow;
 
   constructor() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -21,9 +21,9 @@ export class TelegrafBotService {
     }
 
     this.bot = new Telegraf(token);
-    this.messageHandlers = new MessageHandlers();
     this.repository = new SalesCaseRepository();
     this.customersCommand = new CustomersCommand(this.repository);
+    this.salesEntryFlow = new SalesEntryFlow(this.repository);
     this.setupHandlers();
   }
 
@@ -54,17 +54,16 @@ export class TelegrafBotService {
           }
         }
 
-        // Normal message processing
+        // Sales entry flow (strict header -> reason -> note)
         if (ctx.message && 'text' in ctx.message) {
-          const telegramMessage = {
-            message_id: ctx.message.message_id,
-            from: ctx.message.from,
-            chat: ctx.message.chat,
-            text: ctx.message.text,
-            date: ctx.message.date
-          };
+          const text = ctx.message.text;
+          if (userId && this.salesEntryFlow.isPending(userId)) {
+            const handled = await this.salesEntryFlow.handlePending(ctx, text);
+            if (handled) return;
+          }
 
-          await this.messageHandlers.handleMessage(telegramMessage);
+          const started = await this.salesEntryFlow.tryStartFromHeader(ctx, text);
+          if (started) return;
         }
       } catch (error) {
         Logger.error('Error handling message', error as Error);

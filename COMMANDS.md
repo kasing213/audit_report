@@ -73,9 +73,26 @@ npm run build
 # Run in development mode (auto-reload)
 npm run dev
 
+# Run in watch mode
+npm run watch
+
 # Run production build
 npm start
 ```
+
+### Testing & QA
+```bash
+# Type checking (no emit)
+npm run typecheck
+
+# Lint source
+npm run lint
+```
+
+Manual smoke test (Telegram):
+- Send a strict header (see "Sales Entry Flow" below)
+- Choose a reason code (A–J) and optional note
+- Verify the record shows in daily JPG or monthly Excel reports
 
 ### Database Operations
 ```bash
@@ -104,99 +121,43 @@ grep "2025-01-16" audit-sales.log
 
 ### User Commands (Send in Telegram Chat)
 
-#### `/report` - Summary Report
-Get a summary report with total cases, unique customers, average confidence, and top pages/followers.
+#### `/customers` - Customer List by Follower + Month
+Get a customer list for a specific follower and month.
 
 **Usage:**
 ```
-/report              → Bot prompts for date range
-/report 7            → Last 7 days (quick)
-/report 30           → Last 30 days (max)
+/customers
 ```
 
-**After `/report` (no args), reply with:**
-- Date range: `2025-12-10 2025-12-18`
-- Date range with times: `2025-12-18 09:00 2025-12-18 18:00`
-- Single date: `2025-12-18` (for same day)
-- Days count: `7`
+**Bot prompts:**
+- `Which follower? (example: Srey Sros)`
+- `Which month? (YYYY-MM or type "current")`
 
-**Example Output:**
-```
-Report (7d, 2025-12-14 to 2025-12-21):
-- total cases: 10
-- unique customers (by phone): 6
-- avg confidence: 0.94
-- top pages: amazon:1, Facebook:1, Amazon:1, TikTok:1, IG:1
-- top followed_by: JR:3, Lina:1, Kim:1
-```
-
-**Rate Limit:** 1 request per user every 30 seconds
+**Rate Limit:** 1 request per user every 2 minutes
 
 ---
 
-#### `/follow` - Detailed Follow-up Report
-Get a detailed report with summary stats PLUS complete numbered lists of all phone numbers, pages, and staff.
+#### Sales Entry Flow (Strict Header)
+Send a strict header form. The bot validates it, then forces A–J reason selection.
 
-**Usage:**
+**Header format (required):**
 ```
-/follow              → Bot prompts for date range
-/follow 7            → Last 7 days with detailed lists
-/follow 30           → Last 30 days with detailed lists
-```
-
-**After `/follow` (no args), reply with:**
-- Same format as `/report` (see above)
-
-**Example Output:**
-```
-Report (2025-12-18 to 2025-12-18):
-- total cases: 10
-- unique customers (by phone): 6
-- avg confidence: 0.94
-- top pages: amazon:1, Facebook:1, Amazon:1, TikTok:1, IG:1
-- top followed_by: JR:3, Lina:1, Kim:1
-
-Phone Numbers (6):
-1. 012345678
-2. 023456789
-3. 034567890
-4. 045678901
-5. 056789012
-6. 067890123
-
-Pages (5):
-1. amazon
-2. Facebook
-3. Amazon
-4. TikTok
-5. IG
-
-Followed By (3):
-1. JR
-2. Lina
-3. Kim
+HDR
+DATE: 2025-01-16
+NAME: Heng Chita
+PHONE: 093724678
+PAGE: Sun TV
+FOLLOWER: Srey Sros
 ```
 
-**Rate Limit:** 1 request per user every 30 seconds (shared with `/report`)
-
----
-
-#### Sales Message Processing
-The bot automatically processes sales messages sent to the chat. No command needed.
-
-**Message Format (examples):**
-```
-3 customers today, John 012345678 from Facebook, followed by Kasing, interested
-
-Busy day! Customer Mary 023456789 from TikTok, JR following
-
-2 customers: Alice 034567890 Page: Amazon, Kim handling
-```
+**Flow:**
+1) Header accepted → bot sends A–J options (mandatory)
+2) User selects ONE reason (A–J only)
+3) Bot asks for optional note (reply `-` to skip)
 
 **Bot Response:**
-- Saves to database if valid sales case
-- Logs ignored messages
-- No reply (silent processing)
+- Invalid header → shows the required format
+- Invalid reason → `សូមជ្រើសរើសតែមួយ (A–J) ប៉ុណ្ណោះ`
 
 ---
 

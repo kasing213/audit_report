@@ -65,11 +65,14 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
         current_name: { $last: '$customer.name' },
         current_page: { $last: '$page' },
         current_follower: { $last: '$follower' },
-        current_status: { $last: '$status_text' },
+        current_reason_code: { $last: '$reason_code' },
+        current_status_text: { $last: '$status_text' },
         history: {
           $push: {
             date: '$date',
-            status: '$status_text',
+            status: { $ifNull: ['$reason_code', '$status_text'] },
+            reason_code: '$reason_code',
+            note: '$note',
             created_at: '$created_at'
           }
         },
@@ -87,7 +90,8 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
         follower: '$current_follower',
         first_contact_date: 1,
         last_update_date: 1,
-        current_status: 1,
+        current_status: { $ifNull: ['$current_reason_code', '$current_status_text'] },
+        current_reason_code: 1,
         history: 1,
         total_events: 1
       }
@@ -137,11 +141,14 @@ export function buildMonthlyCasesSummaryPipeline(year: number, month: number): D
         current_name: { $last: '$customer.name' },
         current_page: { $last: '$page' },
         current_follower: { $last: '$follower' },
-        current_status: { $last: '$status_text' },
+        current_reason_code: { $last: '$reason_code' },
+        current_status_text: { $last: '$status_text' },
         history: {
           $push: {
             date: '$date',
-            status: '$status_text',
+            status: { $ifNull: ['$reason_code', '$status_text'] },
+            reason_code: '$reason_code',
+            note: '$note',
             created_at: '$created_at'
           }
         },
@@ -159,7 +166,8 @@ export function buildMonthlyCasesSummaryPipeline(year: number, month: number): D
         follower: '$current_follower',
         first_contact_date: 1,
         last_update_date: 1,
-        current_status: 1,
+        current_status: { $ifNull: ['$current_reason_code', '$current_status_text'] },
+        current_reason_code: 1,
         history: 1,
         total_events: 1
       }

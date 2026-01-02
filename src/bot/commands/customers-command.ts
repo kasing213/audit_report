@@ -1,6 +1,7 @@
 import { Context } from 'telegraf';
 import { SalesCaseRepository } from '../../database/repository';
 import { Logger } from '../../utils/logger';
+import { formatReasonDisplay } from '../../constants/reason-codes';
 
 export class CustomersCommand {
   private repository: SalesCaseRepository;
@@ -154,8 +155,8 @@ export class CustomersCommand {
           lines.push(`   Last update: ${c.last_update_date}`);
         }
 
-        if (c.current_status) {
-          lines.push(`   Current status: ${c.current_status}`);
+        if (c.current_status || c.current_reason_code) {
+          lines.push(`   Current status: ${formatReasonDisplay(c.current_reason_code ?? null, c.current_status)}`);
         }
 
         lines.push(`   Updates: ${c.total_events} event${c.total_events > 1 ? 's' : ''}`);
