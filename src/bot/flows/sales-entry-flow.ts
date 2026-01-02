@@ -145,12 +145,12 @@ export class SalesEntryFlow {
     const pending: PendingSalesEntry = {
       chatId,
       userId,
-      username: ctx.from?.username,
+      ...(ctx.from?.username && { username: ctx.from.username }),
       header: headerResult.data,
       step: 'awaiting_reason',
       expiresAt: Date.now() + this.ttlMs,
       sourceMessageId: ctx.message && 'message_id' in ctx.message ? ctx.message.message_id : 0,
-      sourceModel: headerResult.model
+      ...(headerResult.model && { sourceModel: headerResult.model })
     };
 
     this.pendingEntries.set(userId, pending);
