@@ -23,6 +23,14 @@ export class CustomersCommand {
 
   async handleCommand(ctx: Context): Promise<void> {
     const userId = ctx.from?.id || 0;
+    const chatId = ctx.chat?.id;
+
+    // Check if command is used in the correct chat
+    const summaryChatId = process.env.SUMMARY_CHAT_ID;
+    if (summaryChatId && chatId && chatId.toString() !== summaryChatId) {
+      await ctx.reply('This command is only available in the summary channel.');
+      return;
+    }
 
     // Check rate limit
     const lastRequest = this.lastRequestAt.get(userId);
