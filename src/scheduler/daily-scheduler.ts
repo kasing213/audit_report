@@ -52,7 +52,7 @@ export class DailyScheduler {
 
     Logger.info('Daily report scheduler started - will send reports at 11:59 PM daily');
     Logger.info(`Timezone: ${process.env.TIMEZONE || 'Asia/Kuala_Lumpur'}`);
-    Logger.info(`Target chat ID: ${this.telegramChatId}`);
+    Logger.info(`Target audit chat ID: ${this.telegramChatId}`);
   }
 
   public async sendManualReport(date?: string): Promise<void> {

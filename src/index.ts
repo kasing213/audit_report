@@ -29,16 +29,16 @@ async function main(): Promise<void> {
     Logger.info('Telegram bot started successfully');
 
     // Setup daily report scheduler
-    const reportChatId = process.env.REPORT_CHAT_ID;
-    if (reportChatId) {
-      const scheduler = new DailyScheduler(reportChatId);
+    const auditChatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
+    if (auditChatId) {
+      const scheduler = new DailyScheduler(auditChatId);
       scheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string) => {
         await telegramBot.sendPhoto(chatId, buffer, filename);
       });
       scheduler.startScheduler();
-      Logger.info(`- Daily Reports: Enabled (Chat ID: ${reportChatId})`);
+      Logger.info(`- Daily Reports: Enabled (Audit Chat ID: ${auditChatId})`);
     } else {
-      Logger.warn('REPORT_CHAT_ID not set - daily reports disabled');
+      Logger.warn('AUDIT_CHAT_ID not set - daily reports disabled');
     }
 
     Logger.info('Audit Sales System is running...');
