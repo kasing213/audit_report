@@ -1,6 +1,7 @@
 import { TelegrafBotService } from './bot/telegraf-bot';
 import { ApiServer } from './api/server';
 import { DailyScheduler } from './scheduler/daily-scheduler';
+import { MonthlyScheduler } from './scheduler/monthly-scheduler';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
 import dotenv from 'dotenv';
@@ -31,19 +32,31 @@ async function main(): Promise<void> {
     // Setup daily report scheduler
     const auditChatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
     if (auditChatId) {
-      const scheduler = new DailyScheduler(auditChatId);
-      scheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string) => {
+      const dailyScheduler = new DailyScheduler(auditChatId);
+      dailyScheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string) => {
         await telegramBot.sendPhoto(chatId, buffer, filename);
       });
-      scheduler.startScheduler();
+      dailyScheduler.startScheduler();
       Logger.info(`- Daily Reports: Enabled (Audit Chat ID: ${auditChatId})`);
+
+      // Setup monthly report scheduler
+      const monthlyScheduler = new MonthlyScheduler(auditChatId);
+      monthlyScheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string, caption?: string) => {
+        await telegramBot.sendDocument(chatId, buffer, filename, caption);
+      });
+      monthlyScheduler.startScheduler();
+      Logger.info(`- Monthly Reports: Enabled (Audit Chat ID: ${auditChatId})`);
     } else {
-      Logger.warn('AUDIT_CHAT_ID not set - daily reports disabled');
+      Logger.warn('AUDIT_CHAT_ID not set - daily and monthly reports disabled');
     }
 
     Logger.info('Audit Sales System is running...');
-    Logger.info('- Telegram Bot: Active');
+    Logger.info('- Telegram Bot: Active (Commands: /help, /customers, /report)');
     Logger.info('- API Server: http://localhost:3001');
+    if (auditChatId) {
+      Logger.info('- Daily Reports: 11:59 PM → JPG images');
+      Logger.info('- Monthly Reports: 1st day 12:01 AM → Excel files');
+    }
 
     process.on('SIGINT', async () => {
       Logger.info('Shutting down...');

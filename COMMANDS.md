@@ -121,6 +121,52 @@ grep "2025-01-16" audit-sales.log
 
 ### User Commands (Send in Telegram Chat)
 
+#### `/help` - Complete Documentation & Guide
+Get comprehensive help documentation with examples and chat configuration info.
+
+**Usage:**
+```
+/help
+```
+
+**Features:**
+- Complete HDR format examples with validation rules
+- All available commands and their usage
+- Chat ID configuration (Audit vs Summary channels)
+- Reason codes (A-J) with translations
+- System information and automated report schedules
+- Troubleshooting guidance
+
+**Available in:** All chats
+
+---
+
+#### `/report [YYYY-MM]` - Generate Monthly Excel Reports
+Generate and download monthly Excel reports on-demand.
+
+**Usage:**
+```
+/report           # Current month
+/report 2025-01   # Specific month
+/report 2024-12   # Previous months
+```
+
+**Features:**
+- Two Excel sheets: Customer Cases Summary + Event History
+- Complete audit trail with all interactions
+- Phone-based customer aggregation
+- Source tracking (Telegram message IDs, AI models)
+- Automatic filename generation
+- Progress indicator during generation
+
+**Restrictions:**
+- Cannot request future months
+- Large reports may take time to generate
+
+**Available in:** All chats
+
+---
+
 #### `/customers` - Customer List by Follower + Month
 Get a customer list for a specific follower and month.
 
@@ -134,6 +180,8 @@ Get a customer list for a specific follower and month.
 - `Which month? (YYYY-MM or type "current")`
 
 **Rate Limit:** 1 request per user every 2 minutes
+
+**IMPORTANT:** Only works in Summary Chat (configured via SUMMARY_CHAT_ID)
 
 ---
 
@@ -184,12 +232,23 @@ curl "https://api.telegram.org/bot<BOT_TOKEN>/getWebhookInfo"
 
 ### Environment Variables (.env)
 ```env
+# Core Configuration
 DATABASE_URL=mongodb+srv://...           # MongoDB connection
 TELEGRAM_BOT_TOKEN=123456:ABC...         # Telegram bot token
 OPENAI_API_KEY=sk-proj-...              # OpenAI API key (optional)
 OPENAI_MODEL=gpt-4o-mini                # AI model for parsing
-REPORT_CHAT_ID=-1002345678901           # Chat ID for daily reports
 TIMEZONE=Asia/Kuala_Lumpur              # Timezone for scheduling
+
+# Chat Configuration (Required)
+AUDIT_CHAT_ID=-1002345678901            # Automated reports destination
+SUMMARY_CHAT_ID=-1002345678902          # User interaction chat
+
+# Feature Toggles (Optional)
+ENABLE_HELP_COMMAND=true                # Enable /help command
+ENABLE_MONTHLY_REPORTS=true             # Enable monthly automation
+
+# Backwards Compatibility
+REPORT_CHAT_ID=-1002345678901           # Fallback for AUDIT_CHAT_ID
 ```
 
 ### Update Configuration
@@ -265,13 +324,27 @@ grep -i "report" audit-sales.log
 ### Daily Report Schedule
 - **Time**: 11:59 PM daily
 - **Timezone**: Set via `TIMEZONE` env var
-- **Target**: Chat specified in `REPORT_CHAT_ID`
+- **Target**: Chat specified in `AUDIT_CHAT_ID`
 - **Content**: Previous day's sales cases as JPG
+- **Format**: Image with summary statistics
 
-### Manual Report Trigger
+### Monthly Report Schedule (NEW)
+- **Time**: 1st day of month at 12:01 AM
+- **Timezone**: Set via `TIMEZONE` env var
+- **Target**: Chat specified in `AUDIT_CHAT_ID`
+- **Content**: Previous month's complete data as Excel
+- **Format**: Two sheets (Cases Summary + Event History)
+- **Toggle**: Can be disabled with `ENABLE_MONTHLY_REPORTS=false`
+
+### Manual Report Triggers
 ```bash
-# Reports are automatically generated
-# Manual triggers available via API endpoints above
+# Via Telegram commands (recommended)
+/report           # Current month Excel
+/report 2025-01   # Specific month Excel
+
+# Via API endpoints
+curl "http://localhost:3001/reports/daily/jpg?date=YYYY-MM-DD"
+curl "http://localhost:3001/reports/monthly/excel?month=YYYY-MM"
 ```
 
 ---
@@ -315,6 +388,9 @@ cp .env .env.backup
 | `curl localhost:3001/health` | Check API status |
 | `npm run typecheck` | Verify code |
 | `grep -i error *.log` | Check for errors |
+| `/help` (Telegram) | Show bot documentation |
+| `/report` (Telegram) | Generate monthly Excel |
+| `/customers` (Telegram) | Get customer lists |
 
 ---
 
@@ -322,4 +398,21 @@ cp .env .env.backup
 **Daily Report API**: http://localhost:3001/reports/daily/jpg?date=YYYY-MM-DD
 **Monthly Report API**: http://localhost:3001/reports/monthly/excel?month=YYYY-MM
 
-For support, check logs and ensure all environment variables are properly configured.
+## 🆕 New Features Summary
+
+### Enhanced Telegram Bot Commands
+- **`/help`** - In-chat comprehensive documentation
+- **`/report [YYYY-MM]`** - On-demand monthly Excel generation
+- **Improved `/customers`** - Now restricted to Summary Chat
+
+### Automated Monthly Reports
+- **Schedule**: 1st day of month at 12:01 AM
+- **Format**: Excel with 2 sheets (Cases + Events)
+- **Delivery**: AUDIT_CHAT_ID via Telegram
+- **Toggle**: ENABLE_MONTHLY_REPORTS environment variable
+
+### Chat Separation
+- **AUDIT_CHAT_ID**: Automated daily JPG + monthly Excel reports
+- **SUMMARY_CHAT_ID**: User interactions, /customers command only
+
+For support, check logs, use `/help` command, and ensure all environment variables are properly configured.
