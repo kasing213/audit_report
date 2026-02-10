@@ -9,6 +9,7 @@ import {
   ReasonCode
 } from '../../constants/reason-codes';
 import { Logger } from '../../utils/logger';
+import { GroupConfigManager } from '../../utils/group-config';
 
 type SalesEntryStep = 'awaiting_reason' | 'awaiting_note';
 
@@ -29,12 +30,14 @@ export class SalesEntryFlow {
   private headerParser: HeaderFormParser;
   private pendingEntries: Map<number, PendingSalesEntry>;
   private ttlMs: number;
+  private groupConfigManager: GroupConfigManager;
 
   constructor(repository: SalesCaseRepository) {
     this.repository = repository;
     this.headerParser = new HeaderFormParser();
     this.pendingEntries = new Map();
     this.ttlMs = 5 * 60 * 1000;
+    this.groupConfigManager = GroupConfigManager.getInstance();
   }
 
   isPending(userId: number): boolean {
@@ -115,6 +118,11 @@ export class SalesEntryFlow {
       return false;
     }
 
+    // Only process messages from configured sales group chats
+    if (!this.groupConfigManager.isSalesGroupChat(chatId)) {
+      return false;
+    }
+
     await this.repository.logAudit({
       timestamp: new Date(),
       action: 'header_received',
@@ -178,6 +186,8 @@ export class SalesEntryFlow {
   }
 
   private async saveEntry(pending: PendingSalesEntry, note: string | null, ctx: Context): Promise<void> {
+    const groupId = this.groupConfigManager.getGroupIdFromChatId(pending.chatId);
+
     const leadEvent: LeadEventDocument = {
       date: pending.header.date,
       customer: {
@@ -189,6 +199,7 @@ export class SalesEntryFlow {
       status_text: null,
       reason_code: pending.reasonCode ?? null,
       note,
+      group_id: groupId,
       source: {
         telegram_msg_id: String(pending.sourceMessageId),
         model: pending.sourceModel || 'header-form'
@@ -208,7 +219,7 @@ export class SalesEntryFlow {
       parsed_result: leadEvent
     });
 
-    Logger.info(`Saved lead event from header for ${pending.header.phone}`);
+    Logger.info(`Saved lead event from header for ${pending.header.phone} (group: ${groupId})`);
   }
 
   private getHeaderFormatHelp(error?: string): string {

@@ -1,15 +1,28 @@
 import * as cron from 'node-cron';
 import { JpgReportGenerator } from '../reports/jpg-report';
 import { Logger } from '../utils/logger';
+import { ReportDataService } from '../reports/data-service';
 
 export class DailyScheduler {
   private jpgGenerator: JpgReportGenerator;
+  private dataService: ReportDataService;
   private telegramChatId: string;
+  private groupId?: string;
+  private groupName?: string;
   private sendReportCallback?: (chatId: string, buffer: Buffer, filename: string) => Promise<void>;
 
-  constructor(telegramChatId: string) {
+  constructor(telegramChatId: string, groupId?: string, groupName?: string) {
     this.jpgGenerator = new JpgReportGenerator();
+    this.dataService = new ReportDataService();
     this.telegramChatId = telegramChatId;
+
+    if (groupId !== undefined) {
+      this.groupId = groupId;
+    }
+
+    if (groupName !== undefined) {
+      this.groupName = groupName;
+    }
   }
 
   public setSendReportCallback(callback: (chatId: string, buffer: Buffer, filename: string) => Promise<void>): void {
@@ -23,14 +36,35 @@ export class DailyScheduler {
       yesterday.setDate(yesterday.getDate() - 1);
       const dateString = yesterday.toISOString().split('T')[0]; // YYYY-MM-DD format
 
-      Logger.info(`Generating scheduled daily report for ${dateString}`);
+      const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
+      Logger.info(`Generating scheduled daily report for ${dateString}${groupInfo}`);
 
-      const reportBuffer = await this.jpgGenerator.generateDailyReport(dateString);
-      const filename = `daily-report-${dateString}.jpg`;
+      // Check if there are any sales reports from yesterday for this group
+      const leadEvents = await this.dataService.getDailyLeadEvents(dateString, this.groupId);
+
+      if (leadEvents.length === 0) {
+        const noReportMsg = this.groupId
+          ? `No sales report from yesterday (${dateString}) for ${this.groupName || this.groupId}`
+          : `No sales report from yesterday (${dateString})`;
+        Logger.warn(noReportMsg);
+      } else {
+        const foundMsg = this.groupId
+          ? `Found ${leadEvents.length} sales case(s) for ${dateString} in ${this.groupName || this.groupId}`
+          : `Found ${leadEvents.length} sales case(s) for ${dateString}`;
+        Logger.info(foundMsg);
+      }
+
+      const reportBuffer = await this.jpgGenerator.generateDailyReport(dateString, this.groupId);
+      const filename = this.groupId
+        ? `daily-report-${dateString}-${this.groupId}.jpg`
+        : `daily-report-${dateString}.jpg`;
 
       if (this.sendReportCallback) {
         await this.sendReportCallback(this.telegramChatId, reportBuffer, filename);
-        Logger.info(`Daily report sent to Telegram chat: ${this.telegramChatId}`);
+        const sentMsg = this.groupId
+          ? `Daily report sent to ${this.groupName || this.groupId} chat: ${this.telegramChatId}`
+          : `Daily report sent to Telegram chat: ${this.telegramChatId}`;
+        Logger.info(sentMsg);
       } else {
         Logger.warn('No send report callback configured');
       }
@@ -43,30 +77,41 @@ export class DailyScheduler {
   public startScheduler(): void {
     // Schedule daily report at 11:59 PM (23:59)
     cron.schedule('59 23 * * *', () => {
-      Logger.info('Daily report scheduled task triggered');
+      const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
+      Logger.info(`Daily report scheduled task triggered${groupInfo}`);
       this.generateAndSendDailyReport();
     }, {
       scheduled: true,
       timezone: process.env.TIMEZONE || 'Asia/Kuala_Lumpur'
     });
 
-    Logger.info('Daily report scheduler started - will send reports at 11:59 PM daily');
+    const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
+    Logger.info(`Daily report scheduler started - will send reports at 11:59 PM daily${groupInfo}`);
     Logger.info(`Timezone: ${process.env.TIMEZONE || 'Asia/Kuala_Lumpur'}`);
-    Logger.info(`Target audit chat ID: ${this.telegramChatId}`);
+    const chatInfo = this.groupId
+      ? `Target ${this.groupName || this.groupId} chat ID: ${this.telegramChatId}`
+      : `Target audit chat ID: ${this.telegramChatId}`;
+    Logger.info(chatInfo);
   }
 
   public async sendManualReport(date?: string): Promise<void> {
     const targetDate = date || new Date().toISOString().split('T')[0];
 
-    Logger.info(`Generating manual daily report for ${targetDate}`);
+    const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
+    Logger.info(`Generating manual daily report for ${targetDate}${groupInfo}`);
 
     try {
-      const reportBuffer = await this.jpgGenerator.generateDailyReport(targetDate);
-      const filename = `daily-report-${targetDate}.jpg`;
+      const reportBuffer = await this.jpgGenerator.generateDailyReport(targetDate, this.groupId);
+      const filename = this.groupId
+        ? `daily-report-${targetDate}-${this.groupId}.jpg`
+        : `daily-report-${targetDate}.jpg`;
 
       if (this.sendReportCallback) {
         await this.sendReportCallback(this.telegramChatId, reportBuffer, filename);
-        Logger.info(`Manual daily report sent for ${targetDate}`);
+        const sentMsg = this.groupId
+          ? `Manual daily report sent for ${targetDate} to ${this.groupName || this.groupId}`
+          : `Manual daily report sent for ${targetDate}`;
+        Logger.info(sentMsg);
       } else {
         Logger.warn('No send report callback configured');
       }

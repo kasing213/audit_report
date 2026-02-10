@@ -10,6 +10,7 @@ export interface LeadEventDocument {
   status_text: string | null;
   reason_code?: string | null;
   note?: string | null;
+  group_id?: string | null;
   source: {
     telegram_msg_id: string;
     model: string;

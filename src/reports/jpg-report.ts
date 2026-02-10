@@ -54,11 +54,14 @@ export class JpgReportGenerator {
     return template(templateData);
   }
 
-  public async generateDailyReport(date: string): Promise<Buffer> {
+  public async generateDailyReport(date: string, groupId?: string): Promise<Buffer> {
     try {
-      Logger.info(`Generating daily JPG report for ${date}`);
+      const logMessage = groupId
+        ? `Generating daily JPG report for ${date} (group: ${groupId})`
+        : `Generating daily JPG report for ${date}`;
+      Logger.info(logMessage);
 
-      const leadEvents = await this.dataService.getDailyLeadEvents(date);
+      const leadEvents = await this.dataService.getDailyLeadEvents(date, groupId);
       const html = await this.generateHtml(leadEvents, date);
 
       const browser = await puppeteer.launch({
@@ -83,7 +86,10 @@ export class JpgReportGenerator {
 
       await browser.close();
 
-      Logger.info(`Daily JPG report generated successfully for ${date}`);
+      const successMessage = groupId
+        ? `Daily JPG report generated successfully for ${date} (group: ${groupId})`
+        : `Daily JPG report generated successfully for ${date}`;
+      Logger.info(successMessage);
       return screenshot as Buffer;
 
     } catch (error) {
@@ -92,10 +98,12 @@ export class JpgReportGenerator {
     }
   }
 
-  public async saveDailyReport(date: string, outputPath?: string): Promise<string> {
-    const screenshot = await this.generateDailyReport(date);
+  public async saveDailyReport(date: string, outputPath?: string, groupId?: string): Promise<string> {
+    const screenshot = await this.generateDailyReport(date, groupId);
 
-    const fileName = `daily-report-${date}.jpg`;
+    const fileName = groupId
+      ? `daily-report-${date}-${groupId}.jpg`
+      : `daily-report-${date}.jpg`;
     const filePath = outputPath ? path.join(outputPath, fileName) : fileName;
 
     await fs.writeFile(filePath, screenshot);

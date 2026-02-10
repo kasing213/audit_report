@@ -4,6 +4,7 @@ import { DailyScheduler } from './scheduler/daily-scheduler';
 import { MonthlyScheduler } from './scheduler/monthly-scheduler';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
+import { GroupConfigManager } from './utils/group-config';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -29,15 +30,37 @@ async function main(): Promise<void> {
     await telegramBot.start();
     Logger.info('Telegram bot started successfully');
 
-    // Setup daily report scheduler
+    // Setup daily report schedulers for sales groups
+    const groupConfigManager = GroupConfigManager.getInstance();
+    const activeGroups = groupConfigManager.getAllActiveGroups();
+    const dailySchedulers: DailyScheduler[] = [];
+
+    if (activeGroups.length > 0) {
+      Logger.info(`Setting up daily schedulers for ${activeGroups.length} sales group(s):`);
+
+      for (const group of activeGroups) {
+        const groupScheduler = new DailyScheduler(group.chatId, group.groupId, group.name);
+        groupScheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string) => {
+          await telegramBot.sendPhoto(chatId, buffer, filename);
+        });
+        groupScheduler.startScheduler();
+        dailySchedulers.push(groupScheduler);
+        Logger.info(`- ${group.name} (${group.groupId}): Chat ID ${group.chatId}`);
+      }
+    } else {
+      Logger.warn('No sales group chat IDs configured - group-specific daily reports disabled');
+    }
+
+    // Setup audit daily report scheduler (consolidated view)
     const auditChatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
     if (auditChatId) {
-      const dailyScheduler = new DailyScheduler(auditChatId);
-      dailyScheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string) => {
+      const auditDailyScheduler = new DailyScheduler(auditChatId);
+      auditDailyScheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string) => {
         await telegramBot.sendPhoto(chatId, buffer, filename);
       });
-      dailyScheduler.startScheduler();
-      Logger.info(`- Daily Reports: Enabled (Audit Chat ID: ${auditChatId})`);
+      auditDailyScheduler.startScheduler();
+      dailySchedulers.push(auditDailyScheduler);
+      Logger.info(`- Audit Daily Reports: Enabled (Audit Chat ID: ${auditChatId})`);
 
       // Setup monthly report scheduler
       const monthlyScheduler = new MonthlyScheduler(auditChatId);
@@ -47,14 +70,25 @@ async function main(): Promise<void> {
       monthlyScheduler.startScheduler();
       Logger.info(`- Monthly Reports: Enabled (Audit Chat ID: ${auditChatId})`);
     } else {
-      Logger.warn('AUDIT_CHAT_ID not set - daily and monthly reports disabled');
+      Logger.warn('AUDIT_CHAT_ID not set - audit daily and monthly reports disabled');
     }
 
     Logger.info('Audit Sales System is running...');
-    Logger.info('- Telegram Bot: Active (Commands: /help, /customers, /report)');
+    Logger.info('- Telegram Bot: Active (Commands: /help, /customers, /summary, /report)');
     Logger.info('- API Server: http://localhost:3001');
+
+    const totalSchedulers = activeGroups.length + (auditChatId ? 1 : 0);
+    if (totalSchedulers > 0) {
+      Logger.info(`- Daily Reports: 11:59 PM → JPG images (${totalSchedulers} scheduler(s))`);
+      if (activeGroups.length > 0) {
+        Logger.info(`  • ${activeGroups.length} group-specific reports`);
+      }
+      if (auditChatId) {
+        Logger.info('  • 1 consolidated audit report');
+      }
+    }
+
     if (auditChatId) {
-      Logger.info('- Daily Reports: 11:59 PM → JPG images');
       Logger.info('- Monthly Reports: 1st day 12:01 AM → Excel files');
     }
 

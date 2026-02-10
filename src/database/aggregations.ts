@@ -109,18 +109,26 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
  * Used for Excel export "Cases Summary" sheet
  * @param year Year number (e.g., 2025)
  * @param month Month number (1-12)
+ * @param groupId Optional group ID to filter by specific group
  * @returns MongoDB aggregation pipeline
  */
-export function buildMonthlyCasesSummaryPipeline(year: number, month: number): Document[] {
+export function buildMonthlyCasesSummaryPipeline(year: number, month: number, groupId?: string): Document[] {
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const { startDate, endDate } = getMonthDateRange(monthStr);
 
+  const matchStage: any = {
+    date: { $gte: startDate, $lte: endDate }
+  };
+
+  // Add group filter if specified
+  if (groupId) {
+    matchStage.group_id = groupId;
+  }
+
   return [
-    // Stage 1: Filter by month (all followers)
+    // Stage 1: Filter by month and optionally by group
     {
-      $match: {
-        date: { $gte: startDate, $lte: endDate }
-      }
+      $match: matchStage
     },
 
     // Stage 2: Sort by phone, then date/time

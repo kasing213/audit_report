@@ -4,6 +4,7 @@ import { SalesCaseRepository } from '../database/repository';
 import { CustomersCommand } from './commands/customers-command';
 import { HelpCommand } from './commands/help-command';
 import { ReportCommand } from './commands/report-command';
+import { SummaryCommand } from './commands/summary-command';
 import { SalesEntryFlow } from './flows/sales-entry-flow';
 import dotenv from 'dotenv';
 
@@ -15,6 +16,7 @@ export class TelegrafBotService {
   private customersCommand: CustomersCommand;
   private helpCommand: HelpCommand;
   private reportCommand: ReportCommand;
+  private summaryCommand: SummaryCommand;
   private salesEntryFlow: SalesEntryFlow;
 
   constructor() {
@@ -29,6 +31,7 @@ export class TelegrafBotService {
     this.customersCommand = new CustomersCommand(this.repository);
     this.helpCommand = new HelpCommand();
     this.reportCommand = new ReportCommand();
+    this.summaryCommand = new SummaryCommand();
     this.salesEntryFlow = new SalesEntryFlow(this.repository);
     this.setupHandlers();
   }
@@ -61,6 +64,16 @@ export class TelegrafBotService {
       } catch (error) {
         Logger.error('Error handling /report command', error as Error);
         await ctx.reply('Failed to process report request.');
+      }
+    });
+
+    // /summary command
+    this.bot.command('summary', async (ctx: Context) => {
+      try {
+        await this.summaryCommand.handleCommand(ctx);
+      } catch (error) {
+        Logger.error('Error handling /summary command', error as Error);
+        await ctx.reply('Failed to process summary request.');
       }
     });
 

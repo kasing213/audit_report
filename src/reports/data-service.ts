@@ -8,19 +8,25 @@ export class ReportDataService {
     this.repository = new SalesCaseRepository();
   }
 
-  public async getDailyLeadEvents(date: string): Promise<LeadEventDocument[]> {
+  public async getDailyLeadEvents(date: string, groupId?: string): Promise<LeadEventDocument[]> {
     try {
       // Query by date field directly
       const db = this.repository['db'];
       const collection = db.getDb().collection<LeadEventDocument>('leads_events');
-      return await collection.find({ date }).toArray();
+
+      const query: any = { date };
+      if (groupId) {
+        query.group_id = groupId;
+      }
+
+      return await collection.find(query).toArray();
     } catch (error) {
       console.error('Error fetching daily lead events:', error);
       return [];
     }
   }
 
-  public async getMonthlyLeadEvents(year: number, month: number): Promise<LeadEventDocument[]> {
+  public async getMonthlyLeadEvents(year: number, month: number, groupId?: string): Promise<LeadEventDocument[]> {
     try {
       const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
       // Calculate last day of month
@@ -29,28 +35,34 @@ export class ReportDataService {
 
       const db = this.repository['db'];
       const collection = db.getDb().collection<LeadEventDocument>('leads_events');
-      return await collection.find({
+
+      const query: any = {
         date: { $gte: startDate, $lte: endDate }
-      }).toArray();
+      };
+      if (groupId) {
+        query.group_id = groupId;
+      }
+
+      return await collection.find(query).toArray();
     } catch (error) {
       console.error('Error fetching monthly lead events:', error);
       return [];
     }
   }
 
-  public async getMonthlyCasesSummary(year: number, month: number): Promise<CustomerCase[]> {
+  public async getMonthlyCasesSummary(year: number, month: number, groupId?: string): Promise<CustomerCase[]> {
     try {
-      return await this.repository.getMonthlyCasesSummary(year, month);
+      return await this.repository.getMonthlyCasesSummary(year, month, groupId);
     } catch (error) {
       console.error('Error fetching monthly cases summary:', error);
       return [];
     }
   }
 
-  public async getMonthlyLeadEventsByString(monthString: string): Promise<LeadEventDocument[]> {
+  public async getMonthlyLeadEventsByString(monthString: string, groupId?: string): Promise<LeadEventDocument[]> {
     try {
       const [year, month] = monthString.split('-').map(Number);
-      return await this.getMonthlyLeadEvents(year, month);
+      return await this.getMonthlyLeadEvents(year, month, groupId);
     } catch (error) {
       console.error('Error parsing month string:', error);
       return [];
