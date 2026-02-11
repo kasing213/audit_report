@@ -3,22 +3,65 @@ import { Logger } from '../../utils/logger';
 
 export class HelpCommand {
 
-  async handleCommand(ctx: Context): Promise<void> {
+  async handleCommand(ctx: Context, isSalesChat: boolean = false): Promise<void> {
     const userId = ctx.from?.id || 0;
     const chatId = ctx.chat?.id;
 
     try {
-      Logger.info(`Help command requested by user ${userId} in chat ${chatId}`);
+      Logger.info(`Help command requested by user ${userId} in chat ${chatId} (sales: ${isSalesChat})`);
 
-      // Only show help in summary chat - command restriction is handled in telegraf-bot.ts
-      const helpText = this.buildManagementHelpMessage();
+      const helpText = isSalesChat
+        ? this.buildSalesHelpMessage()
+        : this.buildManagementHelpMessage();
       await ctx.reply(helpText, { parse_mode: 'Markdown' });
 
-      Logger.info(`Management help message sent to user ${userId}`);
+      Logger.info(`${isSalesChat ? 'Sales' : 'Management'} help message sent to user ${userId}`);
     } catch (error) {
       Logger.error('Error handling /help command', error as Error);
       await ctx.reply('Failed to display help information.');
     }
+  }
+
+  private buildSalesHelpMessage(): string {
+    return [
+      '📋 *មគ្គុទេសក៍បញ្ចូលទិន្នន័យការលក់*',
+      '',
+      '🔸 *របៀបបញ្ចូលទិន្នន័យអតិថិជន*',
+      '',
+      'សូមផ្ញើសារតាមទម្រង់ HDR ដូចខាងក្រោម៖',
+      '',
+      '```',
+      'HDR',
+      'DATE: 2025-01-16',
+      'NAME: ឈ្មោះអតិថិជន',
+      'PHONE: 012345678',
+      'PAGE: Facebook',
+      'FOLLOWER: ឈ្មោះអ្នកតាមដាន',
+      '```',
+      '',
+      '🔸 *ការពន្យល់វាល*',
+      '',
+      '• *DATE* - កាលបរិច្ឆេទ (YYYY-MM-DD)',
+      '• *NAME* - ឈ្មោះអតិថិជន',
+      '• *PHONE* - លេខទូរស័ព្ទអតិថិជន',
+      '• *PAGE* - ប្រភព (Facebook, TikTok, ...)',
+      '• *FOLLOWER* - ឈ្មោះអ្នកទទួលខុសត្រូវ',
+      '',
+      '🔸 *ជំហានបន្ទាប់ពីបញ្ចូល HDR*',
+      '',
+      '1️⃣ ជ្រើសរើស *លេខកូដមូលហេតុ* (A–J) ពីក្ដារចុច',
+      '2️⃣ បន្ថែម *ចំណាំ* ឬវាយ `-` ដើម្បីរំលង',
+      '3️⃣ ទិន្នន័យត្រូវបានរក្សាទុកដោយស្វ័យប្រវត្តិ ✅',
+      '',
+      '⚠️ *ចំណាំសំខាន់*',
+      '',
+      '• សូមបំពេញគ្រប់វាលឲ្យបានត្រឹមត្រូវ',
+      '• បើខកខានបំពេញ ប្រព័ន្ធនឹងប្រាប់កំហុស',
+      '• ទិន្នន័យផុតកំណត់ក្នុង ៥ នាទី បើមិនបំពេញ',
+      '',
+      '---',
+      '💡 *បញ្ចូលទិន្នន័យម្តងមួយអតិថិជន ដើម្បីភាពត្រឹមត្រូវ*'
+    ].join('\n');
   }
 
   private buildManagementHelpMessage(): string {
@@ -57,8 +100,8 @@ export class HelpCommand {
       '• កន្លែងសម្រាប់អ្នកគ្រប់គ្រង និង CRM',
       '',
       '🏢 *ក្រុម Sales* (7 ក្រុម)',
-      '• ខាស់សម្រាប់បញ្ចូលទិន្នន័យ HDR តែប៉ុណ្ណោះ',
-      '• គ្មានពាក្យបញ្ជាទេ - ទិន្នន័យតែប៉ុណ្ណោះ',
+      '• សម្រាប់បញ្ចូលទិន្នន័យ HDR',
+      '• វាយ `/help` ក្នុងក្រុម Sales ដើម្បីមើលមគ្គុទេសក៍',
       '• SreySros, Bery, Theary, Seyi, Pheaktra, Borey, Pisey',
       '',
       '🔸 *ព័ត៌មានប្រព័ន្ធ*',

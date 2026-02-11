@@ -40,14 +40,12 @@ export class TelegrafBotService {
   }
 
   private setupHandlers(): void {
-    // /help command - only in summary chat
+    // /help command - available in all chats (sales guide or management help)
     this.bot.command('help', async (ctx: Context) => {
       try {
-        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
-          return;
-        }
-        await this.helpCommand.handleCommand(ctx);
+        const chatId = ctx.chat?.id || 0;
+        const isSalesChat = this.groupConfigManager.isSalesGroupChat(chatId);
+        await this.helpCommand.handleCommand(ctx, isSalesChat);
       } catch (error) {
         Logger.error('Error handling /help command', error as Error);
         await ctx.reply('Failed to display help information.');
