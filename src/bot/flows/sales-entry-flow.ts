@@ -1,7 +1,6 @@
 import { Context, Markup } from 'telegraf';
 import { SalesCaseRepository } from '../../database/repository';
 import { LeadEventDocument } from '../../database/models';
-import { HeaderFormData, HeaderFormParser } from '../../parser/header-form-parser';
 import {
   buildReasonKeyboardRows,
   buildReasonPrompt,
@@ -17,7 +16,7 @@ interface PendingSalesEntry {
   chatId: number;
   userId: number;
   username?: string;
-  header: HeaderFormData;
+  header: { date: string; name: string; phone: string; page: string; follower: string };
   step: SalesEntryStep;
   reasonCode?: ReasonCode;
   expiresAt: number;
@@ -27,14 +26,12 @@ interface PendingSalesEntry {
 
 export class SalesEntryFlow {
   private repository: SalesCaseRepository;
-  private headerParser: HeaderFormParser;
   private pendingEntries: Map<number, PendingSalesEntry>;
   private ttlMs: number;
   private groupConfigManager: GroupConfigManager;
 
   constructor(repository: SalesCaseRepository) {
     this.repository = repository;
-    this.headerParser = new HeaderFormParser();
     this.pendingEntries = new Map();
     this.ttlMs = 5 * 60 * 1000;
     this.groupConfigManager = GroupConfigManager.getInstance();
@@ -256,65 +253,6 @@ export class SalesEntryFlow {
     return false;
   }
 
-  async tryStartFromHeader(ctx: Context, text: string): Promise<boolean> {
-    if (text.trim().startsWith('/')) {
-      return false;
-    }
-
-    const userId = ctx.from?.id;
-    const chatId = ctx.chat?.id;
-    if (!userId || chatId === undefined) {
-      return false;
-    }
-
-    // Only process messages from configured sales group chats
-    if (!this.groupConfigManager.isSalesGroupChat(chatId)) {
-      return false;
-    }
-
-    await this.repository.logAudit({
-      timestamp: new Date(),
-      action: 'header_received',
-      message_id: ctx.message && 'message_id' in ctx.message ? ctx.message.message_id : 0,
-      user_id: userId,
-      username: ctx.from?.username,
-      original_message: text,
-      parsed_result: null
-    });
-
-    const headerResult = await this.headerParser.parse(text);
-
-    await this.repository.logAudit({
-      timestamp: new Date(),
-      action: 'header_parsed',
-      message_id: ctx.message && 'message_id' in ctx.message ? ctx.message.message_id : 0,
-      user_id: userId,
-      username: ctx.from?.username,
-      original_message: text,
-      parsed_result: headerResult
-    });
-
-    if (!headerResult.valid || !headerResult.data) {
-      await ctx.reply(this.getHeaderFormatHelp(headerResult.error));
-      return true;
-    }
-
-    const pending: PendingSalesEntry = {
-      chatId,
-      userId,
-      ...(ctx.from?.username && { username: ctx.from.username }),
-      header: headerResult.data,
-      step: 'awaiting_reason',
-      expiresAt: Date.now() + this.ttlMs,
-      sourceMessageId: ctx.message && 'message_id' in ctx.message ? ctx.message.message_id : 0,
-      ...(headerResult.model && { sourceModel: headerResult.model })
-    };
-
-    this.pendingEntries.set(userId, pending);
-    await this.sendReasonPrompt(ctx);
-    return true;
-  }
-
   private async sendReasonPrompt(ctx: Context): Promise<void> {
     const keyboard = Markup.keyboard(buildReasonKeyboardRows()).resize();
     await ctx.reply(buildReasonPrompt(), keyboard);
@@ -351,7 +289,7 @@ export class SalesEntryFlow {
       group_id: groupId,
       source: {
         telegram_msg_id: String(pending.sourceMessageId),
-        model: pending.sourceModel || 'header-form'
+        model: pending.sourceModel || 'add-command'
       },
       created_at: new Date()
     };
@@ -402,24 +340,4 @@ export class SalesEntryFlow {
     };
   }
 
-  private getHeaderFormatHelp(error?: string): string {
-    const lines = [
-      '❌ Invalid HDR format.',
-      error ? `Error: ${error}` : null,
-      '',
-      'សូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យម្តងមួយជំហាន',
-      '',
-      'ឬប្រើទម្រង់ HDR:',
-      '```',
-      'HDR',
-      'DATE: YYYY-MM-DD',
-      'NAME: Customer Name',
-      'PHONE: Contact Number',
-      'PAGE: Source Page',
-      'FOLLOWER: Staff Name',
-      '```'
-    ].filter(Boolean) as string[];
-
-    return lines.join('\n');
-  }
 }

@@ -133,8 +133,6 @@ export class TelegrafBotService {
             if (handled) return;
           }
 
-          const started = await this.salesEntryFlow.tryStartFromHeader(ctx, text);
-          if (started) return;
         }
       } catch (error) {
         Logger.error('Error handling message', error as Error);
