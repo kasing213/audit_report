@@ -11,7 +11,7 @@ import {
 import { Logger } from '../../utils/logger';
 import { GroupConfigManager } from '../../utils/group-config';
 
-type SalesEntryStep = 'awaiting_reason' | 'awaiting_note';
+type SalesEntryStep = 'awaiting_date' | 'awaiting_name' | 'awaiting_phone' | 'awaiting_page' | 'awaiting_reason' | 'awaiting_note';
 
 interface PendingSalesEntry {
   chatId: number;
@@ -44,6 +44,46 @@ export class SalesEntryFlow {
     return this.pendingEntries.has(userId);
   }
 
+  async startAddFlow(ctx: Context): Promise<boolean> {
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+    if (!userId || chatId === undefined) {
+      return false;
+    }
+
+    if (!this.groupConfigManager.isSalesGroupChat(chatId)) {
+      return false;
+    }
+
+    const pending: PendingSalesEntry = {
+      chatId,
+      userId,
+      ...(ctx.from?.username && { username: ctx.from.username }),
+      header: { date: '', name: '', phone: '', page: '', follower: '' },
+      step: 'awaiting_date',
+      expiresAt: Date.now() + this.ttlMs,
+      sourceMessageId: ctx.message && 'message_id' in ctx.message ? ctx.message.message_id : 0,
+      sourceModel: 'add-command'
+    };
+
+    this.pendingEntries.set(userId, pending);
+
+    await this.repository.logAudit({
+      timestamp: new Date(),
+      action: 'add_command_started',
+      message_id: pending.sourceMessageId,
+      user_id: userId,
+      username: ctx.from?.username,
+      original_message: '/add',
+      parsed_result: null
+    });
+
+    const today = new Date();
+    const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    await ctx.reply(`📅 សូមបញ្ចូលកាលបរិច្ឆេទ (YYYY-MM-DD):\nឧទាហរណ៍: ${todayStr}`);
+    return true;
+  }
+
   async handlePending(ctx: Context, text: string): Promise<boolean> {
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
@@ -58,7 +98,54 @@ export class SalesEntryFlow {
 
     if (pending.chatId !== chatId || pending.expiresAt < Date.now()) {
       this.pendingEntries.delete(userId);
-      await ctx.reply('Entry expired. Please resend the header form.', Markup.removeKeyboard());
+      await ctx.reply('⏰ ផុតកំណត់ហើយ។ សូមវាយ /add ម្តងទៀត។', Markup.removeKeyboard());
+      return true;
+    }
+
+    if (pending.step === 'awaiting_date') {
+      const trimmed = text.trim();
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+        await ctx.reply('❌ ទម្រង់មិនត្រឹមត្រូវ។ សូមបញ្ចូល: YYYY-MM-DD\nឧទាហរណ៍: 2026-02-11');
+        return true;
+      }
+      pending.header.date = trimmed;
+      pending.step = 'awaiting_name';
+      pending.expiresAt = Date.now() + this.ttlMs;
+      this.pendingEntries.set(userId, pending);
+      await ctx.reply('👤 សូមបញ្ចូលឈ្មោះអតិថិជន:');
+      return true;
+    }
+
+    if (pending.step === 'awaiting_name') {
+      pending.header.name = text.trim();
+      pending.step = 'awaiting_phone';
+      pending.expiresAt = Date.now() + this.ttlMs;
+      this.pendingEntries.set(userId, pending);
+      await ctx.reply('📞 សូមបញ្ចូលលេខទូរស័ព្ទ:');
+      return true;
+    }
+
+    if (pending.step === 'awaiting_phone') {
+      pending.header.phone = text.trim();
+      pending.step = 'awaiting_page';
+      pending.expiresAt = Date.now() + this.ttlMs;
+      this.pendingEntries.set(userId, pending);
+      await ctx.reply('📄 សូមបញ្ចូលប្រភព (Facebook, TikTok, Sun TV, ...):');
+      return true;
+    }
+
+    if (pending.step === 'awaiting_page') {
+      pending.header.page = text.trim();
+
+      // Auto-set follower from group name
+      const groupId = this.groupConfigManager.getGroupIdFromChatId(chatId);
+      const groupConfig = groupId ? this.groupConfigManager.getGroupConfig(groupId) : null;
+      pending.header.follower = groupConfig?.name || 'Unknown';
+
+      pending.step = 'awaiting_reason';
+      pending.expiresAt = Date.now() + this.ttlMs;
+      this.pendingEntries.set(userId, pending);
+      await this.sendReasonPrompt(ctx);
       return true;
     }
 
@@ -72,6 +159,7 @@ export class SalesEntryFlow {
 
       pending.reasonCode = reasonCode;
       pending.step = 'awaiting_note';
+      pending.expiresAt = Date.now() + this.ttlMs;
       this.pendingEntries.set(userId, pending);
 
       await this.repository.logAudit({
@@ -100,7 +188,7 @@ export class SalesEntryFlow {
       const note = this.normalizeNote(text);
       await this.saveEntry(pending, note, ctx);
       this.pendingEntries.delete(userId);
-      await ctx.reply('✅ Data saved successfully', Markup.removeKeyboard());
+      await ctx.reply('✅ ទិន្នន័យបានរក្សាទុកដោយជោគជ័យ', Markup.removeKeyboard());
       return true;
     }
 
@@ -219,7 +307,7 @@ export class SalesEntryFlow {
       parsed_result: leadEvent
     });
 
-    Logger.info(`Saved lead event from header for ${pending.header.phone} (group: ${groupId})`);
+    Logger.info(`Saved lead event for ${pending.header.phone} (group: ${groupId}, source: ${pending.sourceModel})`);
   }
 
   private getHeaderFormatHelp(error?: string): string {
@@ -227,7 +315,9 @@ export class SalesEntryFlow {
       '❌ Invalid HDR format.',
       error ? `Error: ${error}` : null,
       '',
-      'Please use this exact format:',
+      'សូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យម្តងមួយជំហាន',
+      '',
+      'ឬប្រើទម្រង់ HDR:',
       '```',
       'HDR',
       'DATE: YYYY-MM-DD',

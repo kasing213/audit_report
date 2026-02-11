@@ -52,11 +52,11 @@ export class TelegrafBotService {
       }
     });
 
-    // /customers command - only in summary chat
+    // /customers command - only in summary/audit chat
     this.bot.command('customers', async (ctx: Context) => {
       try {
         if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
           return;
         }
         await this.customersCommand.handleCommand(ctx);
@@ -66,11 +66,11 @@ export class TelegrafBotService {
       }
     });
 
-    // /report command - only in summary chat
+    // /report command - only in summary/audit chat
     this.bot.command('report', async (ctx: Context) => {
       try {
         if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
           return;
         }
         await this.reportCommand.handleCommand(ctx);
@@ -80,17 +80,32 @@ export class TelegrafBotService {
       }
     });
 
-    // /summary command - only in summary chat
+    // /summary command - only in summary/audit chat
     this.bot.command('summary', async (ctx: Context) => {
       try {
         if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
           return;
         }
         await this.summaryCommand.handleCommand(ctx);
       } catch (error) {
         Logger.error('Error handling /summary command', error as Error);
         await ctx.reply('Failed to process summary request.');
+      }
+    });
+
+    // /add command - only in sales group chats
+    this.bot.command('add', async (ctx: Context) => {
+      try {
+        const chatId = ctx.chat?.id || 0;
+        if (!this.groupConfigManager.isSalesGroupChat(chatId)) {
+          await ctx.reply('❌ /add អាចប្រើបានតែក្នុងក្រុម Sales ប៉ុណ្ណោះ');
+          return;
+        }
+        await this.salesEntryFlow.startAddFlow(ctx);
+      } catch (error) {
+        Logger.error('Error handling /add command', error as Error);
+        await ctx.reply('Failed to start data entry.');
       }
     });
 

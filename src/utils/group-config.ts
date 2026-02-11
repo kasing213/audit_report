@@ -100,7 +100,13 @@ export class GroupConfigManager {
     return summaryChatId ? chatIdStr === summaryChatId : false;
   }
 
+  public isAuditChat(chatId: string | number): boolean {
+    const chatIdStr = String(chatId);
+    const auditChatId = process.env.AUDIT_CHAT_ID;
+    return auditChatId ? chatIdStr === auditChatId : false;
+  }
+
   public isCommandAllowedInChat(chatId: string | number): boolean {
-    return this.isManagementSummaryChat(chatId);
+    return this.isManagementSummaryChat(chatId) || this.isAuditChat(chatId);
   }
 }
