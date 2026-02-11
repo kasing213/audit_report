@@ -100,7 +100,7 @@ export class SalesEntryFlow {
       const note = this.normalizeNote(text);
       await this.saveEntry(pending, note, ctx);
       this.pendingEntries.delete(userId);
-      await ctx.reply('Saved.', Markup.removeKeyboard());
+      await ctx.reply('✅ Data saved successfully', Markup.removeKeyboard());
       return true;
     }
 
@@ -224,16 +224,18 @@ export class SalesEntryFlow {
 
   private getHeaderFormatHelp(error?: string): string {
     const lines = [
-      'Invalid header format.',
-      error ? `Reason: ${error}` : null,
+      '❌ Invalid HDR format.',
+      error ? `Error: ${error}` : null,
       '',
-      'Use this exact format:',
+      'Please use this exact format:',
+      '```',
       'HDR',
       'DATE: YYYY-MM-DD',
       'NAME: Customer Name',
-      'PHONE: Contact',
+      'PHONE: Contact Number',
       'PAGE: Source Page',
-      'FOLLOWER: Staff Name'
+      'FOLLOWER: Staff Name',
+      '```'
     ].filter(Boolean) as string[];
 
     return lines.join('\n');

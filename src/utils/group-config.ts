@@ -46,6 +46,21 @@ export class GroupConfigManager {
         groupId: 'group_5',
         chatId: process.env.SALES_GROUP_5_CHAT_ID || '',
         name: process.env.SALES_GROUP_5_NAME || 'Group5'
+      },
+      {
+        groupId: 'group_6',
+        chatId: process.env.SALES_GROUP_6_CHAT_ID || '',
+        name: process.env.SALES_GROUP_6_NAME || 'Group6'
+      },
+      {
+        groupId: 'group_7',
+        chatId: process.env.SALES_GROUP_7_CHAT_ID || '',
+        name: process.env.SALES_GROUP_7_NAME || 'Group7'
+      },
+      {
+        groupId: 'group_8',
+        chatId: process.env.SALES_GROUP_8_CHAT_ID || '',
+        name: process.env.SALES_GROUP_8_NAME || 'Group8'
       }
     ];
 
@@ -73,5 +88,19 @@ export class GroupConfigManager {
   public isSalesGroupChat(chatId: string | number): boolean {
     const chatIdStr = String(chatId);
     return this.chatIdToGroupId.has(chatIdStr);
+  }
+
+  public isSalesDataEntryChat(chatId: string | number): boolean {
+    return this.isSalesGroupChat(chatId);
+  }
+
+  public isManagementSummaryChat(chatId: string | number): boolean {
+    const chatIdStr = String(chatId);
+    const summaryChatId = process.env.SUMMARY_CHAT_ID;
+    return summaryChatId ? chatIdStr === summaryChatId : false;
+  }
+
+  public isCommandAllowedInChat(chatId: string | number): boolean {
+    return this.isManagementSummaryChat(chatId);
   }
 }

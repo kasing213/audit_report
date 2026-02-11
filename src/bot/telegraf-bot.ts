@@ -6,6 +6,7 @@ import { HelpCommand } from './commands/help-command';
 import { ReportCommand } from './commands/report-command';
 import { SummaryCommand } from './commands/summary-command';
 import { SalesEntryFlow } from './flows/sales-entry-flow';
+import { GroupConfigManager } from '../utils/group-config';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -18,6 +19,7 @@ export class TelegrafBotService {
   private reportCommand: ReportCommand;
   private summaryCommand: SummaryCommand;
   private salesEntryFlow: SalesEntryFlow;
+  private groupConfigManager: GroupConfigManager;
 
   constructor() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -33,13 +35,18 @@ export class TelegrafBotService {
     this.reportCommand = new ReportCommand();
     this.summaryCommand = new SummaryCommand();
     this.salesEntryFlow = new SalesEntryFlow(this.repository);
+    this.groupConfigManager = GroupConfigManager.getInstance();
     this.setupHandlers();
   }
 
   private setupHandlers(): void {
-    // /help command
+    // /help command - only in summary chat
     this.bot.command('help', async (ctx: Context) => {
       try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
+          return;
+        }
         await this.helpCommand.handleCommand(ctx);
       } catch (error) {
         Logger.error('Error handling /help command', error as Error);
@@ -47,9 +54,13 @@ export class TelegrafBotService {
       }
     });
 
-    // /customers command
+    // /customers command - only in summary chat
     this.bot.command('customers', async (ctx: Context) => {
       try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
+          return;
+        }
         await this.customersCommand.handleCommand(ctx);
       } catch (error) {
         Logger.error('Error handling /customers command', error as Error);
@@ -57,9 +68,13 @@ export class TelegrafBotService {
       }
     });
 
-    // /report command
+    // /report command - only in summary chat
     this.bot.command('report', async (ctx: Context) => {
       try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
+          return;
+        }
         await this.reportCommand.handleCommand(ctx);
       } catch (error) {
         Logger.error('Error handling /report command', error as Error);
@@ -67,9 +82,13 @@ export class TelegrafBotService {
       }
     });
 
-    // /summary command
+    // /summary command - only in summary chat
     this.bot.command('summary', async (ctx: Context) => {
       try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ Commands not available here\nThis chat is for data entry only (HDR format)');
+          return;
+        }
         await this.summaryCommand.handleCommand(ctx);
       } catch (error) {
         Logger.error('Error handling /summary command', error as Error);

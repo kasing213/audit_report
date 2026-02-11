@@ -2,6 +2,7 @@ import { Context } from 'telegraf';
 import { Logger } from '../../utils/logger';
 
 export class HelpCommand {
+
   async handleCommand(ctx: Context): Promise<void> {
     const userId = ctx.from?.id || 0;
     const chatId = ctx.chat?.id;
@@ -9,55 +10,39 @@ export class HelpCommand {
     try {
       Logger.info(`Help command requested by user ${userId} in chat ${chatId}`);
 
-      const helpText = this.buildHelpMessage();
+      // Only show help in summary chat - command restriction is handled in telegraf-bot.ts
+      const helpText = this.buildManagementHelpMessage();
       await ctx.reply(helpText, { parse_mode: 'Markdown' });
 
-      Logger.info(`Help message sent to user ${userId}`);
+      Logger.info(`Management help message sent to user ${userId}`);
     } catch (error) {
       Logger.error('Error handling /help command', error as Error);
       await ctx.reply('Failed to display help information.');
     }
   }
 
-  private buildHelpMessage(): string {
+  private buildManagementHelpMessage(): string {
     const auditChatId = process.env.AUDIT_CHAT_ID;
     const summaryChatId = process.env.SUMMARY_CHAT_ID;
 
     return [
-      '📋 *ប្រព័ន្ធតាមដានការលក់ - មគ្គុទ្ទេសក៍ការប្រើប្រាស់*',
+      '📊 *ប្រព័ន្ធគ្រប់គ្រងការលក់ - សម្រាប់អ្នកគ្រប់គ្រង*',
       '',
-      '🔸 *ពាក្យបញ្ជាសម្រាប់បញ្ចូលទិន្នន័យលក់*',
-      '',
-      '📝 *បញ្ចូលព័ត៌មានអតិថិជន (ទម្រង់ HDR)*',
-      'សូមផ្ញើព័ត៌មានអតិថិជនតាមទម្រង់ខាងក្រោម៖',
-      '```',
-      'HDR',
-      'DATE: 2025-01-16',
-      'NAME: ឈ្មោះអតិថិជន',
-      'PHONE: 093724678',
-      'PAGE: Facebook/TikTok/ផ្សេងៗ',
-      'FOLLOWER: ឈ្មោះបុគ្គលិក',
-      '```',
-      '• បុគ្គលិកនឹងសួរសម្រាប់កូដមូលហេតុ (A-J)',
-      '• ចំណាំបន្ថែម (វាយ `-` ដើម្បីរំលង)',
-      '• គ្រប់វាលទាំងអស់គឺចាំបាច់ត្រូវបំពេញ',
-      '',
-      '🔸 *ពាក្យបញ្ជាសម្រាប់សាកសួរ*',
-      '',
-      '👥 */customers* - មើលបញ្ជីអតិថិជន',
-      '• ដំណើរការតែក្នុង Summary Chat តែប៉ុណ្ណោះ',
-      '• ទម្រង់៖ ឈ្មោះអ្នកតាមដាន ខែ(YYYY-MM)',
-      '• កំណត់ពេល៖ ១ សំណើក្នុងរយៈពេល ២ នាទី',
+      '🔸 *ពាក្យបញ្ជាសម្រាប់របាយការណ៍និងវិភាគ*',
       '',
       '📊 */summary [YYYY-MM]* - មើលសង្ខេបការលក់',
       '• ទម្រង់៖ `/summary 2025-01` ឬ `/summary` (ខែបច្ចុប្បន្ន)',
-      '• ក្រុមលក់៖ មើលតែការលក់របស់ក្រុមខ្លួនប៉ុណ្ណោះ',
-      '• ក្រុម Audit៖ មើលការលក់ទាំងអស់រួមគ្នា',
+      '• ចែកតាមក្រុម៖ ការលក់ពីក្រុមនីមួយៗ',
+      '• សំរាប់វិភាគ ROI និង CRM',
+      '',
+      '👥 */customers* - មើលបញ្ជីអតិថិជន',
+      '• ទម្រង់៖ ឈ្មោះអ្នកតាមដាន ខែ(YYYY-MM)',
+      '• កំណត់ពេល៖ ១ សំណើក្នុងរយៈពេល ២ នាទី',
       '',
       '📝 */report [YYYY-MM]* - បង្កើតរបាយការណ៍ Excel ប្រចាំខែ',
       '• ទម្រង់៖ `/report 2025-01` ឬ `/report` (ខែបច្ចុប្បន្ន)',
       '• រួមបញ្ចូល៖ ទិន្នន័យអតិថិជន + ប្រវត្តិព្រឹត្តិការណ៍ពេញលេញ',
-      '• ផ្ញើឯកសារទៅ chat ដែលសុំ',
+      '• សម្រាប់វិភាគលម្អិត',
       '',
       '🔸 *ការកំណត់កន្លែង Chat*',
       '',
@@ -67,41 +52,14 @@ export class HelpCommand {
       '• ទទួលកំណត់ត្រាសកម្មភាពទាំងអស់',
       '',
       '💬 *ក្រុម Summary* ' + (summaryChatId ? `(${summaryChatId})` : '(មិនបានកំណត់)'),
-      '• ពាក្យបញ្ជា /customers ដំណើរការនៅទីនេះតែប៉ុណ្ណោះ',
+      '• ពាក្យបញ្ជាគ្រប់គ្រងទាំងអស់ដំណើរការនៅទីនេះ',
       '• សុំរបាយការណ៍ដោយដៃ',
-      '• កន្លែងសម្រាប់អ្នកប្រើប្រាស់ធម្មតា',
+      '• កន្លែងសម្រាប់អ្នកគ្រប់គ្រង និង CRM',
       '',
-      '🔸 *ច្បាប់ទម្រង់ទិន្នន័យ*',
-      '',
-      '✅ *ឧទាហរណ៍ HDR ត្រឹមត្រូវ៖*',
-      '```',
-      'HDR',
-      'DATE: 2025-01-16',
-      'NAME: ហេង ជីតា',
-      'PHONE: 093724678',
-      'PAGE: Sun TV',
-      'FOLLOWER: ស្រី ស្រុស',
-      '```',
-      '',
-      '❌ *កំហុសញឹកញាប់៖*',
-      '• ភ្លេចបន្ទាត់ "HDR"',
-      '• ទម្រង់កាលបរិច្ឆេទមិនត្រឹមត្រូវ (ត្រូវប្រើ YYYY-MM-DD)',
-      '• បាត់វាលចាំបាច់',
-      '• មានវាលបន្ថែម ឬ ធ្វើម្តងទៀត',
-      '',
-      '🔸 *កូដមូលហេតុ (A-J)*',
-      '',
-      'បន្ទាប់ពីផ្ញើ HDR សូមជ្រើសរើសមូលហេតុមួយ៖',
-      'A - ទំនាក់ទំនង',
-      'B - ចាប់អារម្មណ៍',
-      'C - កំពុងពិចារណា',
-      'D - ធ្វើការណាត់ជួប',
-      'E - បានទៅមើល',
-      'F - កំពុងចរចារ',
-      'G - ព្រមព្រៀងទិញ',
-      'H - ចុះកុងត្រា',
-      'I - បដិសេធទិញ',
-      'J - បាត់បង់អតិថិជន',
+      '🏢 *ក្រុម Sales* (7 ក្រុម)',
+      '• ខាស់សម្រាប់បញ្ចូលទិន្នន័យ HDR តែប៉ុណ្ណោះ',
+      '• គ្មានពាក្យបញ្ជាទេ - ទិន្នន័យតែប៉ុណ្ណោះ',
+      '• SreySros, Bery, Theary, Seyi, Pheaktra, Borey, Pisey',
       '',
       '🔸 *ព័ត៌មានប្រព័ន្ធ*',
       '',
@@ -118,7 +76,7 @@ export class HelpCommand {
       'គ្រប់សកម្មភាពទាំងអស់ត្រូវបានកត់ត្រាសម្រាប់ការតាមដាន',
       '',
       '---',
-      '💡 *ការចាប់ផ្ដើមលឿន៖ ផ្ញើ HDR → ជ្រើសរើស A-J → បន្ថែមចំណាំ*'
+      '💡 *សម្រាប់អ្នកគ្រប់គ្រង៖ បញ្ជាទិន្នន័យតាមក្រុម + វិភាគ ROI*'
     ].join('\n');
   }
 }
