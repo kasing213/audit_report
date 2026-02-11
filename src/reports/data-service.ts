@@ -26,7 +26,7 @@ export class ReportDataService {
     }
   }
 
-  public async getMonthlyLeadEvents(year: number, month: number, groupId?: string): Promise<LeadEventDocument[]> {
+  public async getMonthlyLeadEvents(year: number, month: number, groupId?: string, follower?: string): Promise<LeadEventDocument[]> {
     try {
       const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;
       // Calculate last day of month
@@ -42,6 +42,9 @@ export class ReportDataService {
       if (groupId) {
         query.group_id = groupId;
       }
+      if (follower) {
+        query.follower = follower;
+      }
 
       return await collection.find(query).toArray();
     } catch (error) {
@@ -50,9 +53,9 @@ export class ReportDataService {
     }
   }
 
-  public async getMonthlyCasesSummary(year: number, month: number, groupId?: string): Promise<CustomerCase[]> {
+  public async getMonthlyCasesSummary(year: number, month: number, groupId?: string, follower?: string): Promise<CustomerCase[]> {
     try {
-      return await this.repository.getMonthlyCasesSummary(year, month, groupId);
+      return await this.repository.getMonthlyCasesSummary(year, month, groupId, follower);
     } catch (error) {
       console.error('Error fetching monthly cases summary:', error);
       return [];

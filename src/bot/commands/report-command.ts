@@ -61,13 +61,18 @@ export class ReportCommand {
 
       try {
         // Generate the Excel report
-        const excelBuffer = await this.excelGenerator.generateMonthlyReportByString(monthString);
+        const { buffer: excelBuffer, followers } = await this.excelGenerator.generateMonthlyReportByString(monthString);
 
         if (excelBuffer.length === 0) {
           throw new Error('Generated report is empty');
         }
 
         const filename = `monthly-report-${monthString}.xlsx`;
+
+        // Build dynamic sheet listing
+        const sheetList = followers.length > 0
+          ? followers.map(f => `• ${f}: Cases + Events`).join('\n')
+          : '• No follower data found';
 
         // Send the Excel file
         await ctx.replyWithDocument({
@@ -77,9 +82,8 @@ export class ReportCommand {
           caption: [
             `📊 *Monthly Report - ${monthString}*`,
             '',
-            '📋 Contains:',
-            '• Sheet 1: Customer Cases Summary',
-            '• Sheet 2: Complete Event History',
+            `📋 ${followers.length} Follower(s):`,
+            sheetList,
             '',
             `📅 Generated: ${new Date().toLocaleString()}`,
             `👤 Requested by: ${ctx.from?.username || ctx.from?.first_name || 'Unknown'}`

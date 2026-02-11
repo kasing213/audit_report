@@ -47,31 +47,59 @@ export class ExcelReportGenerator {
   }
 
 
-  public async generateMonthlyReport(year: number, month: number): Promise<Buffer> {
+  public async generateMonthlyReport(year: number, month: number): Promise<{ buffer: Buffer; followers: string[] }> {
     try {
       const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
       Logger.info(`Generating monthly Excel report for ${monthName} ${year}`);
 
-      // Fetch both case summary and event history
-      const cases: CustomerCase[] = await this.dataService.getMonthlyCasesSummary(year, month);
-      const events: LeadEventDocument[] = await this.dataService.getMonthlyLeadEvents(year, month);
+      // Fetch all case summary and event history
+      const allCases: CustomerCase[] = await this.dataService.getMonthlyCasesSummary(year, month);
+      const allEvents: LeadEventDocument[] = await this.dataService.getMonthlyLeadEvents(year, month);
+
+      // Extract unique followers
+      const followerSet = new Set<string>();
+      allEvents.forEach(e => {
+        if (e.follower) followerSet.add(e.follower);
+      });
+      allCases.forEach(c => {
+        if (c.follower) followerSet.add(c.follower);
+      });
+      const followers = Array.from(followerSet).sort();
 
       const workbook = new ExcelJS.Workbook();
       workbook.creator = 'Audit Sales System';
       workbook.created = new Date();
 
-      // Sheet 1: Case Summary
-      const casesSheet = workbook.addWorksheet('Cases Summary');
-      this.buildCasesSummarySheet(casesSheet, cases, monthName, year);
+      // Create per-follower sheets (Cases + Events for each)
+      for (const follower of followers) {
+        const followerCases = allCases.filter(c => c.follower === follower);
+        const followerEvents = allEvents.filter(e => e.follower === follower);
 
-      // Sheet 2: Event History (Audit Trail)
-      const eventsSheet = workbook.addWorksheet('Event History');
-      this.buildEventHistorySheet(eventsSheet, events, monthName, year);
+        // Truncate sheet name to fit Excel 31-char limit
+        const safeName = follower.length > 22 ? follower.substring(0, 22) : follower;
+
+        const casesSheet = workbook.addWorksheet(`Cases - ${safeName}`);
+        this.buildCasesSummarySheet(casesSheet, followerCases, monthName, year, follower);
+
+        const eventsSheet = workbook.addWorksheet(`Events - ${safeName}`);
+        this.buildEventHistorySheet(eventsSheet, followerEvents, monthName, year, follower);
+      }
+
+      // Handle events/cases with no follower assigned
+      const noFollowerCases = allCases.filter(c => !c.follower);
+      const noFollowerEvents = allEvents.filter(e => !e.follower);
+      if (noFollowerCases.length > 0 || noFollowerEvents.length > 0) {
+        const casesSheet = workbook.addWorksheet('Cases - Unassigned');
+        this.buildCasesSummarySheet(casesSheet, noFollowerCases, monthName, year, 'Unassigned');
+
+        const eventsSheet = workbook.addWorksheet('Events - Unassigned');
+        this.buildEventHistorySheet(eventsSheet, noFollowerEvents, monthName, year, 'Unassigned');
+      }
 
       const buffer = await workbook.xlsx.writeBuffer();
-      Logger.info(`Monthly Excel report generated successfully for ${monthName} ${year}`);
+      Logger.info(`Monthly Excel report generated successfully for ${monthName} ${year} with ${followers.length} follower(s)`);
 
-      return Buffer.from(buffer);
+      return { buffer: Buffer.from(buffer), followers };
 
     } catch (error) {
       Logger.error('Failed to generate Excel report', error as Error);
@@ -83,12 +111,15 @@ export class ExcelReportGenerator {
     worksheet: ExcelJS.Worksheet,
     cases: CustomerCase[],
     monthName: string,
-    year: number
+    year: number,
+    followerName?: string
   ): void {
     // Title (row 1)
     worksheet.mergeCells('A1:H1');
     const titleCell = worksheet.getCell('A1');
-    titleCell.value = `Case Summary - ${monthName} ${year}`;
+    titleCell.value = followerName
+      ? `Case Summary - ${followerName} - ${monthName} ${year}`
+      : `Case Summary - ${monthName} ${year}`;
     titleCell.font = { size: 16, bold: true };
     titleCell.alignment = { horizontal: 'center' };
 
@@ -148,12 +179,15 @@ export class ExcelReportGenerator {
     worksheet: ExcelJS.Worksheet,
     events: LeadEventDocument[],
     monthName: string,
-    year: number
+    year: number,
+    followerName?: string
   ): void {
     // Title (row 1)
     worksheet.mergeCells('A1:I1');
     const titleCell = worksheet.getCell('A1');
-    titleCell.value = `Event History - ${monthName} ${year}`;
+    titleCell.value = followerName
+      ? `Event History - ${followerName} - ${monthName} ${year}`
+      : `Event History - ${monthName} ${year}`;
     titleCell.font = { size: 16, bold: true, color: { argb: 'FF007bff' } };
     titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
@@ -212,7 +246,7 @@ export class ExcelReportGenerator {
     });
   }
 
-  public async generateMonthlyReportByString(monthString: string): Promise<Buffer> {
+  public async generateMonthlyReportByString(monthString: string): Promise<{ buffer: Buffer; followers: string[] }> {
     const [year, month] = monthString.split('-').map(Number);
     return await this.generateMonthlyReport(year, month);
   }

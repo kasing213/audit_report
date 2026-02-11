@@ -21,26 +21,41 @@ export class SummaryCommand {
     try {
       Logger.info(`Summary command requested by user ${userId} in chat ${chatId}: ${messageText}`);
 
-      // Parse command arguments
+      // Parse command arguments: /summary [YYYY-MM] [follower name]
       const args = messageText.trim().split(' ');
       let monthString: string;
+      let followerFilter: string | undefined;
 
       if (args.length > 1) {
-        // /summary YYYY-MM format
-        monthString = args[1];
-        if (!/^\d{4}-\d{2}$/.test(monthString)) {
-          await ctx.reply(
-            '❌ Invalid month format.\n\nUse: `/summary YYYY-MM`\nExample: `/summary 2025-01`\n\nOr just `/summary` for current month.',
-            { parse_mode: 'Markdown' }
-          );
-          return;
+        if (/^\d{4}-\d{2}$/.test(args[1])) {
+          // First arg is a month: /summary 2026-02 [follower]
+          monthString = args[1];
+          if (args.length > 2) {
+            followerFilter = args.slice(2).join(' ');
+          }
+        } else {
+          // First arg is not a date, treat as follower name: /summary Kasing
+          const now = new Date();
+          const year = now.getFullYear();
+          const month = String(now.getMonth() + 1).padStart(2, '0');
+          monthString = `${year}-${month}`;
+          followerFilter = args.slice(1).join(' ');
         }
       } else {
-        // Default to current month
+        // Default to current month, all followers
         const now = new Date();
         const year = now.getFullYear();
         const month = String(now.getMonth() + 1).padStart(2, '0');
         monthString = `${year}-${month}`;
+      }
+
+      // Validate month format
+      if (!/^\d{4}-\d{2}$/.test(monthString)) {
+        await ctx.reply(
+          '❌ Invalid month format.\n\nUse: `/summary YYYY-MM`\nExample: `/summary 2025-01`\n\nOr just `/summary` for current month.',
+          { parse_mode: 'Markdown' }
+        );
+        return;
       }
 
       // Validate month is not in the future
@@ -69,7 +84,7 @@ export class SummaryCommand {
         const groupConfig = groupId ? this.groupConfigManager.getGroupConfig(groupId) : null;
 
         // Generate the summary
-        const summaryText = await this.generateSummaryText(monthString, groupId, groupConfig?.name);
+        const summaryText = await this.generateSummaryText(monthString, groupId, groupConfig?.name, followerFilter);
 
         // Delete processing message
         await ctx.deleteMessage(processingMsg.message_id);
@@ -100,19 +115,25 @@ export class SummaryCommand {
     }
   }
 
-  private async generateSummaryText(monthString: string, groupId: string | null, groupName?: string): Promise<string> {
+  private async generateSummaryText(monthString: string, groupId: string | null, groupName?: string, follower?: string): Promise<string> {
     const [year, month] = monthString.split('-').map(Number);
     const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
 
-    // Fetch data
-    const leadEvents = await this.dataService.getMonthlyLeadEvents(year, month, groupId || undefined);
-    const cases = await this.dataService.getMonthlyCasesSummary(year, month, groupId || undefined);
+    // Fetch data (with optional follower filter)
+    const leadEvents = await this.dataService.getMonthlyLeadEvents(year, month, groupId || undefined, follower);
+    const cases = await this.dataService.getMonthlyCasesSummary(year, month, groupId || undefined, follower);
 
     // Build summary header
     const isGroupSpecific = groupId !== null;
-    const title = isGroupSpecific
-      ? `📊 **${groupName || groupId} Sales Summary - ${monthName} ${year}**`
-      : `📊 **Complete Audit Summary - ${monthName} ${year}**`;
+    const isFollowerSpecific = !!follower;
+    let title: string;
+    if (isFollowerSpecific) {
+      title = `📊 **${follower} - Summary - ${monthName} ${year}**`;
+    } else if (isGroupSpecific) {
+      title = `📊 **${groupName || groupId} Sales Summary - ${monthName} ${year}**`;
+    } else {
+      title = `📊 **Complete Audit Summary - ${monthName} ${year}**`;
+    }
 
     // Calculate statistics
     const totalEvents = leadEvents.length;
@@ -194,7 +215,14 @@ export class SummaryCommand {
     }
 
     // Footer
-    const scope = isGroupSpecific ? `${groupName || groupId} group` : 'all groups';
+    let scope: string;
+    if (isFollowerSpecific) {
+      scope = `follower ${follower}`;
+    } else if (isGroupSpecific) {
+      scope = `${groupName || groupId} group`;
+    } else {
+      scope = 'all groups';
+    }
     summary += `📌 Summary generated for **${scope}** on ${new Date().toLocaleDateString()}`;
 
     return summary;

@@ -69,8 +69,8 @@ export class SalesCaseRepository {
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 
-  async getMonthlyCasesSummary(year: number, month: number, groupId?: string): Promise<CustomerCase[]> {
-    const pipeline = buildMonthlyCasesSummaryPipeline(year, month, groupId);
+  async getMonthlyCasesSummary(year: number, month: number, groupId?: string, follower?: string): Promise<CustomerCase[]> {
+    const pipeline = buildMonthlyCasesSummaryPipeline(year, month, groupId, follower);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 

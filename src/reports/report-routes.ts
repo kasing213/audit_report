@@ -77,7 +77,7 @@ router.get('/monthly/excel', async (req: Request, res: Response) => {
     Logger.info(`API request for monthly Excel report: ${month}`);
 
     const excelGenerator = getExcelGenerator();
-    const excelBuffer = await excelGenerator.generateMonthlyReportByString(month);
+    const { buffer: excelBuffer } = await excelGenerator.generateMonthlyReportByString(month);
 
     res.set({
       'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

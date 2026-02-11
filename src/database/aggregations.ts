@@ -112,7 +112,7 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
  * @param groupId Optional group ID to filter by specific group
  * @returns MongoDB aggregation pipeline
  */
-export function buildMonthlyCasesSummaryPipeline(year: number, month: number, groupId?: string): Document[] {
+export function buildMonthlyCasesSummaryPipeline(year: number, month: number, groupId?: string, follower?: string): Document[] {
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const { startDate, endDate } = getMonthDateRange(monthStr);
 
@@ -123,6 +123,11 @@ export function buildMonthlyCasesSummaryPipeline(year: number, month: number, gr
   // Add group filter if specified
   if (groupId) {
     matchStage.group_id = groupId;
+  }
+
+  // Add follower filter if specified
+  if (follower) {
+    matchStage.follower = follower;
   }
 
   return [

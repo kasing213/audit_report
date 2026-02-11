@@ -28,15 +28,18 @@ export class MonthlyScheduler {
 
       Logger.info(`Generating scheduled monthly report for ${monthString} (${monthName})`);
 
-      const reportBuffer = await this.excelGenerator.generateMonthlyReport(year, month);
+      const { buffer: reportBuffer, followers } = await this.excelGenerator.generateMonthlyReport(year, month);
       const filename = `monthly-report-${monthString}.xlsx`;
+
+      const followerList = followers.length > 0
+        ? followers.map(f => `• ${f}`).join('\n')
+        : '• No follower data';
 
       const caption = [
         `📊 *Automated Monthly Report - ${monthName}*`,
         '',
-        '📋 *Contents:*',
-        '• Customer Cases Summary',
-        '• Complete Event History & Audit Trail',
+        `📋 *${followers.length} Follower(s):*`,
+        followerList,
         '',
         `📅 Generated: ${new Date().toLocaleString()}`,
         '🤖 Automated monthly delivery',
@@ -98,16 +101,19 @@ export class MonthlyScheduler {
 
       Logger.info(`Generating manual monthly report for ${targetMonth}`);
 
-      const reportBuffer = await this.excelGenerator.generateMonthlyReport(year, month);
+      const { buffer: reportBuffer, followers } = await this.excelGenerator.generateMonthlyReport(year, month);
       const filename = `monthly-report-${targetMonth}.xlsx`;
 
       const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long', year: 'numeric' });
+      const followerList = followers.length > 0
+        ? followers.map(f => `• ${f}`).join('\n')
+        : '• No follower data';
+
       const caption = [
         `📊 *Manual Monthly Report - ${monthName}*`,
         '',
-        '📋 *Contents:*',
-        '• Customer Cases Summary',
-        '• Complete Event History & Audit Trail',
+        `📋 *${followers.length} Follower(s):*`,
+        followerList,
         '',
         `📅 Generated: ${new Date().toLocaleString()}`,
         '👤 Manual request'
