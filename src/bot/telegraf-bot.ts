@@ -2,6 +2,8 @@ import { Telegraf, Context } from 'telegraf';
 import { Logger } from '../utils/logger';
 import { SalesCaseRepository } from '../database/repository';
 import { CustomersCommand } from './commands/customers-command';
+import { DeleteCommand } from './commands/delete-command';
+import { EditCommand } from './commands/edit-command';
 import { HelpCommand } from './commands/help-command';
 import { ReportCommand } from './commands/report-command';
 import { SummaryCommand } from './commands/summary-command';
@@ -15,6 +17,8 @@ export class TelegrafBotService {
   private bot: Telegraf;
   private repository: SalesCaseRepository;
   private customersCommand: CustomersCommand;
+  private deleteCommand: DeleteCommand;
+  private editCommand: EditCommand;
   private helpCommand: HelpCommand;
   private reportCommand: ReportCommand;
   private summaryCommand: SummaryCommand;
@@ -31,6 +35,8 @@ export class TelegrafBotService {
     this.bot = new Telegraf(token);
     this.repository = new SalesCaseRepository();
     this.customersCommand = new CustomersCommand(this.repository);
+    this.deleteCommand = new DeleteCommand(this.repository);
+    this.editCommand = new EditCommand(this.repository);
     this.helpCommand = new HelpCommand();
     this.reportCommand = new ReportCommand();
     this.summaryCommand = new SummaryCommand();
@@ -94,6 +100,26 @@ export class TelegrafBotService {
       }
     });
 
+    // /edit command - available in all chats
+    this.bot.command('edit', async (ctx: Context) => {
+      try {
+        await this.editCommand.handleCommand(ctx);
+      } catch (error) {
+        Logger.error('Error handling /edit command', error as Error);
+        await ctx.reply('❌ Failed to start edit flow.');
+      }
+    });
+
+    // /delete command - available in all chats
+    this.bot.command('delete', async (ctx: Context) => {
+      try {
+        await this.deleteCommand.handleCommand(ctx);
+      } catch (error) {
+        Logger.error('Error handling /delete command', error as Error);
+        await ctx.reply('❌ Failed to start delete flow.');
+      }
+    });
+
     // /add command - only in sales group chats
     this.bot.command('add', async (ctx: Context) => {
       try {
@@ -122,6 +148,28 @@ export class TelegrafBotService {
             if (handled) return;
           } else {
             this.customersCommand.clearPendingRequest(userId);
+          }
+        }
+
+        // Check for pending edit request
+        if (userId && this.editCommand.isPending(userId)) {
+          const text = (ctx.message && 'text' in ctx.message) ? ctx.message.text : '';
+          if (!text.startsWith('/')) {
+            const handled = await this.editCommand.handlePending(ctx, text);
+            if (handled) return;
+          } else {
+            this.editCommand.clearPending(userId);
+          }
+        }
+
+        // Check for pending delete request
+        if (userId && this.deleteCommand.isPending(userId)) {
+          const text = (ctx.message && 'text' in ctx.message) ? ctx.message.text : '';
+          if (!text.startsWith('/')) {
+            const handled = await this.deleteCommand.handlePending(ctx, text);
+            if (handled) return;
+          } else {
+            this.deleteCommand.clearPending(userId);
           }
         }
 

@@ -1,4 +1,4 @@
-import { Collection } from 'mongodb';
+import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from './connection';
 import { LeadEventDocument, AuditLog, CustomerCase } from './models';
 import { ensureIndexes } from './indexes';
@@ -72,6 +72,35 @@ export class SalesCaseRepository {
   async getMonthlyCasesSummary(year: number, month: number, groupId?: string, follower?: string): Promise<CustomerCase[]> {
     const pipeline = buildMonthlyCasesSummaryPipeline(year, month, groupId, follower);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
+  }
+
+  async findEventsByPhone(phone: string, limit: number = 10): Promise<LeadEventDocument[]> {
+    if (!phone || phone.trim() === '') {
+      return [];
+    }
+
+    const normalizedPhone = phone.trim();
+
+    return await this.leadsEventsCollection
+      .find({ 'customer.phone': normalizedPhone })
+      .sort({ date: -1, created_at: -1 })
+      .limit(limit)
+      .toArray();
+  }
+
+  async updateLeadEvent(eventId: string, updates: Partial<LeadEventDocument>): Promise<boolean> {
+    const result = await this.leadsEventsCollection.updateOne(
+      { _id: new ObjectId(eventId) as any },
+      { $set: updates }
+    );
+    return result.modifiedCount > 0;
+  }
+
+  async deleteLeadEvent(eventId: string): Promise<boolean> {
+    const result = await this.leadsEventsCollection.deleteOne(
+      { _id: new ObjectId(eventId) as any }
+    );
+    return result.deletedCount > 0;
   }
 
   async logAudit(auditLog: AuditLog): Promise<void> {
