@@ -55,6 +55,67 @@ export class SalesEntryFlow {
       return false;
     }
 
+    // Check for single-message arrow format: /add followed by → lines
+    const fullText = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const arrowResult = this.parseArrowFormat(fullText);
+
+    if (arrowResult) {
+      const sourceMessageId = ctx.message && 'message_id' in ctx.message ? ctx.message.message_id : 0;
+
+      await this.repository.logAudit({
+        timestamp: new Date(),
+        action: 'add_command_started',
+        message_id: sourceMessageId,
+        user_id: userId,
+        username: ctx.from?.username,
+        original_message: fullText,
+        parsed_result: { mode: 'single-message' }
+      });
+
+      // Validate date
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(arrowResult.date)) {
+        await ctx.reply('❌ ទម្រង់កាលបរិច្ឆេទមិនត្រឹមត្រូវ។ សូមបញ្ចូល: YYYY-MM-DD\nសូមវាយ /add ម្តងទៀត។');
+        return true;
+      }
+
+      // Validate reason code
+      const reasonCode = parseReasonCode(arrowResult.reasonCode);
+      if (!reasonCode) {
+        await ctx.reply('❌ លេខកូដមូលហេតុមិនត្រឹមត្រូវ។ សូមបញ្ចូល A–J\nសូមវាយ /add ម្តងទៀត។');
+        return true;
+      }
+
+      // Auto-set follower from group config
+      const groupId = this.groupConfigManager.getGroupIdFromChatId(chatId);
+      const groupConfig = groupId ? this.groupConfigManager.getGroupConfig(groupId) : null;
+      const follower = groupConfig?.name || 'Unknown';
+
+      const note = this.normalizeNote(arrowResult.note);
+
+      const pending: PendingSalesEntry = {
+        chatId,
+        userId,
+        ...(ctx.from?.username && { username: ctx.from.username }),
+        header: {
+          date: arrowResult.date,
+          name: arrowResult.name,
+          phone: arrowResult.phone,
+          page: arrowResult.page,
+          follower
+        },
+        step: 'awaiting_note',
+        reasonCode,
+        expiresAt: Date.now() + this.ttlMs,
+        sourceMessageId,
+        sourceModel: 'add-command-single'
+      };
+
+      await this.saveEntry(pending, note, ctx);
+      await ctx.reply('✅ ទិន្នន័យបានរក្សាទុកដោយជោគជ័យ');
+      return true;
+    }
+
+    // Fall back to interactive step-by-step flow
     const pending: PendingSalesEntry = {
       chatId,
       userId,
@@ -308,6 +369,27 @@ export class SalesEntryFlow {
     });
 
     Logger.info(`Saved lead event for ${pending.header.phone} (group: ${groupId}, source: ${pending.sourceModel})`);
+  }
+
+  private parseArrowFormat(text: string): { date: string; name: string; phone: string; page: string; reasonCode: string; note: string } | null {
+    const lines = text.split('\n').slice(1); // skip the /add line
+    const arrowLines = lines
+      .map(line => line.trim())
+      .filter(line => line.startsWith('→'))
+      .map(line => line.replace(/^→\s*/, '').trim());
+
+    if (arrowLines.length !== 6) {
+      return null;
+    }
+
+    return {
+      date: arrowLines[0],
+      name: arrowLines[1],
+      phone: arrowLines[2],
+      page: arrowLines[3],
+      reasonCode: arrowLines[4],
+      note: arrowLines[5]
+    };
   }
 
   private getHeaderFormatHelp(error?: string): string {
