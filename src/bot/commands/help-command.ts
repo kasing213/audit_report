@@ -10,10 +10,13 @@ export class HelpCommand {
     try {
       Logger.info(`Help command requested by user ${userId} in chat ${chatId} (sales: ${isSalesChat})`);
 
-      const helpText = isSalesChat
-        ? this.buildSalesHelpMessage()
-        : this.buildManagementHelpMessage();
-      await ctx.reply(helpText, { parse_mode: 'Markdown' });
+      if (isSalesChat) {
+        await ctx.reply(this.buildSalesHelpMessage(), { parse_mode: 'Markdown' });
+        // Send template as separate plain text message for easy copy on mobile
+        await ctx.reply(this.buildCopyTemplate());
+      } else {
+        await ctx.reply(this.buildManagementHelpMessage(), { parse_mode: 'Markdown' });
+      }
 
       Logger.info(`${isSalesChat ? 'Sales' : 'Management'} help message sent to user ${userId}`);
     } catch (error) {
@@ -39,23 +42,23 @@ export class HelpCommand {
       '',
       '✅ ឈ្មោះអ្នកតាមដាន (Follower) កំណត់ស្វ័យប្រវត្តិតាមក្រុម',
       '',
-      '🔸 *ឧទាហរណ៍* (ចម្លងរួចកែប្រែ បញ្ជូនម្តង)',
+      '⚠️ *ចំណាំសំខាន់*',
       '',
-      '```',
+      '• បញ្ចូលម្តងមួយអតិថិជន',
+      '• ទិន្នន័យផុតកំណត់ក្នុង ៥ នាទី បើមិនបំពេញ',
+      '• បើខុស សូមវាយ /add ម្តងទៀត'
+    ].join('\n');
+  }
+
+  private buildCopyTemplate(): string {
+    return [
       '/add',
       '→ 2026-02-11',
       '→ Sok Dara',
       '→ 093724678',
       '→ Facebook',
       '→ A',
-      '→ —',
-      '```',
-      '',
-      '⚠️ *ចំណាំសំខាន់*',
-      '',
-      '• បញ្ចូលម្តងមួយអតិថិជន',
-      '• ទិន្នន័យផុតកំណត់ក្នុង ៥ នាទី បើមិនបំពេញ',
-      '• បើខុស សូមវាយ /add ម្តងទៀត'
+      '→ —'
     ].join('\n');
   }
 
