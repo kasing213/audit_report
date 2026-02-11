@@ -371,19 +371,29 @@ export class SalesEntryFlow {
     Logger.info(`Saved lead event for ${pending.header.phone} (group: ${groupId}, source: ${pending.sourceModel})`);
   }
 
+  private stripInvisible(text: string): string {
+    // Remove zero-width and invisible Unicode characters, then trim
+    return text.replace(/[\u200B\u200C\u200D\uFEFF\u00AD\u200E\u200F\u202A-\u202E\u2060-\u2064]/g, '').trim();
+  }
+
   private parseArrowFormat(text: string): { date: string; name: string; phone: string; page: string; reasonCode: string; note: string } | null {
     const lines = text.split('\n').slice(1); // skip the /add line
+    // Accept various arrow characters: → ➔ ➜ > and ->
+    const arrowPattern = /^[\s]*(?:→|➔|➜|>|->)\s*/;
     const arrowLines = lines
-      .map(line => line.trim())
-      .filter(line => line.startsWith('→'))
-      .map(line => line.replace(/^→\s*/, '').trim());
+      .map(line => this.stripInvisible(line))
+      .filter(line => arrowPattern.test(line))
+      .map(line => this.stripInvisible(line.replace(arrowPattern, '')));
 
     if (arrowLines.length !== 6) {
       return null;
     }
 
+    // Normalize Unicode dashes to ASCII hyphen in date
+    const date = arrowLines[0].replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\uFE58\uFE63\uFF0D]/g, '-');
+
     return {
-      date: arrowLines[0],
+      date,
       name: arrowLines[1],
       phone: arrowLines[2],
       page: arrowLines[3],
