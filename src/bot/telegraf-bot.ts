@@ -125,7 +125,7 @@ export class TelegrafBotService {
           }
         }
 
-        // Sales entry flow (strict header -> reason -> note)
+        // Sales entry flow
         if (ctx.message && 'text' in ctx.message) {
           const text = ctx.message.text;
           if (userId && this.salesEntryFlow.isPending(userId)) {
@@ -133,6 +133,14 @@ export class TelegrafBotService {
             if (handled) return;
           }
 
+          // Handle /add with arrow format from code block copy-paste
+          if (text.includes('/add') && text.includes('→')) {
+            const chatId = ctx.chat?.id || 0;
+            if (this.groupConfigManager.isSalesGroupChat(chatId)) {
+              const handled = await this.salesEntryFlow.startAddFlow(ctx);
+              if (handled) return;
+            }
+          }
         }
       } catch (error) {
         Logger.error('Error handling message', error as Error);
