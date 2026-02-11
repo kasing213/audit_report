@@ -41,6 +41,14 @@ export class SalesEntryFlow {
     return this.pendingEntries.has(userId);
   }
 
+  async tryArrowEntry(ctx: Context): Promise<boolean> {
+    const fullText = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    if (!this.parseArrowFormat(fullText)) {
+      return false;
+    }
+    return this.startAddFlow(ctx);
+  }
+
   async startAddFlow(ctx: Context): Promise<boolean> {
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
@@ -315,28 +323,43 @@ export class SalesEntryFlow {
   }
 
   private parseArrowFormat(text: string): { date: string; name: string; phone: string; page: string; reasonCode: string; note: string } | null {
-    const lines = text.split('\n').slice(1); // skip the /add line
-    // Accept various arrow characters: → ➔ ➜ > and ->
-    const arrowPattern = /^[\s]*(?:→|➔|➜|>|->)\s*/;
-    const arrowLines = lines
-      .map(line => this.stripInvisible(line))
+    const allLines = text.split('\n').map(line => this.stripInvisible(line));
+
+    // Find the /add line (might not be first if copied with extra text)
+    const addIndex = allLines.findIndex(line => /^\/?add$/i.test(line) || line === '/add');
+    if (addIndex === -1) {
+      return null;
+    }
+
+    const linesAfterAdd = allLines.slice(addIndex + 1).filter(line => line.length > 0);
+
+    // Accept various arrow characters: → ➔ ➜ ▸ ▶ > and ->
+    const arrowPattern = /^(?:→|➔|➜|▸|▶|>|->)\s*/;
+
+    // Try arrow-prefixed lines first
+    let values = linesAfterAdd
       .filter(line => arrowPattern.test(line))
       .map(line => this.stripInvisible(line.replace(arrowPattern, '')));
 
-    if (arrowLines.length !== 6) {
+    // Fallback: if no arrows found, use positional lines directly
+    if (values.length !== 6 && linesAfterAdd.length === 6) {
+      values = linesAfterAdd.map(line => this.stripInvisible(line.replace(arrowPattern, '')));
+    }
+
+    if (values.length !== 6) {
       return null;
     }
 
     // Normalize Unicode dashes to ASCII hyphen in date
-    const date = arrowLines[0].replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\uFE58\uFE63\uFF0D]/g, '-');
+    const date = values[0].replace(/[\u2010\u2011\u2012\u2013\u2014\u2015\uFE58\uFE63\uFF0D]/g, '-');
 
     return {
       date,
-      name: arrowLines[1],
-      phone: arrowLines[2],
-      page: arrowLines[3],
-      reasonCode: arrowLines[4],
-      note: arrowLines[5]
+      name: values[1],
+      phone: values[2],
+      page: values[3],
+      reasonCode: values[4],
+      note: values[5]
     };
   }
 

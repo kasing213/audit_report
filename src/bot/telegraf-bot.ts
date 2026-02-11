@@ -134,10 +134,10 @@ export class TelegrafBotService {
           }
 
           // Handle /add with arrow format from code block copy-paste
-          if (text.includes('/add') && text.includes('→')) {
+          if (text.includes('/add') && text.includes('\n')) {
             const chatId = ctx.chat?.id || 0;
             if (this.groupConfigManager.isSalesGroupChat(chatId)) {
-              const handled = await this.salesEntryFlow.startAddFlow(ctx);
+              const handled = await this.salesEntryFlow.tryArrowEntry(ctx);
               if (handled) return;
             }
           }
