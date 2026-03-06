@@ -2,6 +2,7 @@ import { TelegrafBotService } from './bot/telegraf-bot';
 import { ApiServer } from './api/server';
 import { DailyScheduler } from './scheduler/daily-scheduler';
 import { MonthlyScheduler } from './scheduler/monthly-scheduler';
+import { PromiseScheduler } from './scheduler/promise-scheduler';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
 import { GroupConfigManager } from './utils/group-config';
@@ -72,6 +73,14 @@ async function main(): Promise<void> {
     } else {
       Logger.warn('AUDIT_CHAT_ID not set - audit daily and monthly reports disabled');
     }
+
+    // Setup promise reminder scheduler
+    const promiseScheduler = new PromiseScheduler();
+    promiseScheduler.setSendMessageCallback(async (chatId: string, text: string, extra?: any) => {
+      await telegramBot.sendMessage(chatId, text, extra);
+    });
+    promiseScheduler.startScheduler();
+    Logger.info('- Promise Reminders: 8:00 AM daily');
 
     Logger.info('Audit Sales System is running...');
     Logger.info('- Telegram Bot: Active (Commands: /help, /customers, /summary, /report)');

@@ -6,10 +6,13 @@ export interface LeadEventDocument {
     phone: string | null;
   };
   page: string | null;
+  destination?: string | null;
   follower: string | null;
   status_text: string | null;
   reason_code?: string | null;
   note?: string | null;
+  promise_date?: string | null;
+  promise_status?: 'pending' | 'came' | 'didnt_come' | null;
   group_id?: string | null;
   source: {
     telegram_msg_id: string;
@@ -34,6 +37,7 @@ export interface CustomerCase {
   phone: string | null;
   name: string | null;
   page: string | null;
+  destination?: string | null;
   follower: string | null;
   first_contact_date: string;      // YYYY-MM-DD
   last_update_date: string;         // YYYY-MM-DD

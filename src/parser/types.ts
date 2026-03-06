@@ -11,6 +11,7 @@ export interface LeadEvent {
     phone: string | null;
   };
   page: string | null;
+  destination?: string | null;
   follower: string | null;
   status_text: string | null;
   reason_code?: ReasonCode | null;

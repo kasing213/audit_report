@@ -9,6 +9,7 @@ import { ReportCommand } from './commands/report-command';
 import { SummaryCommand } from './commands/summary-command';
 import { SalesEntryFlow } from './flows/sales-entry-flow';
 import { GroupConfigManager } from '../utils/group-config';
+import { isInlineExpired } from './actions/inline-edit-delete';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -24,6 +25,7 @@ export class TelegrafBotService {
   private summaryCommand: SummaryCommand;
   private salesEntryFlow: SalesEntryFlow;
   private groupConfigManager: GroupConfigManager;
+  private pendingReschedules: Map<number, { eventId: string; expiresAt: number }> = new Map();
 
   constructor() {
     const token = process.env.TELEGRAM_BOT_TOKEN;
@@ -135,10 +137,119 @@ export class TelegrafBotService {
       }
     });
 
+    // Inline button: Edit from save
+    this.bot.action(/^edit:(.+)$/, async (ctx) => {
+      try {
+        const eventId = (ctx as any).match[1];
+        if (isInlineExpired(eventId)) {
+          await ctx.answerCbQuery('⏰ ផុតកំណត់ហើយ។ សូមប្រើ /edit');
+          return;
+        }
+        await ctx.answerCbQuery();
+        await this.editCommand.startEditFromEvent(ctx, eventId);
+      } catch (error) {
+        Logger.error('Error handling inline edit', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+
+    // Inline button: Delete from save
+    this.bot.action(/^delete:(.+)$/, async (ctx) => {
+      try {
+        const eventId = (ctx as any).match[1];
+        if (isInlineExpired(eventId)) {
+          await ctx.answerCbQuery('⏰ ផុតកំណត់ហើយ។ សូមប្រើ /delete');
+          return;
+        }
+        await ctx.answerCbQuery();
+        const event = await this.repository.findEventById(eventId);
+        if (!event) {
+          await ctx.reply('❌ រកមិនឃើញទិន្នន័យនេះទេ។');
+          return;
+        }
+        await this.deleteCommand.startDeleteFromEvent(ctx, event, eventId);
+      } catch (error) {
+        Logger.error('Error handling inline delete', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+
+    // Promise callback: Came
+    this.bot.action(/^promise_came:(.+)$/, async (ctx) => {
+      try {
+        const eventId = (ctx as any).match[1];
+        const success = await this.repository.updatePromiseStatus(eventId, 'came');
+        if (success) {
+          await ctx.editMessageText('✅ អតិថិជនបានមក (Came)');
+        }
+        await ctx.answerCbQuery(success ? '✅ បានកត់ត្រា' : '❌ មានបញ្ហា');
+      } catch (error) {
+        Logger.error('Error handling promise_came', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+
+    // Promise callback: Didn't come
+    this.bot.action(/^promise_didnt:(.+)$/, async (ctx) => {
+      try {
+        const eventId = (ctx as any).match[1];
+        const success = await this.repository.updatePromiseStatus(eventId, 'didnt_come');
+        if (success) {
+          await ctx.editMessageText('❌ អតិថិជនមិនបានមក (Didn\'t Come)');
+        }
+        await ctx.answerCbQuery(success ? '✅ បានកត់ត្រា' : '❌ មានបញ្ហា');
+      } catch (error) {
+        Logger.error('Error handling promise_didnt', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+
+    // Promise callback: Reschedule
+    this.bot.action(/^promise_reschedule:(.+)$/, async (ctx) => {
+      try {
+        const eventId = (ctx as any).match[1];
+        const userId = ctx.from?.id;
+        if (!userId) {
+          await ctx.answerCbQuery('❌ មានបញ្ហា');
+          return;
+        }
+        this.pendingReschedules.set(userId, { eventId, expiresAt: Date.now() + 5 * 60 * 1000 });
+        await ctx.answerCbQuery();
+        await ctx.reply('📅 សូមបញ្ចូលថ្ងៃថ្មី (YYYY-MM-DD):');
+      } catch (error) {
+        Logger.error('Error handling promise_reschedule', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+
     // Text handler
     this.bot.on('text', async (ctx: Context) => {
       try {
         const userId = ctx.from?.id;
+
+        // Check for pending promise reschedule
+        if (userId && this.pendingReschedules.has(userId)) {
+          const reschedule = this.pendingReschedules.get(userId)!;
+          if (reschedule.expiresAt < Date.now()) {
+            this.pendingReschedules.delete(userId);
+          } else {
+            const text = (ctx.message && 'text' in ctx.message) ? ctx.message.text : '';
+            if (!text.startsWith('/')) {
+              const trimmed = text.trim();
+              if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+                const success = await this.repository.reschedulePromise(reschedule.eventId, trimmed);
+                this.pendingReschedules.delete(userId);
+                await ctx.reply(success ? `📅 បានផ្លាស់ប្តូរថ្ងៃទៅ ${trimmed}` : '❌ មានបញ្ហា');
+                return;
+              } else {
+                await ctx.reply('❌ ទម្រង់មិនត្រឹមត្រូវ។ សូមបញ្ចូល: YYYY-MM-DD');
+                return;
+              }
+            } else {
+              this.pendingReschedules.delete(userId);
+            }
+          }
+        }
 
         // Check for pending customers request
         if (userId && this.customersCommand.isPendingRequest(userId)) {
@@ -222,6 +333,16 @@ export class TelegrafBotService {
       Logger.info(`Photo sent to chat ${chatId}: ${filename}`);
     } catch (error) {
       Logger.error('Failed to send photo to Telegram', error as Error);
+      throw error;
+    }
+  }
+
+  public async sendMessage(chatId: string, text: string, extra?: any): Promise<void> {
+    try {
+      await this.bot.telegram.sendMessage(chatId, text, extra);
+      Logger.info(`Message sent to chat ${chatId}`);
+    } catch (error) {
+      Logger.error('Failed to send message to Telegram', error as Error);
       throw error;
     }
   }

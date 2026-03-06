@@ -10,15 +10,23 @@ import {
 } from '../../constants/reason-codes';
 
 type EditStep = 'awaiting_phone' | 'awaiting_selection' | 'awaiting_field' | 'awaiting_value';
-type EditableField = 'name' | 'phone' | 'page' | 'reason' | 'note' | 'date';
+import {
+  buildDestinationKeyboardRows,
+  parseDestination
+} from '../../constants/destination-options';
+
+type EditableField = 'name' | 'phone' | 'page' | 'destination' | 'reason' | 'note' | 'date' | 'promise_date' | 'promise_status';
 
 const FIELD_OPTIONS: { key: EditableField; label: string }[] = [
   { key: 'name', label: 'ឈ្មោះ (Name)' },
   { key: 'phone', label: 'លេខទូរស័ព្ទ (Phone)' },
   { key: 'page', label: 'ប្រភព (Page)' },
+  { key: 'destination', label: 'មធ្យោបាយ (Destination)' },
   { key: 'reason', label: 'មូលហេតុ (Reason)' },
   { key: 'note', label: 'ចំណាំ (Note)' },
-  { key: 'date', label: 'កាលបរិច្ឆេទ (Date)' }
+  { key: 'date', label: 'កាលបរិច្ឆេទ (Date)' },
+  { key: 'promise_date', label: 'ថ្ងៃសន្យា (Promise Date)' },
+  { key: 'promise_status', label: 'ស្ថានភាពសន្យា (Promise Status)' }
 ];
 
 interface PendingEdit {
@@ -166,6 +174,12 @@ export class EditCommand {
     if (field.key === 'reason') {
       const keyboard = Markup.keyboard(buildReasonKeyboardRows()).resize();
       await ctx.reply(buildReasonPrompt(), keyboard);
+    } else if (field.key === 'destination') {
+      const keyboard = Markup.keyboard(buildDestinationKeyboardRows()).resize();
+      await ctx.reply('📨 សូមជ្រើសរើសមធ្យោបាយទំនាក់ទំនង:', keyboard);
+    } else if (field.key === 'promise_status') {
+      const keyboard = Markup.keyboard([['pending', 'came', 'didnt_come']]).resize();
+      await ctx.reply('សូមជ្រើសរើសស្ថានភាព:', keyboard);
     } else {
       const currentValue = this.getCurrentValue(pending.selectedEvent!, field.key);
       await ctx.reply(
@@ -201,6 +215,9 @@ export class EditCommand {
       case 'page':
         updates = { page: newValue };
         break;
+      case 'destination':
+        updates = { destination: parseDestination(newValue) || newValue };
+        break;
       case 'reason': {
         const reasonCode = parseReasonCode(newValue);
         if (!reasonCode) {
@@ -220,6 +237,25 @@ export class EditCommand {
         }
         updates = { date: newValue };
         break;
+      case 'promise_date':
+        if (newValue === '-') {
+          updates = { promise_date: null, promise_status: null };
+        } else if (/^\d{4}-\d{2}-\d{2}$/.test(newValue)) {
+          updates = { promise_date: newValue };
+        } else {
+          await ctx.reply('❌ ទម្រង់មិនត្រឹមត្រូវ។ សូមបញ្ចូល: YYYY-MM-DD ឬ "-" ដើម្បីលុប');
+          return true;
+        }
+        break;
+      case 'promise_status': {
+        const validStatuses = ['pending', 'came', 'didnt_come'];
+        if (!validStatuses.includes(newValue)) {
+          await ctx.reply('❌ សូមជ្រើសរើស: pending, came, ឬ didnt_come');
+          return true;
+        }
+        updates = { promise_status: newValue as 'pending' | 'came' | 'didnt_come' };
+        break;
+      }
     }
 
     const success = await this.repository.updateLeadEvent(eventId, updates);
@@ -253,14 +289,44 @@ export class EditCommand {
     return true;
   }
 
+  async startEditFromEvent(ctx: Context, eventId: string): Promise<void> {
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+    if (!userId || chatId === undefined) return;
+
+    const event = await this.repository.findEventById(eventId);
+    if (!event) {
+      await ctx.reply('❌ រកមិនឃើញទិន្នន័យនេះទេ។');
+      return;
+    }
+
+    this.pendingEdits.set(userId, {
+      chatId,
+      userId,
+      username: ctx.from?.username,
+      step: 'awaiting_field',
+      selectedEvent: event,
+      expiresAt: Date.now() + this.ttlMs
+    });
+
+    const keyboard = Markup.keyboard(
+      FIELD_OPTIONS.map(f => [f.label])
+    ).resize();
+
+    await ctx.reply('📝 សូមជ្រើសរើសវាលដែលចង់កែ:', keyboard);
+  }
+
   private getCurrentValue(event: LeadEventDocument, field: EditableField): string {
     switch (field) {
       case 'name': return event.customer.name || 'N/A';
       case 'phone': return event.customer.phone || 'N/A';
       case 'page': return event.page || 'N/A';
+      case 'destination': return event.destination || 'N/A';
       case 'reason': return formatReasonDisplay(event.reason_code ?? null, event.status_text);
       case 'note': return event.note || 'N/A';
       case 'date': return event.date;
+      case 'promise_date': return event.promise_date || 'N/A';
+      case 'promise_status': return event.promise_status || 'N/A';
       default: return 'N/A';
     }
   }

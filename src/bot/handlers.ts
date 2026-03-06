@@ -141,6 +141,7 @@ export class MessageHandlers {
           phone: event.customer.phone
         },
         page: event.page || existingEvent.page,
+        destination: event.destination || existingEvent.destination || null,
         follower: event.follower || existingEvent.follower,
         status_text: event.status_text  // Always use new status
       };

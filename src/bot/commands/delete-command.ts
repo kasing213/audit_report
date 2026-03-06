@@ -85,6 +85,34 @@ export class DeleteCommand {
     return false;
   }
 
+  async startDeleteFromEvent(ctx: Context, event: LeadEventDocument, _eventId?: string): Promise<void> {
+    const userId = ctx.from?.id;
+    const chatId = ctx.chat?.id;
+    if (!userId || chatId === undefined) return;
+
+    this.pendingDeletes.set(userId, {
+      chatId,
+      userId,
+      username: ctx.from?.username,
+      step: 'awaiting_confirm',
+      selectedEvent: event,
+      expiresAt: Date.now() + this.ttlMs
+    });
+
+    const reason = formatReasonDisplay(event.reason_code ?? null, event.status_text);
+    const detail = [
+      `📅 កាលបរិច្ឆេទ: ${event.date}`,
+      `👤 ឈ្មោះ: ${event.customer.name || 'N/A'}`,
+      `📞 ទូរស័ព្ទ: ${event.customer.phone || 'N/A'}`,
+      `📄 ប្រភព: ${event.page || 'N/A'}`,
+      `🔤 មូលហេតុ: ${reason}`,
+      event.note ? `📝 ចំណាំ: ${event.note}` : null
+    ].filter(Boolean).join('\n');
+
+    const keyboard = Markup.keyboard([['Yes', 'No']]).resize();
+    await ctx.reply(`⚠️ តើអ្នកប្រាកដជាចង់លុបទិន្នន័យនេះ?\n\n${detail}\n\nវាយ Yes ដើម្បីលុប ឬ No ដើម្បីបោះបង់:`, keyboard);
+  }
+
   private async handlePhoneStep(ctx: Context, text: string, pending: PendingDelete, userId: number): Promise<boolean> {
     const phone = text.trim();
     const events = await this.repository.findEventsByPhone(phone);

@@ -30,6 +30,15 @@ export async function ensureIndexes<T extends Document>(collection: Collection<T
       }
     );
 
+    // Index for promise date lookups (daily reminder scheduler)
+    await collection.createIndex(
+      { promise_date: 1, promise_status: 1 },
+      {
+        name: 'promise_date_status_idx',
+        sparse: true  // Only index documents with promise_date
+      }
+    );
+
     Logger.info('Database indexes created successfully');
   } catch (error) {
     Logger.error('Failed to create indexes', error as Error);

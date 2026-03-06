@@ -24,8 +24,11 @@ export class ExcelReportGenerator {
       { header: 'Customer Name', key: 'customer_name', width: 20 },
       { header: 'Phone Number', key: 'phone_number', width: 15 },
       { header: 'Platform/Page', key: 'page', width: 15 },
+      { header: 'Destination', key: 'destination', width: 15 },
       { header: 'Follower', key: 'follower', width: 15 },
       { header: 'Reason', key: 'status_text', width: 30 },
+      { header: 'Promise Date', key: 'promise_date', width: 12 },
+      { header: 'Promise Status', key: 'promise_status', width: 14 },
       { header: 'Source ID', key: 'telegram_msg_id', width: 15 },
       { header: 'Model', key: 'model', width: 15 }
     ];
@@ -183,7 +186,7 @@ export class ExcelReportGenerator {
     followerName?: string
   ): void {
     // Title (row 1)
-    worksheet.mergeCells('A1:I1');
+    worksheet.mergeCells('A1:L1');
     const titleCell = worksheet.getCell('A1');
     titleCell.value = followerName
       ? `Event History - ${followerName} - ${monthName} ${year}`
@@ -192,7 +195,7 @@ export class ExcelReportGenerator {
     titleCell.alignment = { vertical: 'middle', horizontal: 'center' };
 
     // Summary (row 2)
-    worksheet.mergeCells('A2:I2');
+    worksheet.mergeCells('A2:L2');
     const summaryCell = worksheet.getCell('A2');
     summaryCell.value = `Total Lead Events: ${events.length}`;
     summaryCell.font = { size: 12, bold: true };
@@ -229,10 +232,13 @@ export class ExcelReportGenerator {
       row.getCell(3).value = leadEvent.customer.name || 'N/A';
       row.getCell(4).value = leadEvent.customer.phone || 'N/A';
       row.getCell(5).value = leadEvent.page || 'N/A';
-      row.getCell(6).value = leadEvent.follower || 'N/A';
-      row.getCell(7).value = formatReasonDisplay(leadEvent.reason_code ?? null, leadEvent.status_text);
-      row.getCell(8).value = leadEvent.source.telegram_msg_id || 'N/A';
-      row.getCell(9).value = leadEvent.source.model || 'N/A';
+      row.getCell(6).value = leadEvent.destination || 'N/A';
+      row.getCell(7).value = leadEvent.follower || 'N/A';
+      row.getCell(8).value = formatReasonDisplay(leadEvent.reason_code ?? null, leadEvent.status_text);
+      row.getCell(9).value = leadEvent.promise_date || 'N/A';
+      row.getCell(10).value = leadEvent.promise_status || 'N/A';
+      row.getCell(11).value = leadEvent.source.telegram_msg_id || 'N/A';
+      row.getCell(12).value = leadEvent.source.model || 'N/A';
 
       if ((index + 5) % 2 === 0) {
         row.eachCell((cell) => {

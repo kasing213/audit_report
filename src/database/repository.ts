@@ -21,8 +21,9 @@ export class SalesCaseRepository {
     });
   }
 
-  async saveLeadEvent(leadEvent: LeadEventDocument): Promise<void> {
-    await this.leadsEventsCollection.insertOne(leadEvent);
+  async saveLeadEvent(leadEvent: LeadEventDocument): Promise<string> {
+    const result = await this.leadsEventsCollection.insertOne(leadEvent);
+    return result.insertedId.toString();
   }
 
   async saveLeadEvents(leadEvents: LeadEventDocument[]): Promise<void> {
@@ -101,6 +102,37 @@ export class SalesCaseRepository {
       { _id: new ObjectId(eventId) as any }
     );
     return result.deletedCount > 0;
+  }
+
+  async findEventById(eventId: string): Promise<LeadEventDocument | null> {
+    try {
+      return await this.leadsEventsCollection.findOne({ _id: new ObjectId(eventId) as any });
+    } catch {
+      return null;
+    }
+  }
+
+  async findEventsByPromiseDate(date: string): Promise<LeadEventDocument[]> {
+    return await this.leadsEventsCollection.find({
+      promise_date: date,
+      promise_status: 'pending'
+    }).toArray();
+  }
+
+  async updatePromiseStatus(eventId: string, status: 'came' | 'didnt_come'): Promise<boolean> {
+    const result = await this.leadsEventsCollection.updateOne(
+      { _id: new ObjectId(eventId) as any },
+      { $set: { promise_status: status } }
+    );
+    return result.modifiedCount > 0;
+  }
+
+  async reschedulePromise(eventId: string, newDate: string): Promise<boolean> {
+    const result = await this.leadsEventsCollection.updateOne(
+      { _id: new ObjectId(eventId) as any },
+      { $set: { promise_date: newDate, promise_status: 'pending' as const } }
+    );
+    return result.modifiedCount > 0;
   }
 
   async logAudit(auditLog: AuditLog): Promise<void> {
