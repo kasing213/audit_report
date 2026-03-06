@@ -1,3 +1,56 @@
+/**
+ * ===== Telegram Group Architecture =====
+ *
+ * The bot operates across three types of Telegram groups:
+ *
+ * ┌─────────────────────────────────────────────────────────────────┐
+ * │ SALES GROUPS (up to 8)                                         │
+ * │                                                                 │
+ * │ Env vars: SALES_GROUP_N_CHAT_ID + SALES_GROUP_N_NAME           │
+ * │ (N = 1..8)                                                     │
+ * │                                                                 │
+ * │ Purpose: Sales staff enter customer data here                   │
+ * │ Follower: Auto-set from SALES_GROUP_N_NAME                     │
+ * │                                                                 │
+ * │ Allowed commands:                                               │
+ * │   /add    - Enter new customer data (interactive or arrow fmt)  │
+ * │   /edit   - Edit existing customer records                      │
+ * │   /delete - Delete customer records                             │
+ * │   /help   - Show sales guide + copy template                   │
+ * │                                                                 │
+ * │ Active groups:                                                  │
+ * │   1: SreySros  2: Bery     3: Theary  4: Seyi                  │
+ * │   5: Pheaktra  6: Borey   7: Pisey                             │
+ * ├─────────────────────────────────────────────────────────────────┤
+ * │ SUMMARY GROUP (1)                                               │
+ * │                                                                 │
+ * │ Env var: SUMMARY_CHAT_ID                                        │
+ * │                                                                 │
+ * │ Purpose: Management / CRM analysis                              │
+ * │                                                                 │
+ * │ Allowed commands:                                               │
+ * │   /summary   - Monthly sales overview + follower performance    │
+ * │   /customers - Customer list by follower + month                │
+ * │   /report    - Generate Excel report                            │
+ * │   /edit      - Edit records                                     │
+ * │   /delete    - Delete records                                   │
+ * │   /help      - Show management guide                            │
+ * ├─────────────────────────────────────────────────────────────────┤
+ * │ AUDIT GROUP (1)                                                 │
+ * │                                                                 │
+ * │ Env var: AUDIT_CHAT_ID                                          │
+ * │                                                                 │
+ * │ Purpose: Automated reports + audit trail                        │
+ * │                                                                 │
+ * │ Receives automatically:                                         │
+ * │   - Daily JPG report at 11:59 PM (per group + consolidated)    │
+ * │   - Monthly Excel report on 1st of month at 12:01 AM           │
+ * │   - Promise reminders at 8:00 AM daily                         │
+ * │                                                                 │
+ * │ Same commands as Summary group                                  │
+ * └─────────────────────────────────────────────────────────────────┘
+ */
+
 export interface GroupConfig {
   groupId: string;
   chatId: string;
