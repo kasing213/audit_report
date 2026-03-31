@@ -107,6 +107,198 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
 }
 
 /**
+ * Build aggregation pipeline for all unique customers (optionally filtered by follower).
+ * Groups all events by phone number regardless of month.
+ */
+export function buildAllCustomersPipeline(follower?: string): Document[] {
+  const matchStage: any = {
+    'customer.phone': { $ne: null }
+  };
+  if (follower) {
+    matchStage.follower = follower;
+  }
+
+  return [
+    { $match: matchStage },
+    { $sort: { 'customer.phone': 1, date: 1, created_at: 1 } },
+    {
+      $group: {
+        _id: '$customer.phone',
+        first_contact_date: { $first: '$date' },
+        last_update_date: { $last: '$date' },
+        current_name: { $last: '$customer.name' },
+        current_page: { $last: '$page' },
+        current_destination: { $last: '$destination' },
+        current_follower: { $last: '$follower' },
+        current_reason_code: { $last: '$reason_code' },
+        current_status_text: { $last: '$status_text' },
+        latest_note: { $last: '$note' },
+        history: {
+          $push: {
+            date: '$date',
+            status: { $ifNull: ['$reason_code', '$status_text'] },
+            reason_code: '$reason_code',
+            note: '$note',
+            created_at: '$created_at'
+          }
+        },
+        total_events: { $sum: 1 }
+      }
+    },
+    {
+      $project: {
+        _id: 0,
+        phone: '$_id',
+        name: '$current_name',
+        page: '$current_page',
+        destination: '$current_destination',
+        follower: '$current_follower',
+        first_contact_date: 1,
+        last_update_date: 1,
+        current_status: { $ifNull: ['$current_reason_code', '$current_status_text'] },
+        current_reason_code: 1,
+        latest_note: 1,
+        history: 1,
+        total_events: 1
+      }
+    },
+    { $sort: { last_update_date: -1 } }
+  ];
+}
+
+/**
+ * Build aggregation pipeline for stale customers — those not contacted in X days.
+ */
+export function buildStaleCustomersPipeline(daysThreshold: number, follower?: string): Document[] {
+  const cutoffDate = new Date();
+  cutoffDate.setDate(cutoffDate.getDate() - daysThreshold);
+  const cutoffStr = cutoffDate.toISOString().slice(0, 10);
+
+  const matchStage: any = {
+    'customer.phone': { $ne: null }
+  };
+  if (follower) {
+    matchStage.follower = follower;
+  }
+
+  return [
+    { $match: matchStage },
+    { $sort: { 'customer.phone': 1, date: 1, created_at: 1 } },
+    {
+      $group: {
+        _id: '$customer.phone',
+        first_contact_date: { $first: '$date' },
+        last_update_date: { $last: '$date' },
+        current_name: { $last: '$customer.name' },
+        current_page: { $last: '$page' },
+        current_destination: { $last: '$destination' },
+        current_follower: { $last: '$follower' },
+        current_reason_code: { $last: '$reason_code' },
+        current_status_text: { $last: '$status_text' },
+        latest_note: { $last: '$note' },
+        history: {
+          $push: {
+            date: '$date',
+            status: { $ifNull: ['$reason_code', '$status_text'] },
+            reason_code: '$reason_code',
+            note: '$note',
+            created_at: '$created_at'
+          }
+        },
+        total_events: { $sum: 1 }
+      }
+    },
+    {
+      $match: {
+        last_update_date: { $lte: cutoffStr }
+      }
+    },
+    {
+      $project: {
+        _id: 0,
+        phone: '$_id',
+        name: '$current_name',
+        page: '$current_page',
+        destination: '$current_destination',
+        follower: '$current_follower',
+        first_contact_date: 1,
+        last_update_date: 1,
+        current_status: { $ifNull: ['$current_reason_code', '$current_status_text'] },
+        current_reason_code: 1,
+        latest_note: 1,
+        history: 1,
+        total_events: 1
+      }
+    },
+    { $sort: { last_update_date: 1 } }
+  ];
+}
+
+/**
+ * Build aggregation pipeline for customers filtered by most recent reason code.
+ */
+export function buildCustomersByReasonPipeline(reasonCode: string, follower?: string): Document[] {
+  const matchStage: any = {
+    'customer.phone': { $ne: null }
+  };
+  if (follower) {
+    matchStage.follower = follower;
+  }
+
+  return [
+    { $match: matchStage },
+    { $sort: { 'customer.phone': 1, date: 1, created_at: 1 } },
+    {
+      $group: {
+        _id: '$customer.phone',
+        first_contact_date: { $first: '$date' },
+        last_update_date: { $last: '$date' },
+        current_name: { $last: '$customer.name' },
+        current_page: { $last: '$page' },
+        current_destination: { $last: '$destination' },
+        current_follower: { $last: '$follower' },
+        current_reason_code: { $last: '$reason_code' },
+        current_status_text: { $last: '$status_text' },
+        latest_note: { $last: '$note' },
+        history: {
+          $push: {
+            date: '$date',
+            status: { $ifNull: ['$reason_code', '$status_text'] },
+            reason_code: '$reason_code',
+            note: '$note',
+            created_at: '$created_at'
+          }
+        },
+        total_events: { $sum: 1 }
+      }
+    },
+    {
+      $match: {
+        current_reason_code: reasonCode
+      }
+    },
+    {
+      $project: {
+        _id: 0,
+        phone: '$_id',
+        name: '$current_name',
+        page: '$current_page',
+        destination: '$current_destination',
+        follower: '$current_follower',
+        first_contact_date: 1,
+        last_update_date: 1,
+        current_status: { $ifNull: ['$current_reason_code', '$current_status_text'] },
+        current_reason_code: 1,
+        latest_note: 1,
+        history: 1,
+        total_events: 1
+      }
+    },
+    { $sort: { last_update_date: -1 } }
+  ];
+}
+
+/**
  * Build aggregation pipeline for monthly cases summary (all followers)
  * Used for Excel export "Cases Summary" sheet
  * @param year Year number (e.g., 2025)

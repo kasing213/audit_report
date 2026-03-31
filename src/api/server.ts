@@ -1,5 +1,7 @@
 import express from 'express';
 import reportRoutes from '../reports/report-routes';
+import crmRoutes from './crm-routes';
+import { authMiddleware } from './auth-middleware';
 import { Logger } from '../utils/logger';
 
 export class ApiServer {
@@ -21,7 +23,7 @@ export class ApiServer {
     this.app.use((_req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
       next();
     });
 
@@ -45,6 +47,9 @@ export class ApiServer {
 
     // Reports routes
     this.app.use('/reports', reportRoutes);
+
+    // CRM dashboard (auth-protected)
+    this.app.use('/crm', authMiddleware, crmRoutes);
 
     // 404 handler
     this.app.use('*', (req, res) => {

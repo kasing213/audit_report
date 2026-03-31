@@ -3,6 +3,7 @@ import { ApiServer } from './api/server';
 import { DailyScheduler } from './scheduler/daily-scheduler';
 import { MonthlyScheduler } from './scheduler/monthly-scheduler';
 import { PromiseScheduler } from './scheduler/promise-scheduler';
+import { AdScannerScheduler } from './ad-scanner/ad-scanner-scheduler';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
 import { GroupConfigManager } from './utils/group-config';
@@ -81,6 +82,16 @@ async function main(): Promise<void> {
     });
     promiseScheduler.startScheduler();
     Logger.info('- Promise Reminders: 8:00 AM daily');
+
+    // Setup ad report PDF scanner
+    const adReportChatId = process.env.AD_REPORT_CHAT_ID;
+    if (adReportChatId && process.env.INTERNAL_BOT_TOKEN) {
+      const adScanner = new AdScannerScheduler();
+      adScanner.startScheduler();
+      Logger.info(`- Ad PDF Scanner: 9:30 AM daily (Chat ID: ${adReportChatId})`);
+    } else {
+      Logger.warn('AD_REPORT_CHAT_ID or INTERNAL_BOT_TOKEN not set - ad scanner disabled');
+    }
 
     Logger.info('Audit Sales System is running...');
     Logger.info('- Telegram Bot: Active (Commands: /help, /customers, /summary, /report)');

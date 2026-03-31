@@ -2,7 +2,13 @@ import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from './connection';
 import { LeadEventDocument, AuditLog, CustomerCase } from './models';
 import { ensureIndexes } from './indexes';
-import { buildCasesByFollowerAndMonthPipeline, buildMonthlyCasesSummaryPipeline } from './aggregations';
+import {
+  buildCasesByFollowerAndMonthPipeline,
+  buildMonthlyCasesSummaryPipeline,
+  buildAllCustomersPipeline,
+  buildStaleCustomersPipeline,
+  buildCustomersByReasonPipeline
+} from './aggregations';
 import { Logger } from '../utils/logger';
 
 export class SalesCaseRepository {
@@ -145,5 +151,20 @@ export class SalesCaseRepository {
       .sort({ timestamp: -1 })
       .limit(limit)
       .toArray();
+  }
+
+  async getAllCustomers(follower?: string): Promise<CustomerCase[]> {
+    const pipeline = buildAllCustomersPipeline(follower);
+    return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
+  }
+
+  async getStaleCustomers(days: number, follower?: string): Promise<CustomerCase[]> {
+    const pipeline = buildStaleCustomersPipeline(days, follower);
+    return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
+  }
+
+  async getCustomersByReason(reasonCode: string, follower?: string): Promise<CustomerCase[]> {
+    const pipeline = buildCustomersByReasonPipeline(reasonCode, follower);
+    return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 }

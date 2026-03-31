@@ -162,4 +162,8 @@ export class GroupConfigManager {
   public isCommandAllowedInChat(chatId: string | number): boolean {
     return this.isManagementSummaryChat(chatId) || this.isAuditChat(chatId);
   }
+
+  public getAllFollowerNames(): string[] {
+    return Array.from(this.groupConfigs.values()).map(g => g.name);
+  }
 }

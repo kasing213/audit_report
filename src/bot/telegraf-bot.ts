@@ -1,6 +1,7 @@
 import { Telegraf, Context } from 'telegraf';
 import { Logger } from '../utils/logger';
 import { SalesCaseRepository } from '../database/repository';
+import { CrmCommand } from './commands/crm-command';
 import { CustomersCommand } from './commands/customers-command';
 import { DeleteCommand } from './commands/delete-command';
 import { EditCommand } from './commands/edit-command';
@@ -17,6 +18,7 @@ dotenv.config();
 export class TelegrafBotService {
   private bot: Telegraf;
   private repository: SalesCaseRepository;
+  private crmCommand: CrmCommand;
   private customersCommand: CustomersCommand;
   private deleteCommand: DeleteCommand;
   private editCommand: EditCommand;
@@ -36,6 +38,7 @@ export class TelegrafBotService {
 
     this.bot = new Telegraf(token);
     this.repository = new SalesCaseRepository();
+    this.crmCommand = new CrmCommand(this.repository);
     this.customersCommand = new CustomersCommand(this.repository);
     this.deleteCommand = new DeleteCommand(this.repository);
     this.editCommand = new EditCommand(this.repository);
@@ -71,6 +74,20 @@ export class TelegrafBotService {
       } catch (error) {
         Logger.error('Error handling /customers command', error as Error);
         await ctx.reply('Failed to start customer list request.');
+      }
+    });
+
+    // /crm command - only in summary/audit chat
+    this.bot.command('crm', async (ctx: Context) => {
+      try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
+          return;
+        }
+        await this.crmCommand.handleCommand(ctx);
+      } catch (error) {
+        Logger.error('Error handling /crm command', error as Error);
+        await ctx.reply('❌ Failed to start CRM lookup.');
       }
     });
 
@@ -248,6 +265,17 @@ export class TelegrafBotService {
             } else {
               this.pendingReschedules.delete(userId);
             }
+          }
+        }
+
+        // Check for pending CRM request
+        if (userId && this.crmCommand.isPending(userId)) {
+          const text = (ctx.message && 'text' in ctx.message) ? ctx.message.text : '';
+          if (!text.startsWith('/')) {
+            const handled = await this.crmCommand.handlePending(ctx, text);
+            if (handled) return;
+          } else {
+            this.crmCommand.clearPending(userId);
           }
         }
 

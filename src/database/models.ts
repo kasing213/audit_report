@@ -43,6 +43,7 @@ export interface CustomerCase {
   last_update_date: string;         // YYYY-MM-DD
   current_status: string | null;
   current_reason_code?: string | null;
+  latest_note?: string | null;
   history: Array<{
     date: string;
     status: string | null;
