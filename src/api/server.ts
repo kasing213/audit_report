@@ -47,6 +47,11 @@ export class ApiServer {
       });
     });
 
+    // Root redirect to CRM dashboard
+    this.app.get('/', (_req, res) => {
+      res.redirect('/crm');
+    });
+
     // Reports routes
     this.app.use('/reports', reportRoutes);
 
