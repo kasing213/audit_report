@@ -1,6 +1,8 @@
 import express from 'express';
 import reportRoutes from '../reports/report-routes';
 import crmRoutes from './crm-routes';
+import dataEntryRoutes from './data-entry-routes';
+import { loginRouter } from './login-routes';
 import { authMiddleware } from './auth-middleware';
 import { Logger } from '../utils/logger';
 
@@ -48,8 +50,15 @@ export class ApiServer {
     // Reports routes
     this.app.use('/reports', reportRoutes);
 
+    // Login routes (public — no auth)
+    this.app.use('/crm', loginRouter);
+    this.app.use('/data-entry', loginRouter);
+
     // CRM dashboard (auth-protected)
     this.app.use('/crm', authMiddleware, crmRoutes);
+
+    // Data Entry dashboard (auth-protected)
+    this.app.use('/data-entry', authMiddleware, dataEntryRoutes);
 
     // 404 handler
     this.app.use('*', (req, res) => {

@@ -33,6 +33,26 @@ export interface AuditLog {
   error?: string;
 }
 
+export interface ChangeLogDocument {
+  _id?: string;
+  timestamp: Date;
+  action: 'create' | 'update' | 'delete';
+  event_id: string;
+  event_summary: {
+    customer_name: string | null;
+    customer_phone: string | null;
+    date: string;
+    follower: string | null;
+  };
+  changes?: Array<{
+    field: string;
+    old_value: any;
+    new_value: any;
+  }>;
+  snapshot?: LeadEventDocument;
+  actor: string;
+}
+
 export interface CustomerCase {
   phone: string | null;
   name: string | null;

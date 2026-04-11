@@ -30,8 +30,7 @@ router.get('/', async (_req: Request, res: Response) => {
     const template = handlebars.compile(templateContent);
     const html = template({
       followers,
-      reasonCodes: REASON_CODES,
-      token: (_req.query.token as string) || ''
+      reasonCodes: REASON_CODES
     });
 
     res.set('Content-Type', 'text/html');

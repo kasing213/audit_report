@@ -1,0 +1,982 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Data Entry Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Outfit:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0c0c0f;
+      --surface: #16161a;
+      --surface-2: #1e1e24;
+      --border: #2a2a32;
+      --text: #e8e6e3;
+      --text-muted: #72717a;
+      --accent: #00d4aa;
+      --accent-dim: #00d4aa22;
+      --red: #ff4d6a;
+      --red-dim: #ff4d6a18;
+      --yellow: #ffc145;
+      --yellow-dim: #ffc14518;
+      --green: #00d4aa;
+      --green-dim: #00d4aa18;
+      --blue: #5b9cf4;
+      --blue-dim: #5b9cf418;
+      --telegram: #26a5e4;
+      --font-body: 'Outfit', sans-serif;
+      --font-mono: 'DM Mono', monospace;
+      --radius: 8px;
+    }
+
+    html { font-size: 15px; }
+    body {
+      font-family: var(--font-body);
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* HEADER */
+    .header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 1rem 1.25rem;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      backdrop-filter: blur(12px);
+    }
+    .header-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .logo {
+      font-weight: 700;
+      font-size: 1.2rem;
+      letter-spacing: -0.02em;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .logo-mark {
+      width: 28px; height: 28px;
+      background: var(--accent);
+      border-radius: 6px;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 0.65rem; font-weight: 700; color: var(--bg);
+    }
+    .stats-bar {
+      display: flex;
+      gap: 1.25rem;
+      font-family: var(--font-mono);
+      font-size: 0.8rem;
+      color: var(--text-muted);
+    }
+    .stat-val { color: var(--accent); font-weight: 500; }
+
+    /* TABS */
+    .tabs {
+      display: flex;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 1.25rem;
+      gap: 0;
+    }
+    .tab-btn {
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      font-weight: 500;
+      padding: 0.75rem 1.25rem;
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      transition: all 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+    }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+
+    /* FORM */
+    .form-section { padding: 1.25rem; max-width: 600px; }
+    .form-group {
+      margin-bottom: 0.85rem;
+    }
+    .form-label {
+      display: block;
+      font-size: 0.7rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      font-weight: 500;
+      margin-bottom: 0.3rem;
+    }
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.85rem;
+    }
+
+    select, input[type="text"], input[type="date"], textarea {
+      font-family: var(--font-body);
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 0.65rem;
+      border-radius: var(--radius);
+      font-size: 0.85rem;
+      outline: none;
+      width: 100%;
+    }
+    select:focus, input:focus, textarea:focus {
+      border-color: var(--accent);
+      box-shadow: 0 0 0 2px var(--accent-dim);
+    }
+    select { cursor: pointer; }
+    textarea { resize: vertical; min-height: 60px; }
+
+    .btn {
+      font-family: var(--font-body);
+      font-size: 0.85rem;
+      font-weight: 600;
+      padding: 0.5rem 1.25rem;
+      border-radius: var(--radius);
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+    }
+    .btn-primary { background: var(--accent); color: var(--bg); }
+    .btn-primary:hover { opacity: 0.85; }
+    .btn-primary:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-ghost {
+      background: transparent;
+      color: var(--text-muted);
+      border: 1px solid var(--border);
+    }
+    .btn-ghost:hover { border-color: var(--text-muted); }
+    .btn-danger { background: var(--red); color: #fff; }
+    .btn-danger:hover { opacity: 0.85; }
+    .btn-sm { font-size: 0.75rem; padding: 0.3rem 0.65rem; }
+
+    /* FILTERS BAR */
+    .filters {
+      padding: 0.75rem 1.25rem;
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      align-items: flex-end;
+    }
+    .filter-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.25rem;
+    }
+    .filter-label {
+      font-size: 0.65rem;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .filters input[type="text"] { width: 160px; }
+
+    /* TABLE */
+    .table-wrap {
+      padding: 0 0.5rem;
+      overflow-x: auto;
+    }
+    .event-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.82rem;
+    }
+    .event-table th {
+      text-align: left;
+      font-size: 0.68rem;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--text-muted);
+      font-weight: 500;
+      padding: 0.65rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+      background: var(--bg);
+    }
+    .event-table td {
+      padding: 0.55rem 0.5rem;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+    .event-table tr:hover td { background: var(--surface); }
+
+    .phone-link {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      color: var(--telegram);
+      text-decoration: none;
+      font-family: var(--font-mono);
+      font-size: 0.78rem;
+      padding: 0.2rem 0.4rem;
+      background: #26a5e412;
+      border-radius: var(--radius);
+      border: 1px solid #26a5e425;
+      white-space: nowrap;
+    }
+    .phone-link:hover { background: #26a5e422; border-color: var(--telegram); }
+
+    .tag {
+      display: inline-block;
+      padding: 0.12rem 0.4rem;
+      border-radius: 4px;
+      font-size: 0.72rem;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .tag-create { background: var(--green-dim); color: var(--green); }
+    .tag-update { background: var(--blue-dim); color: var(--blue); }
+    .tag-delete { background: var(--red-dim); color: var(--red); }
+
+    .note-text {
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      max-width: 150px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .actions-cell {
+      display: flex;
+      gap: 0.3rem;
+      white-space: nowrap;
+    }
+
+    /* INLINE EDIT ROW */
+    .edit-row td { background: var(--surface) !important; }
+    .edit-row input, .edit-row select {
+      font-size: 0.8rem;
+      padding: 0.3rem 0.4rem;
+    }
+
+    /* ACTIVITY LOG */
+    .activity-section { padding: 1.25rem; }
+    .activity-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.85rem;
+      margin-bottom: 0.5rem;
+    }
+    .activity-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.5rem;
+    }
+    .activity-card-title {
+      font-weight: 600;
+      font-size: 0.9rem;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+    .activity-time {
+      font-family: var(--font-mono);
+      font-size: 0.75rem;
+      color: var(--text-muted);
+    }
+    .activity-summary {
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+    .diff-list {
+      font-size: 0.78rem;
+      font-family: var(--font-mono);
+    }
+    .diff-item {
+      padding: 0.2rem 0;
+      display: flex;
+      gap: 0.5rem;
+    }
+    .diff-field { color: var(--text-muted); min-width: 100px; }
+    .diff-old { color: var(--red); text-decoration: line-through; }
+    .diff-new { color: var(--green); }
+    .diff-arrow { color: var(--text-muted); }
+
+    /* EMPTY / LOADING */
+    .empty-state {
+      text-align: center;
+      padding: 4rem 2rem;
+      color: var(--text-muted);
+    }
+    .empty-state h3 { font-size: 1.1rem; margin-bottom: 0.5rem; color: var(--text); }
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 3rem;
+      color: var(--text-muted);
+      gap: 0.5rem;
+    }
+    .spinner {
+      width: 18px; height: 18px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* TOAST */
+    .toast {
+      position: fixed;
+      bottom: 1.5rem;
+      right: 1.5rem;
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.75rem 1.25rem;
+      font-size: 0.85rem;
+      z-index: 1000;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.3s;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast.success { border-color: var(--green); color: var(--green); }
+    .toast.error { border-color: var(--red); color: var(--red); }
+
+    /* MOBILE CARDS */
+    .mobile-cards { display: none; }
+    .m-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 0.85rem;
+      margin-bottom: 0.5rem;
+    }
+    .m-card-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 0.4rem;
+    }
+    .m-card-name { font-weight: 600; font-size: 0.95rem; }
+    .m-card-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.3rem 0.65rem;
+      font-size: 0.78rem;
+      color: var(--text-muted);
+      margin-bottom: 0.4rem;
+    }
+    .m-card-actions {
+      display: flex;
+      gap: 0.35rem;
+      margin-top: 0.5rem;
+    }
+
+    @media (max-width: 768px) {
+      html { font-size: 14px; }
+      .table-wrap { display: none; }
+      .mobile-cards { display: block; padding: 0.5rem; }
+      .form-row { grid-template-columns: 1fr; }
+      .filters { padding: 0.5rem 0.75rem; gap: 0.4rem; }
+      .filter-group { flex: 1; min-width: 80px; }
+      select, input { font-size: 0.8rem; padding: 0.4rem 0.5rem; }
+      .tabs { overflow-x: auto; }
+      .tab-btn { padding: 0.65rem 0.85rem; white-space: nowrap; font-size: 0.8rem; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-top">
+    <div class="logo">
+      <div class="logo-mark">DE</div>
+      Data Entry
+    </div>
+    <div class="stats-bar">
+      <span>Today: <span class="stat-val" id="stat-today">-</span></span>
+    </div>
+  </div>
+</div>
+
+<!-- TABS -->
+<div class="tabs">
+  <button class="tab-btn active" onclick="switchTab('add')">+ Add Event</button>
+  <button class="tab-btn" onclick="switchTab('browse')">Browse / Edit</button>
+  <button class="tab-btn" onclick="switchTab('activity')">Activity Log</button>
+</div>
+
+<!-- TAB 1: ADD EVENT -->
+<div class="tab-content active" id="tab-add">
+  <div class="form-section">
+    <form id="add-form" onsubmit="submitNewEvent(event)">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Date</label>
+          <input type="text" id="add-date" placeholder="YYYY-MM-DD" required>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Follower</label>
+          <select id="add-follower">
+            <option value="">-- Select --</option>
+            {{#each followers}}
+            <option value="{{this}}">{{this}}</option>
+            {{/each}}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Customer Name</label>
+          <input type="text" id="add-name" placeholder="Customer name">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Phone *</label>
+          <input type="text" id="add-phone" placeholder="Phone number" required>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Page / Source</label>
+          <input type="text" id="add-page" placeholder="Facebook, TikTok, etc." list="page-suggestions">
+          <datalist id="page-suggestions">
+            <option value="Facebook">
+            <option value="TikTok">
+            <option value="Sun TV">
+            <option value="Google">
+            <option value="Referral">
+          </datalist>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Destination</label>
+          <select id="add-destination">
+            <option value="">-- Select --</option>
+            {{#each destinationOptions}}
+            <option value="{{this.label}}">{{this.label}}</option>
+            {{/each}}
+          </select>
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">Reason Code</label>
+          <select id="add-reason">
+            <option value="">-- Select --</option>
+            {{#each reasonCodes}}
+            <option value="{{this.code}}">{{this.code}} - {{this.label}}</option>
+            {{/each}}
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Promise Date</label>
+          <input type="text" id="add-promise" placeholder="YYYY-MM-DD (optional)">
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Note</label>
+        <textarea id="add-note" placeholder="Optional note..."></textarea>
+      </div>
+
+      <button type="submit" class="btn btn-primary" id="add-submit-btn">Save Event</button>
+    </form>
+  </div>
+</div>
+
+<!-- TAB 2: BROWSE / EDIT -->
+<div class="tab-content" id="tab-browse">
+  <div class="filters">
+    <div class="filter-group">
+      <span class="filter-label">Start Date</span>
+      <input type="text" id="browse-start" placeholder="YYYY-MM-DD">
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">End Date</span>
+      <input type="text" id="browse-end" placeholder="YYYY-MM-DD">
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">Follower</span>
+      <select id="browse-follower">
+        <option value="all">All</option>
+        {{#each followers}}
+        <option value="{{this}}">{{this}}</option>
+        {{/each}}
+      </select>
+    </div>
+    <div class="filter-group">
+      <span class="filter-label">Phone</span>
+      <input type="text" id="browse-phone" placeholder="Search phone...">
+    </div>
+    <div class="filter-group" style="justify-content:flex-end">
+      <span class="filter-label">&nbsp;</span>
+      <button class="btn btn-primary" onclick="loadEvents()">Load</button>
+    </div>
+  </div>
+
+  <!-- Desktop Table -->
+  <div class="table-wrap">
+    <table class="event-table">
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Date</th>
+          <th>Name</th>
+          <th>Phone</th>
+          <th>Page</th>
+          <th>Dest</th>
+          <th>Follower</th>
+          <th>Reason</th>
+          <th>Note</th>
+          <th>Promise</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="events-table-body"></tbody>
+    </table>
+  </div>
+
+  <!-- Mobile Cards -->
+  <div class="mobile-cards" id="events-mobile-body"></div>
+
+  <div class="loading" id="events-loading" style="display:none">
+    <div class="spinner"></div>
+    <span>Loading events...</span>
+  </div>
+  <div class="empty-state" id="events-empty" style="display:none">
+    <h3>No events found</h3>
+    <p>Adjust date range or filters and click Load.</p>
+  </div>
+</div>
+
+<!-- TAB 3: ACTIVITY LOG -->
+<div class="tab-content" id="tab-activity">
+  <div class="filters">
+    <div class="filter-group">
+      <span class="filter-label">Date</span>
+      <input type="text" id="activity-date" placeholder="YYYY-MM-DD">
+    </div>
+    <div class="filter-group" style="justify-content:flex-end">
+      <span class="filter-label">&nbsp;</span>
+      <button class="btn btn-primary" onclick="loadActivity()">Load</button>
+    </div>
+  </div>
+  <div class="empty-state" id="activity-empty">
+    <h3>No activity</h3>
+    <p>Select a date and click Load to see changes.</p>
+  </div>
+  <div class="activity-section" id="activity-container"></div>
+  <div class="loading" id="activity-loading" style="display:none">
+    <div class="spinner"></div>
+    <span>Loading activity...</span>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast"></div>
+
+<script>
+  const TOKEN = '{{token}}';
+  const API_BASE = window.location.pathname.replace(/\/$/, '');
+  let allEvents = [];
+  let editingId = null;
+
+  function apiUrl(path) {
+    const base = API_BASE + path;
+    return TOKEN ? base + (base.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : base;
+  }
+
+  function apiHeaders() {
+    return { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
+  }
+
+  function showToast(msg, type) {
+    const toast = document.getElementById('toast');
+    toast.textContent = msg;
+    toast.className = 'toast ' + type + ' show';
+    setTimeout(() => toast.classList.remove('show'), 3000);
+  }
+
+  function todayStr() {
+    return new Date().toISOString().slice(0, 10);
+  }
+
+  function telegramSvg() {
+    return '<svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>';
+  }
+
+  // ── TAB SWITCHING ──
+  function switchTab(tab) {
+    document.querySelectorAll('.tab-btn').forEach((btn, i) => {
+      btn.classList.toggle('active', ['add', 'browse', 'activity'][i] === tab);
+    });
+    document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+    document.getElementById('tab-' + tab).classList.add('active');
+
+    if (tab === 'browse' && allEvents.length === 0) loadEvents();
+    if (tab === 'activity') loadActivity();
+  }
+
+  // ── ADD EVENT ──
+  document.getElementById('add-date').value = todayStr();
+
+  async function submitNewEvent(e) {
+    e.preventDefault();
+    const btn = document.getElementById('add-submit-btn');
+    btn.disabled = true;
+    btn.textContent = 'Saving...';
+
+    const body = {
+      date: document.getElementById('add-date').value,
+      customer_name: document.getElementById('add-name').value || null,
+      customer_phone: document.getElementById('add-phone').value,
+      page: document.getElementById('add-page').value || null,
+      destination: document.getElementById('add-destination').value || null,
+      follower: document.getElementById('add-follower').value || null,
+      reason_code: document.getElementById('add-reason').value || null,
+      note: document.getElementById('add-note').value || null,
+      promise_date: document.getElementById('add-promise').value || null
+    };
+
+    try {
+      const resp = await fetch(apiUrl('/api/events'), {
+        method: 'POST',
+        headers: apiHeaders(),
+        body: JSON.stringify(body)
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast('Event saved!', 'success');
+        // Reset form but keep date and follower
+        document.getElementById('add-name').value = '';
+        document.getElementById('add-phone').value = '';
+        document.getElementById('add-page').value = '';
+        document.getElementById('add-destination').value = '';
+        document.getElementById('add-reason').value = '';
+        document.getElementById('add-note').value = '';
+        document.getElementById('add-promise').value = '';
+        updateTodayStat();
+      } else {
+        showToast(data.error || 'Failed to save', 'error');
+      }
+    } catch (err) {
+      showToast('Failed to save event', 'error');
+    }
+    btn.disabled = false;
+    btn.textContent = 'Save Event';
+  }
+
+  async function updateTodayStat() {
+    try {
+      const today = todayStr();
+      const resp = await fetch(apiUrl('/api/events?start=' + today + '&end=' + today), {
+        headers: apiHeaders()
+      });
+      const data = await resp.json();
+      document.getElementById('stat-today').textContent = data.total || 0;
+    } catch (e) {}
+  }
+
+  // ── BROWSE / EDIT ──
+  (function setDefaultDates() {
+    const today = todayStr();
+    const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+    document.getElementById('browse-start').value = weekAgo;
+    document.getElementById('browse-end').value = today;
+    document.getElementById('activity-date').value = today;
+  })();
+
+  async function loadEvents() {
+    const start = document.getElementById('browse-start').value;
+    const end = document.getElementById('browse-end').value;
+    const follower = document.getElementById('browse-follower').value;
+    const phone = document.getElementById('browse-phone').value;
+
+    if (!start || !end) { showToast('Please set date range', 'error'); return; }
+
+    document.getElementById('events-loading').style.display = '';
+    document.getElementById('events-empty').style.display = 'none';
+    document.getElementById('events-table-body').innerHTML = '';
+    document.getElementById('events-mobile-body').innerHTML = '';
+
+    let url = '/api/events?start=' + start + '&end=' + end;
+    if (follower !== 'all') url += '&follower=' + encodeURIComponent(follower);
+    if (phone) url += '&phone=' + encodeURIComponent(phone);
+
+    try {
+      const resp = await fetch(apiUrl(url), { headers: apiHeaders() });
+      const data = await resp.json();
+      allEvents = data.events || [];
+      renderEvents(allEvents);
+    } catch (err) {
+      showToast('Failed to load events', 'error');
+    }
+    document.getElementById('events-loading').style.display = 'none';
+  }
+
+  function esc(str) {
+    if (!str) return '';
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+  }
+
+  function renderEvents(events) {
+    const tbody = document.getElementById('events-table-body');
+    const mobileBody = document.getElementById('events-mobile-body');
+
+    if (events.length === 0) {
+      tbody.innerHTML = '';
+      mobileBody.innerHTML = '';
+      document.getElementById('events-empty').style.display = '';
+      return;
+    }
+    document.getElementById('events-empty').style.display = 'none';
+
+    // Desktop table
+    tbody.innerHTML = events.map((e, i) => {
+      const phoneCell = e.telegram_link
+        ? '<a class="phone-link" href="' + e.telegram_link + '" target="_blank">' + telegramSvg() + ' ' + esc(e.phone_display || e.customer?.phone) + '</a>'
+        : esc(e.customer?.phone || '-');
+      const promiseStr = e.promise_date ? e.promise_date + (e.promise_status ? ' (' + e.promise_status + ')' : '') : '-';
+      return '<tr data-id="' + e._id + '">' +
+        '<td>' + (i + 1) + '</td>' +
+        '<td>' + esc(e.date) + '</td>' +
+        '<td style="font-weight:600">' + esc(e.customer?.name || '-') + '</td>' +
+        '<td>' + phoneCell + '</td>' +
+        '<td>' + esc(e.page || '-') + '</td>' +
+        '<td>' + esc(e.destination || '-') + '</td>' +
+        '<td>' + esc(e.follower || '-') + '</td>' +
+        '<td>' + (e.reason_code ? '<span class="tag">' + esc(e.reason_code) + '</span>' : '-') + '</td>' +
+        '<td><span class="note-text">' + esc(e.note || '-') + '</span></td>' +
+        '<td style="font-size:0.78rem">' + esc(promiseStr) + '</td>' +
+        '<td><div class="actions-cell">' +
+          '<button class="btn btn-ghost btn-sm" onclick="startEdit(\'' + e._id + '\')">Edit</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="confirmDelete(\'' + e._id + '\')">Del</button>' +
+        '</div></td>' +
+        '</tr>';
+    }).join('');
+
+    // Mobile cards
+    mobileBody.innerHTML = events.map(e => {
+      const promiseStr = e.promise_date ? e.promise_date + (e.promise_status ? ' (' + e.promise_status + ')' : '') : '';
+      return '<div class="m-card" data-id="' + e._id + '">' +
+        '<div class="m-card-top"><span class="m-card-name">' + esc(e.customer?.name || 'Unknown') + '</span><span style="font-size:0.78rem;color:var(--text-muted)">' + esc(e.date) + '</span></div>' +
+        '<div class="m-card-meta">' +
+          '<span>' + esc(e.customer?.phone || '') + '</span>' +
+          '<span>' + esc(e.page || '') + '</span>' +
+          '<span>' + esc(e.follower || '') + '</span>' +
+          (e.reason_code ? '<span class="tag">' + esc(e.reason_code) + '</span>' : '') +
+          (e.destination ? '<span>' + esc(e.destination) + '</span>' : '') +
+          (promiseStr ? '<span>' + esc(promiseStr) + '</span>' : '') +
+        '</div>' +
+        (e.note ? '<div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.3rem">' + esc(e.note) + '</div>' : '') +
+        '<div class="m-card-actions">' +
+          '<button class="btn btn-ghost btn-sm" onclick="startEditMobile(\'' + e._id + '\')">Edit</button>' +
+          '<button class="btn btn-danger btn-sm" onclick="confirmDelete(\'' + e._id + '\')">Del</button>' +
+        '</div>' +
+        '</div>';
+    }).join('');
+  }
+
+  // Inline edit
+  async function startEdit(id) {
+    if (editingId) cancelEdit();
+    editingId = id;
+
+    const evt = allEvents.find(e => e._id === id);
+    if (!evt) return;
+
+    const row = document.querySelector('tr[data-id="' + id + '"]');
+    if (!row) return;
+
+    row.className = 'edit-row';
+    row.innerHTML =
+      '<td></td>' +
+      '<td><input type="text" id="edit-date" value="' + esc(evt.date) + '" style="width:100px"></td>' +
+      '<td><input type="text" id="edit-name" value="' + esc(evt.customer?.name || '') + '" style="width:100px"></td>' +
+      '<td><input type="text" id="edit-phone" value="' + esc(evt.customer?.phone || '') + '" style="width:110px"></td>' +
+      '<td><input type="text" id="edit-page" value="' + esc(evt.page || '') + '" style="width:80px"></td>' +
+      '<td><select id="edit-destination" style="width:90px"><option value="">-</option>' +
+        DEST_OPTIONS.map(d => '<option value="' + esc(d) + '"' + (evt.destination === d ? ' selected' : '') + '>' + esc(d) + '</option>').join('') +
+      '</select></td>' +
+      '<td><select id="edit-follower" style="width:90px"><option value="">-</option>' +
+        FOLLOWERS.map(f => '<option value="' + esc(f) + '"' + (evt.follower === f ? ' selected' : '') + '>' + esc(f) + '</option>').join('') +
+      '</select></td>' +
+      '<td><select id="edit-reason" style="width:60px"><option value="">-</option>' +
+        REASONS.map(r => '<option value="' + esc(r) + '"' + (evt.reason_code === r ? ' selected' : '') + '>' + esc(r) + '</option>').join('') +
+      '</select></td>' +
+      '<td><input type="text" id="edit-note" value="' + esc(evt.note || '') + '" style="width:120px"></td>' +
+      '<td><input type="text" id="edit-promise" value="' + esc(evt.promise_date || '') + '" style="width:95px"></td>' +
+      '<td><div class="actions-cell">' +
+        '<button class="btn btn-primary btn-sm" onclick="saveEdit(\'' + id + '\')">Save</button>' +
+        '<button class="btn btn-ghost btn-sm" onclick="cancelEdit()">X</button>' +
+      '</div></td>';
+  }
+
+  function startEditMobile(id) {
+    // On mobile, switch to a simple prompt-based edit or redirect to desktop
+    startEdit(id);
+  }
+
+  function cancelEdit() {
+    editingId = null;
+    renderEvents(allEvents);
+  }
+
+  async function saveEdit(id) {
+    const body = {
+      date: document.getElementById('edit-date').value,
+      customer_name: document.getElementById('edit-name').value || null,
+      customer_phone: document.getElementById('edit-phone').value,
+      page: document.getElementById('edit-page').value || null,
+      destination: document.getElementById('edit-destination').value || null,
+      follower: document.getElementById('edit-follower').value || null,
+      reason_code: document.getElementById('edit-reason').value || null,
+      note: document.getElementById('edit-note').value || null,
+      promise_date: document.getElementById('edit-promise').value || null
+    };
+
+    try {
+      const resp = await fetch(apiUrl('/api/events/' + id), {
+        method: 'PUT',
+        headers: apiHeaders(),
+        body: JSON.stringify(body)
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast(data.changes ? data.changes + ' field(s) updated' : 'No changes', 'success');
+        editingId = null;
+        loadEvents();
+      } else {
+        showToast(data.error || 'Update failed', 'error');
+      }
+    } catch (err) {
+      showToast('Update failed', 'error');
+    }
+  }
+
+  async function confirmDelete(id) {
+    const evt = allEvents.find(e => e._id === id);
+    const label = evt ? (evt.customer?.name || evt.customer?.phone || id) : id;
+    if (!confirm('Delete event for "' + label + '"?')) return;
+
+    try {
+      const resp = await fetch(apiUrl('/api/events/' + id), {
+        method: 'DELETE',
+        headers: apiHeaders()
+      });
+      const data = await resp.json();
+      if (data.success) {
+        showToast('Event deleted', 'success');
+        allEvents = allEvents.filter(e => e._id !== id);
+        renderEvents(allEvents);
+        updateTodayStat();
+      } else {
+        showToast(data.error || 'Delete failed', 'error');
+      }
+    } catch (err) {
+      showToast('Delete failed', 'error');
+    }
+  }
+
+  // ── ACTIVITY LOG ──
+  async function loadActivity() {
+    const date = document.getElementById('activity-date').value;
+    if (!date) { showToast('Please set a date', 'error'); return; }
+
+    document.getElementById('activity-loading').style.display = '';
+    document.getElementById('activity-empty').style.display = 'none';
+    document.getElementById('activity-container').innerHTML = '';
+
+    try {
+      const resp = await fetch(apiUrl('/api/activity?date=' + date), { headers: apiHeaders() });
+      const data = await resp.json();
+      const logs = data.logs || [];
+
+      document.getElementById('activity-loading').style.display = 'none';
+
+      if (logs.length === 0) {
+        document.getElementById('activity-empty').style.display = '';
+        document.getElementById('activity-empty').querySelector('h3').textContent = 'No activity on ' + date;
+        return;
+      }
+
+      document.getElementById('activity-container').innerHTML = logs.map(log => {
+        const tagClass = 'tag-' + log.action;
+        const actionLabel = log.action.charAt(0).toUpperCase() + log.action.slice(1);
+        const time = new Date(log.timestamp).toLocaleTimeString();
+        const summary = (log.event_summary?.customer_name || log.event_summary?.customer_phone || 'Unknown') +
+          (log.event_summary?.follower ? ' (' + log.event_summary.follower + ')' : '');
+
+        let diffHtml = '';
+        if (log.action === 'update' && log.changes) {
+          diffHtml = '<div class="diff-list">' +
+            log.changes.map(c =>
+              '<div class="diff-item">' +
+                '<span class="diff-field">' + esc(c.field) + '</span>' +
+                '<span class="diff-old">' + esc(String(c.old_value || 'null')) + '</span>' +
+                '<span class="diff-arrow">&rarr;</span>' +
+                '<span class="diff-new">' + esc(String(c.new_value || 'null')) + '</span>' +
+              '</div>'
+            ).join('') +
+            '</div>';
+        }
+        if (log.action === 'delete' && log.snapshot) {
+          diffHtml = '<div style="font-size:0.78rem;color:var(--text-muted);font-family:var(--font-mono)">Deleted record: ' +
+            esc(log.snapshot.date) + ' | ' + esc(log.snapshot.customer?.phone || '') + ' | ' + esc(log.snapshot.page || '') +
+            '</div>';
+        }
+
+        return '<div class="activity-card">' +
+          '<div class="activity-card-header">' +
+            '<div class="activity-card-title"><span class="tag ' + tagClass + '">' + actionLabel + '</span> ' + esc(summary) + '</div>' +
+            '<span class="activity-time">' + time + '</span>' +
+          '</div>' +
+          '<div class="activity-summary">Event date: ' + esc(log.event_summary?.date || '-') + '</div>' +
+          diffHtml +
+          '</div>';
+      }).join('');
+    } catch (err) {
+      document.getElementById('activity-loading').style.display = 'none';
+      showToast('Failed to load activity', 'error');
+    }
+  }
+
+  // ── CONSTANTS FOR INLINE EDIT DROPDOWNS ──
+  const FOLLOWERS = {{{followersJson}}};
+  const REASONS = {{{reasonsJson}}};
+  const DEST_OPTIONS = {{{destOptionsJson}}};
+
+  // Initial load
+  updateTodayStat();
+</script>
+</body>
+</html>

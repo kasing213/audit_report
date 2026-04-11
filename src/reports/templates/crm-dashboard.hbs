@@ -413,6 +413,7 @@
     <div class="stats-bar">
       <span>Total: <span class="stat-val" id="stat-total">—</span></span>
       <span>Stale: <span class="stat-val" id="stat-stale" style="color:var(--red)">—</span></span>
+      <a href="logout" style="color:var(--text-muted);text-decoration:none;font-size:0.75rem;margin-left:0.5rem">Logout</a>
     </div>
   </div>
 </div>
@@ -524,19 +525,9 @@
 <div class="toast" id="toast"></div>
 
 <script>
-  const TOKEN = '{{token}}';
   const API_BASE = window.location.pathname.replace(/\/$/, '');
   let allCustomers = [];
   let importRows = null;
-
-  function apiHeaders() {
-    return { 'Authorization': 'Bearer ' + TOKEN, 'Content-Type': 'application/json' };
-  }
-
-  function apiUrl(path) {
-    const base = API_BASE + path;
-    return TOKEN ? base + (base.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : base;
-  }
 
   // FILTER UI
   document.getElementById('filter-type').addEventListener('change', function() {
@@ -570,7 +561,6 @@
     if (follower !== 'all') url += '&follower=' + encodeURIComponent(follower);
     if (filter === 'reason') url += '&reason=' + encodeURIComponent(reason);
     if (filter === 'stale') url += '&days=' + days;
-    url += '&token=' + encodeURIComponent(TOKEN);
 
     document.getElementById('loading').style.display = '';
     document.getElementById('empty').style.display = 'none';
@@ -578,7 +568,8 @@
     document.getElementById('mobile-body').innerHTML = '';
 
     try {
-      const resp = await fetch(url, { headers: { 'Authorization': 'Bearer ' + TOKEN } });
+      const resp = await fetch(url, { credentials: 'same-origin' });
+      if (resp.status === 401) { window.location.href = API_BASE + '/login'; return; }
       const data = await resp.json();
       allCustomers = data.customers || [];
 
@@ -684,11 +675,12 @@
     formData.append('file', file);
 
     try {
-      const resp = await fetch(API_BASE + '/api/import?token=' + encodeURIComponent(TOKEN), {
+      const resp = await fetch(API_BASE + '/api/import', {
         method: 'POST',
-        headers: { 'Authorization': 'Bearer ' + TOKEN },
+        credentials: 'same-origin',
         body: formData
       });
+      if (resp.status === 401) { window.location.href = API_BASE + '/login'; return; }
       const data = await resp.json();
 
       if (data.error) {
@@ -723,11 +715,13 @@
   async function confirmImport() {
     if (!importRows) return;
     try {
-      const resp = await fetch(API_BASE + '/api/import/confirm?token=' + encodeURIComponent(TOKEN), {
+      const resp = await fetch(API_BASE + '/api/import/confirm', {
         method: 'POST',
-        headers: { ...apiHeaders() },
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rows: importRows })
       });
+      if (resp.status === 401) { window.location.href = API_BASE + '/login'; return; }
       const data = await resp.json();
       if (data.success) {
         showToast('Imported ' + data.imported + ' records' + (data.skipped ? ', skipped ' + data.skipped : ''), 'success');
