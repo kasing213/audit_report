@@ -3,6 +3,11 @@ import { createSessionCookie } from './auth-middleware';
 
 export const loginRouter = express.Router();
 
+// GET / — redirect to login
+loginRouter.get('/', (_req: Request, res: Response) => {
+  res.redirect('/login');
+});
+
 // GET /login — show login page
 loginRouter.get('/login', (_req: Request, res: Response) => {
   const error = _req.query.error ? 'Invalid password. Please try again.' : '';
@@ -22,17 +27,17 @@ loginRouter.post('/login', express.urlencoded({ extended: true }), (req: Request
   if (password === token) {
     const cookie = createSessionCookie(token);
     res.setHeader('Set-Cookie', `audit_session=${encodeURIComponent(cookie)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
-    // Redirect to the dashboard (same base path)
-    res.redirect(req.baseUrl + '/');
+    // Redirect to CRM dashboard after login
+    res.redirect('/crm');
   } else {
-    res.redirect(req.baseUrl + '/login?error=1');
+    res.redirect('/login?error=1');
   }
 });
 
 // GET /logout — clear session
 loginRouter.get('/logout', (_req: Request, res: Response) => {
   res.setHeader('Set-Cookie', 'audit_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0');
-  res.redirect(_req.baseUrl + '/login');
+  res.redirect('/login');
 });
 
 function buildLoginPage(error: string): string {

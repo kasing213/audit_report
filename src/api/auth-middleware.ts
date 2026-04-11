@@ -87,11 +87,8 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
 
   // 3. Redirect to login page (for browser navigation)
   if (req.accepts('html') && !req.path.startsWith('/api/')) {
-    const loginPath = req.baseUrl + '/login';
-    if (req.path !== '/login') {
-      res.redirect(loginPath);
-      return;
-    }
+    res.redirect('/login');
+    return;
   }
 
   res.status(401).json({ error: 'Unauthorized' });

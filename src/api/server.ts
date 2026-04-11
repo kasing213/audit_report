@@ -47,17 +47,11 @@ export class ApiServer {
       });
     });
 
-    // Root redirect to CRM dashboard
-    this.app.get('/', (_req, res) => {
-      res.redirect('/crm');
-    });
+    // Login routes (public — at root)
+    this.app.use('/', loginRouter);
 
     // Reports routes
     this.app.use('/reports', reportRoutes);
-
-    // Login routes (public — no auth)
-    this.app.use('/crm', loginRouter);
-    this.app.use('/data-entry', loginRouter);
 
     // CRM dashboard (auth-protected)
     this.app.use('/crm', authMiddleware, crmRoutes);

@@ -413,7 +413,7 @@
     <div class="stats-bar">
       <span>Total: <span class="stat-val" id="stat-total">—</span></span>
       <span>Stale: <span class="stat-val" id="stat-stale" style="color:var(--red)">—</span></span>
-      <a href="logout" style="color:var(--text-muted);text-decoration:none;font-size:0.75rem;margin-left:0.5rem">Logout</a>
+      <a href="/logout" style="color:var(--text-muted);text-decoration:none;font-size:0.75rem;margin-left:0.5rem">Logout</a>
     </div>
   </div>
 </div>
@@ -569,7 +569,7 @@
 
     try {
       const resp = await fetch(url, { credentials: 'same-origin' });
-      if (resp.status === 401) { window.location.href = API_BASE + '/login'; return; }
+      if (resp.status === 401) { window.location.href = '/login'; return; }
       const data = await resp.json();
       allCustomers = data.customers || [];
 
@@ -680,7 +680,7 @@
         credentials: 'same-origin',
         body: formData
       });
-      if (resp.status === 401) { window.location.href = API_BASE + '/login'; return; }
+      if (resp.status === 401) { window.location.href = '/login'; return; }
       const data = await resp.json();
 
       if (data.error) {
@@ -721,7 +721,7 @@
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rows: importRows })
       });
-      if (resp.status === 401) { window.location.href = API_BASE + '/login'; return; }
+      if (resp.status === 401) { window.location.href = '/login'; return; }
       const data = await resp.json();
       if (data.success) {
         showToast('Imported ' + data.imported + ' records' + (data.skipped ? ', skipped ' + data.skipped : ''), 'success');
