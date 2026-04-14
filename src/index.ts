@@ -14,6 +14,7 @@ dotenv.config();
 async function main(): Promise<void> {
   try {
     Logger.info('Starting Audit Sales System...');
+    Logger.info(`ENV check — DASHBOARD_TOKEN set: ${!!process.env.DASHBOARD_TOKEN}, all env keys: ${Object.keys(process.env).filter(k => !k.startsWith('npm_')).join(', ')}`);
 
     // Start API server first for health checks (non-blocking)
     Logger.info('Starting API server...');
