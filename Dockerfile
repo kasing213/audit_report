@@ -50,6 +50,9 @@ RUN npm install -D typescript @types/node && \
     npm run build && \
     npm uninstall typescript @types/node
 
+# Copy non-TS assets (templates) to dist
+RUN cp -r src/reports/templates dist/reports/templates
+
 # Remove source files to reduce image size
 RUN rm -rf src tsconfig.json
 
