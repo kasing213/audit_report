@@ -3,11 +3,6 @@ import { createSessionCookie } from './auth-middleware';
 
 export const loginRouter = express.Router();
 
-// GET / — redirect to login
-loginRouter.get('/', (_req: Request, res: Response) => {
-  res.redirect('/login');
-});
-
 // GET /login — show login page
 loginRouter.get('/login', (_req: Request, res: Response) => {
   const error = _req.query.error ? 'Invalid password. Please try again.' : '';

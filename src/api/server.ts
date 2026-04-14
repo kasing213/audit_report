@@ -47,7 +47,12 @@ export class ApiServer {
       });
     });
 
-    // Login routes (public — at root)
+    // Root → login page
+    this.app.get('/', (_req, res) => {
+      res.redirect('/login');
+    });
+
+    // Login routes (public)
     this.app.use('/', loginRouter);
 
     // Reports routes
