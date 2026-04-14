@@ -12,23 +12,27 @@ loginRouter.get('/login', (_req: Request, res: Response) => {
 
 // POST /login — authenticate
 loginRouter.post('/login', express.urlencoded({ extended: true }), (req: Request, res: Response) => {
-  const token = process.env.DASHBOARD_TOKEN;
-  const { password } = req.body;
+  try {
+    const token = process.env.DASHBOARD_TOKEN;
+    const password = req.body?.password;
 
-  if (!token) {
-    res.status(500).send('DASHBOARD_TOKEN not configured on server.');
-    return;
-  }
+    Logger.info(`Login attempt — body: ${JSON.stringify(req.body)}, token set: ${!!token}`);
 
-  Logger.info(`Login attempt — password received: ${!!password}, token configured: ${!!token}, match: ${password?.trim() === token?.trim()}`);
+    if (!token) {
+      res.status(500).send('DASHBOARD_TOKEN not configured on server.');
+      return;
+    }
 
-  if (password?.trim() === token?.trim()) {
-    const cookie = createSessionCookie(token);
-    res.setHeader('Set-Cookie', `audit_session=${encodeURIComponent(cookie)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
-    // Redirect to CRM dashboard after login
-    res.redirect('/crm');
-  } else {
-    res.redirect('/login?error=1');
+    if (typeof password === 'string' && password.trim() === token.trim()) {
+      const cookie = createSessionCookie(token);
+      res.setHeader('Set-Cookie', `audit_session=${encodeURIComponent(cookie)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
+      res.redirect('/crm');
+    } else {
+      res.redirect('/login?error=1');
+    }
+  } catch (err) {
+    Logger.error('Login error', err as Error);
+    res.status(500).send('Login failed: ' + (err as Error).message);
   }
 });
 
