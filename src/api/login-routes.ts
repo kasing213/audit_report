@@ -1,5 +1,6 @@
 import express, { Request, Response } from 'express';
 import { createSessionCookie } from './auth-middleware';
+import { Logger } from '../utils/logger';
 
 export const loginRouter = express.Router();
 
@@ -19,7 +20,9 @@ loginRouter.post('/login', express.urlencoded({ extended: true }), (req: Request
     return;
   }
 
-  if (password === token) {
+  Logger.info(`Login attempt — password received: ${!!password}, token configured: ${!!token}, match: ${password?.trim() === token?.trim()}`);
+
+  if (password?.trim() === token?.trim()) {
     const cookie = createSessionCookie(token);
     res.setHeader('Set-Cookie', `audit_session=${encodeURIComponent(cookie)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
     // Redirect to CRM dashboard after login
@@ -158,7 +161,7 @@ function buildLoginPage(error: string): string {
       <span class="logo-text">Audit Sales</span>
     </div>
     ${error ? `<div class="error">${error}</div>` : ''}
-    <form method="POST">
+    <form method="POST" action="/login">
       <label for="password">Password</label>
       <input type="password" id="password" name="password" placeholder="Enter admin password" autofocus required>
       <button type="submit" class="btn">Sign In</button>
