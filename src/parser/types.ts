@@ -16,6 +16,9 @@ export interface LeadEvent {
   status_text: string | null;
   reason_code?: ReasonCode | null;
   note?: string | null;
+  temperature?: 'hot' | 'warm' | 'cold' | null;
+  temperature_source?: 'rules' | 'llm' | 'manual' | null;
+  meta_lead_id?: string | null;
   source: {
     telegram_msg_id: string;
     model: string;

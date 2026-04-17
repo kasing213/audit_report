@@ -49,6 +49,7 @@ router.get('/api/customers', async (req: Request, res: Response) => {
     const filter = (req.query.filter as string) || 'all';
     const reason = req.query.reason as string | undefined;
     const days = parseInt(req.query.days as string) || 14;
+    const temperatureFilter = req.query.temperature as string | undefined;
 
     let cases;
     const followerParam = follower && follower !== 'all' ? follower : undefined;
@@ -68,9 +69,15 @@ router.get('/api/customers', async (req: Request, res: Response) => {
         cases = await repository.getAllCustomers(followerParam);
     }
 
+    // Optional temperature filter applied in-memory to stay compatible with all base filters
+    if (temperatureFilter && ['hot', 'warm', 'cold'].includes(temperatureFilter)) {
+      cases = cases.filter((c) => c.current_temperature === temperatureFilter);
+    }
+
     // Enrich with Telegram links
     const enriched = cases.map(c => ({
       ...c,
+      temperature: c.current_temperature ?? null,
       telegram_link: c.phone ? formatTelegramLink(c.phone) : null,
       phone_display: c.phone ? formatPhoneDisplay(c.phone) : null,
       days_since_contact: c.last_update_date

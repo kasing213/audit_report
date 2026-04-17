@@ -1,4 +1,6 @@
 import { MessageParser } from '../parser/message-parser';
+import { TemperatureClassifier } from '../classifier/temperature-classifier';
+import { pushTemperatureEvent } from '../integrations/meta-capi';
 
 interface TelegramMessage {
   message_id: number;
@@ -22,10 +24,12 @@ import { Logger } from '../utils/logger';
 export class MessageHandlers {
   private parser: MessageParser;
   private repository: SalesCaseRepository;
+  private classifier: TemperatureClassifier;
 
   constructor() {
     this.parser = new MessageParser();
     this.repository = new SalesCaseRepository();
+    this.classifier = new TemperatureClassifier();
   }
 
   public async handleMessage(message: TelegramMessage): Promise<void> {
@@ -74,11 +78,19 @@ export class MessageHandlers {
       // Enrich events with update detection
       const enrichedEvents = await this.enrichWithUpdateDetection(parseResult);
 
+      // Classify temperature for each event
+      for (const ev of enrichedEvents) {
+        const result = await this.classifier.classify(ev.status_text, ev.reason_code);
+        ev.temperature = result.temperature;
+        ev.temperature_source = result.source;
+      }
+
       // Remove is_update before saving (not part of schema)
       const leadEventDocs: LeadEventDocument[] = enrichedEvents.map((leadEvent) => {
         const { is_update, ...eventData } = leadEvent;
         return {
           ...eventData,
+          meta_sync_status: eventData.meta_lead_id ? 'pending' : null,
           created_at: new Date()
         };
       });
@@ -86,6 +98,13 @@ export class MessageHandlers {
       await this.repository.saveLeadEvents(leadEventDocs);
 
       Logger.info(`Saved ${leadEventDocs.length} lead events from message ${messageId}`);
+
+      // Fire-and-forget Meta CAPI push for any event with a meta_lead_id
+      for (const doc of leadEventDocs) {
+        if (doc.meta_lead_id && doc.temperature) {
+          void pushTemperatureEvent(doc, this.repository);
+        }
+      }
 
       await this.repository.logAudit({
         timestamp: new Date(),

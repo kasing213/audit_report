@@ -48,6 +48,16 @@ ENABLE_MONTHLY_REPORTS=true
 
 # Backwards Compatibility (Fallback)
 REPORT_CHAT_ID=-1002345678901
+
+# Meta Lead Ads Integration (Optional)
+# Ingress webhook at /webhooks/meta-leads — set on Meta app dashboard
+META_APP_SECRET=your_meta_app_secret
+META_VERIFY_TOKEN=your_chosen_verify_token
+META_PAGE_ACCESS_TOKEN=your_page_access_token
+
+# Meta Conversions API (CAPI) — outbound temperature sync
+META_PIXEL_ID=1234567890
+META_CAPI_TOKEN=your_capi_access_token
 ```
 
 **IMPORTANT:**

@@ -3,6 +3,7 @@ import reportRoutes from '../reports/report-routes';
 import crmRoutes from './crm-routes';
 import dataEntryRoutes from './data-entry-routes';
 import { loginRouter } from './login-routes';
+import metaWebhookRoutes from './meta-webhook-routes';
 import { authMiddleware } from './auth-middleware';
 import { Logger } from '../utils/logger';
 
@@ -54,6 +55,9 @@ export class ApiServer {
 
     // Login routes (public)
     this.app.use('/', loginRouter);
+
+    // Meta Lead Ads webhook (public, pre-auth, needs raw body for HMAC verify)
+    this.app.use('/webhooks/meta-leads', metaWebhookRoutes);
 
     // Reports routes
     this.app.use('/reports', reportRoutes);

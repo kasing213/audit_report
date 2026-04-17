@@ -7,7 +7,8 @@ import {
   buildMonthlyCasesSummaryPipeline,
   buildAllCustomersPipeline,
   buildStaleCustomersPipeline,
-  buildCustomersByReasonPipeline
+  buildCustomersByReasonPipeline,
+  buildCustomersByTemperatureAndMonthPipeline
 } from './aggregations';
 import { Logger } from '../utils/logger';
 
@@ -167,6 +168,15 @@ export class SalesCaseRepository {
 
   async getCustomersByReason(reasonCode: string, follower?: string): Promise<CustomerCase[]> {
     const pipeline = buildCustomersByReasonPipeline(reasonCode, follower);
+    return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
+  }
+
+  async getCustomersByTemperatureAndMonth(
+    temperature: 'hot' | 'warm' | 'cold',
+    month: string,
+    follower?: string
+  ): Promise<CustomerCase[]> {
+    const pipeline = buildCustomersByTemperatureAndMonthPipeline(temperature, month, follower);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 

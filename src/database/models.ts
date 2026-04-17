@@ -14,6 +14,10 @@ export interface LeadEventDocument {
   promise_date?: string | null;
   promise_status?: 'pending' | 'came' | 'didnt_come' | null;
   group_id?: string | null;
+  temperature?: 'hot' | 'warm' | 'cold' | null;
+  temperature_source?: 'rules' | 'llm' | 'manual' | null;
+  meta_lead_id?: string | null;
+  meta_sync_status?: 'pending' | 'synced' | 'failed' | null;
   source: {
     telegram_msg_id: string;
     model: string;
@@ -63,6 +67,7 @@ export interface CustomerCase {
   last_update_date: string;         // YYYY-MM-DD
   current_status: string | null;
   current_reason_code?: string | null;
+  current_temperature?: 'hot' | 'warm' | 'cold' | null;
   latest_note?: string | null;
   history: Array<{
     date: string;

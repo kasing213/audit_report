@@ -8,6 +8,8 @@ import { EditCommand } from './commands/edit-command';
 import { HelpCommand } from './commands/help-command';
 import { ReportCommand } from './commands/report-command';
 import { SummaryCommand } from './commands/summary-command';
+import { TemperatureCommand } from './commands/temperature-command';
+import { ReclassifyCommand } from './commands/reclassify-command';
 import { SalesEntryFlow } from './flows/sales-entry-flow';
 import { GroupConfigManager } from '../utils/group-config';
 import { isInlineExpired } from './actions/inline-edit-delete';
@@ -25,6 +27,8 @@ export class TelegrafBotService {
   private helpCommand: HelpCommand;
   private reportCommand: ReportCommand;
   private summaryCommand: SummaryCommand;
+  private temperatureCommand: TemperatureCommand;
+  private reclassifyCommand: ReclassifyCommand;
   private salesEntryFlow: SalesEntryFlow;
   private groupConfigManager: GroupConfigManager;
   private pendingReschedules: Map<number, { eventId: string; expiresAt: number }> = new Map();
@@ -45,6 +49,8 @@ export class TelegrafBotService {
     this.helpCommand = new HelpCommand();
     this.reportCommand = new ReportCommand();
     this.summaryCommand = new SummaryCommand();
+    this.temperatureCommand = new TemperatureCommand(this.repository);
+    this.reclassifyCommand = new ReclassifyCommand(this.repository);
     this.salesEntryFlow = new SalesEntryFlow(this.repository);
     this.groupConfigManager = GroupConfigManager.getInstance();
     this.setupHandlers();
@@ -116,6 +122,60 @@ export class TelegrafBotService {
       } catch (error) {
         Logger.error('Error handling /summary command', error as Error);
         await ctx.reply('Failed to process summary request.');
+      }
+    });
+
+    // /hot, /warm, /cold — list customers by temperature (current month)
+    this.bot.command('hot', async (ctx: Context) => {
+      try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ');
+          return;
+        }
+        await this.temperatureCommand.handleCommand(ctx, 'hot');
+      } catch (error) {
+        Logger.error('Error handling /hot command', error as Error);
+        await ctx.reply('❌ Failed to fetch hot leads.');
+      }
+    });
+
+    this.bot.command('warm', async (ctx: Context) => {
+      try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ');
+          return;
+        }
+        await this.temperatureCommand.handleCommand(ctx, 'warm');
+      } catch (error) {
+        Logger.error('Error handling /warm command', error as Error);
+        await ctx.reply('❌ Failed to fetch warm leads.');
+      }
+    });
+
+    this.bot.command('cold', async (ctx: Context) => {
+      try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ');
+          return;
+        }
+        await this.temperatureCommand.handleCommand(ctx, 'cold');
+      } catch (error) {
+        Logger.error('Error handling /cold command', error as Error);
+        await ctx.reply('❌ Failed to fetch cold leads.');
+      }
+    });
+
+    // /reclassify <phone> [hot|warm|cold]
+    this.bot.command('reclassify', async (ctx: Context) => {
+      try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ');
+          return;
+        }
+        await this.reclassifyCommand.handleCommand(ctx);
+      } catch (error) {
+        Logger.error('Error handling /reclassify command', error as Error);
+        await ctx.reply('❌ Failed to reclassify.');
       }
     });
 
