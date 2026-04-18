@@ -509,6 +509,33 @@
   <p>Try adjusting your filters or load a different follower.</p>
 </div>
 
+<!-- GROUPS CONFIG SECTION -->
+<div class="import-section">
+  <div class="import-header" onclick="toggleGroupsConfig()">
+    <h3>
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75M9 11a4 4 0 100-8 4 4 0 000 8z"/></svg>
+      Configured Telegram Groups
+    </h3>
+    <span class="import-toggle" id="groups-toggle-text">Show</span>
+  </div>
+  <div class="import-body" id="groups-body">
+    <div style="overflow-x:auto">
+      <table class="customer-table">
+        <thead>
+          <tr>
+            <th>Type</th>
+            <th>Name</th>
+            <th>Chat ID</th>
+          </tr>
+        </thead>
+        <tbody id="groups-config-body">
+          <tr><td colspan="3" style="color:var(--text-muted)">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
 <!-- IMPORT SECTION -->
 <div class="import-section">
   <div class="import-header" onclick="toggleImport()">
@@ -771,6 +798,40 @@
     toast.textContent = msg;
     toast.className = 'toast ' + type + ' show';
     setTimeout(() => toast.classList.remove('show'), 3000);
+  }
+
+  // GROUPS CONFIG
+  function toggleGroupsConfig() {
+    const body = document.getElementById('groups-body');
+    const text = document.getElementById('groups-toggle-text');
+    if (body.classList.contains('open')) {
+      body.classList.remove('open');
+      text.textContent = 'Show';
+    } else {
+      body.classList.add('open');
+      text.textContent = 'Hide';
+      loadGroupsConfig();
+    }
+  }
+
+  async function loadGroupsConfig() {
+    try {
+      const resp = await fetch(API_BASE + '/api/groups-config', { credentials: 'same-origin' });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      const rows = [];
+      (data.sales || []).forEach(g => {
+        rows.push('<tr><td><span class="tag" style="background:var(--accent-dim);color:var(--accent)">Sales</span></td><td>' + g.name + '</td><td style="font-family:var(--font-mono);font-size:0.8rem">' + g.chatId + '</td></tr>');
+      });
+      (data.admin || []).forEach(g => {
+        rows.push('<tr><td><span class="tag" style="background:var(--yellow-dim);color:var(--yellow)">Manager</span></td><td>' + g.name + '</td><td style="font-family:var(--font-mono);font-size:0.8rem">' + g.chatId + '</td></tr>');
+      });
+      document.getElementById('groups-config-body').innerHTML = rows.length
+        ? rows.join('')
+        : '<tr><td colspan="3" style="color:var(--text-muted)">No groups configured</td></tr>';
+    } catch (err) {
+      document.getElementById('groups-config-body').innerHTML = '<tr><td colspan="3" style="color:var(--red)">Failed to load</td></tr>';
+    }
   }
 
   // Initial load

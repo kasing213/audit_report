@@ -92,6 +92,32 @@ router.get('/api/customers', async (req: Request, res: Response) => {
   }
 });
 
+// GET /crm/api/groups-config — sales + admin group chat ID restrictions
+router.get('/api/groups-config', (_req: Request, res: Response) => {
+  try {
+    const groupConfig = GroupConfigManager.getInstance();
+    const sales = groupConfig.getAllActiveGroups().map(g => ({
+      groupId: g.groupId,
+      name: g.name,
+      chatId: g.chatId,
+      type: 'sales' as const
+    }));
+
+    const admin: Array<{ groupId: string; name: string; chatId: string; type: 'admin' }> = [];
+    if (process.env.SUMMARY_CHAT_ID) {
+      admin.push({ groupId: 'summary', name: 'Summary (Management)', chatId: process.env.SUMMARY_CHAT_ID, type: 'admin' });
+    }
+    if (process.env.AUDIT_CHAT_ID) {
+      admin.push({ groupId: 'audit', name: 'Audit (Auto Reports)', chatId: process.env.AUDIT_CHAT_ID, type: 'admin' });
+    }
+
+    res.json({ sales, admin });
+  } catch (error) {
+    Logger.error('Error fetching groups config', error as Error);
+    res.status(500).json({ error: 'Failed to fetch groups config' });
+  }
+});
+
 // GET /crm/api/followers — list of follower names
 router.get('/api/followers', (_req: Request, res: Response) => {
   try {
