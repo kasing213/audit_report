@@ -12,8 +12,11 @@ const GRAPH_API_VERSION = 'v19.0';
 const GRAPH_FETCH_TIMEOUT_MS = 10_000;
 
 const router = Router();
-const repository = new SalesCaseRepository();
 const classifier = new TemperatureClassifier();
+
+function getRepository(): SalesCaseRepository {
+  return new SalesCaseRepository();
+}
 
 // Capture the raw body so we can verify Meta's HMAC signature. We must add this
 // BEFORE express.json() on this router — the global server-level json parser
@@ -122,6 +125,7 @@ router.post('/', async (req: Request & { rawBody?: Buffer }, res: Response) => {
   res.sendStatus(200);
 
   try {
+    const repository = getRepository();
     const body = req.body as {
       object?: string;
       entry?: Array<{
