@@ -268,4 +268,80 @@ router.post('/api/import/confirm', express.json(), async (req: Request, res: Res
   }
 });
 
+// PATCH /crm/api/customers/:phone — edit follower / reason_code / note on latest event
+router.patch('/api/customers/:phone', express.json(), async (req: Request, res: Response) => {
+  const phone = decodeURIComponent(req.params.phone);
+  const { follower, reason_code, note } = req.body || {};
+  Logger.info(`PATCH /crm/api/customers/${phone} with ${JSON.stringify({ follower, reason_code, note })}`);
+
+  try {
+    const groupConfig = GroupConfigManager.getInstance();
+
+    if (follower !== undefined && follower !== null) {
+      const validFollowers = groupConfig.getAllFollowerNames();
+      if (!validFollowers.includes(follower)) {
+        res.status(400).json({ error: `Invalid follower: ${follower}` });
+        return;
+      }
+    }
+
+    if (reason_code !== undefined && reason_code !== null) {
+      const validCode = REASON_CODES.find(r => r.code === reason_code);
+      if (!validCode) {
+        res.status(400).json({ error: `Invalid reason_code: ${reason_code}` });
+        return;
+      }
+    }
+
+    const updates: { follower?: string | null; reason_code?: string | null; note?: string | null } = {};
+    if ('follower' in req.body) updates.follower = follower ?? null;
+    if ('reason_code' in req.body) updates.reason_code = reason_code ?? null;
+    if ('note' in req.body) updates.note = note ?? null;
+
+    const repository = getRepository();
+    const result = await repository.updateCustomerLatest(phone, updates, 'dashboard');
+
+    if (!result.success) {
+      if (result.error === 'Customer not found') {
+        res.status(404).json(result);
+        return;
+      }
+      Logger.error(`updateCustomerLatest failed for ${phone}: ${result.error}`);
+      res.status(500).json(result);
+      return;
+    }
+
+    res.json(result);
+  } catch (error) {
+    Logger.error(`Error in PATCH /crm/api/customers/${phone}`, error as Error);
+    res.status(500).json({ error: 'Failed to update customer' });
+  }
+});
+
+// DELETE /crm/api/customers/:phone — soft-delete all events for a customer
+router.delete('/api/customers/:phone', async (req: Request, res: Response) => {
+  const phone = decodeURIComponent(req.params.phone);
+  Logger.info(`DELETE /crm/api/customers/${phone}`);
+
+  try {
+    const repository = getRepository();
+    const result = await repository.softDeleteCustomerByPhone(phone, 'dashboard');
+
+    if (!result.success) {
+      if (result.error === 'Customer not found') {
+        res.status(404).json(result);
+        return;
+      }
+      Logger.error(`softDeleteCustomerByPhone failed for ${phone}: ${result.error}`);
+      res.status(500).json(result);
+      return;
+    }
+
+    res.json(result);
+  } catch (error) {
+    Logger.error(`Error in DELETE /crm/api/customers/${phone}`, error as Error);
+    res.status(500).json({ error: 'Failed to delete customer' });
+  }
+});
+
 export default router;

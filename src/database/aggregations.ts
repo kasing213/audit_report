@@ -43,7 +43,8 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
     {
       $match: {
         follower: follower,
-        date: { $gte: startDate, $lte: endDate }
+        date: { $gte: startDate, $lte: endDate },
+        deleted: { $ne: true }
       }
     },
 
@@ -114,7 +115,8 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
  */
 export function buildAllCustomersPipeline(follower?: string): Document[] {
   const matchStage: any = {
-    'customer.phone': { $ne: null }
+    'customer.phone': { $ne: null },
+    deleted: { $ne: true }
   };
   if (follower) {
     matchStage.follower = follower;
@@ -179,7 +181,8 @@ export function buildStaleCustomersPipeline(daysThreshold: number, follower?: st
   const cutoffStr = cutoffDate.toISOString().slice(0, 10);
 
   const matchStage: any = {
-    'customer.phone': { $ne: null }
+    'customer.phone': { $ne: null },
+    deleted: { $ne: true }
   };
   if (follower) {
     matchStage.follower = follower;
@@ -245,7 +248,8 @@ export function buildStaleCustomersPipeline(daysThreshold: number, follower?: st
  */
 export function buildCustomersByReasonPipeline(reasonCode: string, follower?: string): Document[] {
   const matchStage: any = {
-    'customer.phone': { $ne: null }
+    'customer.phone': { $ne: null },
+    deleted: { $ne: true }
   };
   if (follower) {
     matchStage.follower = follower;
@@ -319,7 +323,8 @@ export function buildCustomersByTemperatureAndMonthPipeline(
 
   const matchStage: any = {
     'customer.phone': { $ne: null },
-    date: { $gte: startDate, $lte: endDate }
+    date: { $gte: startDate, $lte: endDate },
+    deleted: { $ne: true }
   };
   if (follower) {
     matchStage.follower = follower;
@@ -393,7 +398,8 @@ export function buildMonthlyCasesSummaryPipeline(year: number, month: number, gr
   const { startDate, endDate } = getMonthDateRange(monthStr);
 
   const matchStage: any = {
-    date: { $gte: startDate, $lte: endDate }
+    date: { $gte: startDate, $lte: endDate },
+    deleted: { $ne: true }
   };
 
   // Add group filter if specified

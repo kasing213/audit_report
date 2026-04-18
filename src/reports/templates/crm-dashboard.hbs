@@ -536,6 +536,35 @@
   </div>
 </div>
 
+<!-- REPORTS SECTION -->
+<div class="import-section">
+  <div class="import-header" onclick="toggleReports()">
+    <h3>
+      <svg width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+      Reports
+    </h3>
+    <span class="import-toggle" id="reports-toggle-text">Show</span>
+  </div>
+  <div class="import-body" id="reports-body">
+    <div style="display:flex;flex-wrap:wrap;gap:1rem;padding:0.25rem 0">
+      <div class="filter-group" style="flex:1;min-width:200px">
+        <span class="filter-label">Daily Report</span>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+          <input type="date" id="report-date" style="flex:1;min-width:130px">
+          <button class="btn btn-primary" onclick="downloadDailyReport()">Download JPG</button>
+        </div>
+      </div>
+      <div class="filter-group" style="flex:1;min-width:200px">
+        <span class="filter-label">Monthly Report</span>
+        <div style="display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap">
+          <input type="month" id="report-month" style="flex:1;min-width:130px">
+          <button class="btn btn-primary" onclick="downloadMonthlyReport()">Download Excel</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- IMPORT SECTION -->
 <div class="import-section">
   <div class="import-header" onclick="toggleImport()">
@@ -832,6 +861,49 @@
     } catch (err) {
       document.getElementById('groups-config-body').innerHTML = '<tr><td colspan="3" style="color:var(--red)">Failed to load</td></tr>';
     }
+  }
+
+  // REPORTS
+  (function() {
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    document.getElementById('report-date').value = yesterday.toISOString().slice(0, 10);
+    document.getElementById('report-month').value = today.toISOString().slice(0, 7);
+  })();
+
+  function toggleReports() {
+    const body = document.getElementById('reports-body');
+    const text = document.getElementById('reports-toggle-text');
+    if (body.classList.contains('open')) {
+      body.classList.remove('open');
+      text.textContent = 'Show';
+    } else {
+      body.classList.add('open');
+      text.textContent = 'Hide';
+    }
+  }
+
+  function downloadDailyReport() {
+    const date = document.getElementById('report-date').value;
+    if (!date) { showToast('Please select a date', 'error'); return; }
+    const a = document.createElement('a');
+    a.href = '/reports/daily/jpg?date=' + encodeURIComponent(date);
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function downloadMonthlyReport() {
+    const month = document.getElementById('report-month').value;
+    if (!month) { showToast('Please select a month', 'error'); return; }
+    const a = document.createElement('a');
+    a.href = '/reports/monthly/excel?month=' + encodeURIComponent(month);
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }
 
   // Initial load

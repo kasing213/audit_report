@@ -202,6 +202,98 @@ export class SalesCaseRepository {
       .toArray();
   }
 
+  private async findLatestActiveEventByPhone(phone: string): Promise<LeadEventDocument | null> {
+    const normalizedPhone = phone.trim();
+    const events = await this.leadsEventsCollection
+      .find({ 'customer.phone': normalizedPhone, deleted: { $ne: true } })
+      .sort({ date: -1, created_at: -1 })
+      .limit(1)
+      .toArray();
+    return events.length > 0 ? events[0] : null;
+  }
+
+  async updateCustomerLatest(
+    phone: string,
+    updates: { follower?: string | null; reason_code?: string | null; note?: string | null },
+    actor: string
+  ): Promise<{ success: boolean; updated_event_id?: string; error?: string }> {
+    const event = await this.findLatestActiveEventByPhone(phone);
+    if (!event) {
+      return { success: false, error: 'Customer not found' };
+    }
+
+    const eventId = (event._id as any).toString();
+    const setPayload: any = {};
+    const changes: Array<{ field: string; old_value: any; new_value: any }> = [];
+
+    if ('follower' in updates) {
+      setPayload.follower = updates.follower;
+      changes.push({ field: 'follower', old_value: event.follower, new_value: updates.follower });
+    }
+    if ('reason_code' in updates) {
+      setPayload.reason_code = updates.reason_code;
+      changes.push({ field: 'reason_code', old_value: event.reason_code, new_value: updates.reason_code });
+    }
+    if ('note' in updates) {
+      setPayload.note = updates.note;
+      changes.push({ field: 'note', old_value: event.note, new_value: updates.note });
+    }
+
+    await this.leadsEventsCollection.updateOne(
+      { _id: new ObjectId(eventId) as any },
+      { $set: setPayload }
+    );
+
+    await this.saveChangeLog({
+      timestamp: new Date(),
+      action: 'update',
+      event_id: eventId,
+      event_summary: {
+        customer_name: event.customer.name,
+        customer_phone: event.customer.phone,
+        date: event.date,
+        follower: event.follower
+      },
+      changes,
+      actor
+    });
+
+    return { success: true, updated_event_id: eventId };
+  }
+
+  async softDeleteCustomerByPhone(
+    phone: string,
+    actor: string
+  ): Promise<{ success: boolean; events_deleted: number; error?: string }> {
+    const latestEvent = await this.findLatestActiveEventByPhone(phone);
+    if (!latestEvent) {
+      return { success: false, events_deleted: 0, error: 'Customer not found' };
+    }
+
+    const eventId = (latestEvent._id as any).toString();
+
+    const result = await this.leadsEventsCollection.updateMany(
+      { 'customer.phone': phone.trim(), deleted: { $ne: true } },
+      { $set: { deleted: true, deleted_at: new Date(), deleted_by: actor } }
+    );
+
+    await this.saveChangeLog({
+      timestamp: new Date(),
+      action: 'delete',
+      event_id: eventId,
+      event_summary: {
+        customer_name: latestEvent.customer.name,
+        customer_phone: latestEvent.customer.phone,
+        date: latestEvent.date,
+        follower: latestEvent.follower
+      },
+      snapshot: latestEvent,
+      actor
+    });
+
+    return { success: true, events_deleted: result.modifiedCount };
+  }
+
   async saveChangeLog(log: ChangeLogDocument): Promise<void> {
     await this.changeLogsCollection.insertOne(log);
   }

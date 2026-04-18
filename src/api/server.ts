@@ -59,8 +59,12 @@ export class ApiServer {
     // Meta Lead Ads webhook (public, pre-auth, needs raw body for HMAC verify)
     this.app.use('/webhooks/meta-leads', metaWebhookRoutes);
 
-    // Reports routes
-    this.app.use('/reports', reportRoutes);
+    // Reports health (public)
+    this.app.get('/reports/health', (_req, res) => {
+      res.json({ status: 'ok', service: 'reports', timestamp: new Date().toISOString() });
+    });
+    // Reports routes (auth-protected)
+    this.app.use('/reports', authMiddleware, reportRoutes);
 
     // CRM dashboard (auth-protected)
     this.app.use('/crm', authMiddleware, crmRoutes);

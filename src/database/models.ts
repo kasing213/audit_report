@@ -18,6 +18,9 @@ export interface LeadEventDocument {
   temperature_source?: 'rules' | 'llm' | 'manual' | null;
   meta_lead_id?: string | null;
   meta_sync_status?: 'pending' | 'synced' | 'failed' | null;
+  deleted?: boolean;
+  deleted_at?: Date | null;
+  deleted_by?: string | null;
   source: {
     telegram_msg_id: string;
     model: string;
