@@ -1,0 +1,4 @@
+node_modules/
+telegram-session.json
+.env
+*.log
