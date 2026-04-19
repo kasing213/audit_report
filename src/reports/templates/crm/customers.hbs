@@ -66,12 +66,33 @@
         <th>Reason</th>
         <th>Note</th>
         <th>Events</th>
+        <th></th>
       </tr>
     </thead>
     <tbody id="table-body">
     </tbody>
   </table>
 </div>
+<style>
+  .del-btn {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    border-radius: 6px;
+    padding: 0.2rem 0.55rem;
+    font-size: 0.75rem;
+    cursor: pointer;
+    font-family: var(--font-body);
+    transition: all 0.15s;
+  }
+  .del-btn:hover { border-color: var(--red); color: var(--red); }
+  .m-card-del {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    margin-top: 0.5rem;
+  }
+</style>
 
 <!-- CARDS (mobile) -->
 <div class="mobile-cards" id="mobile-body"></div>
@@ -180,6 +201,9 @@
       const phoneCell = c.telegram_link
         ? '<a class="phone-link" href="' + c.telegram_link + '" target="_blank">' + telegramSvg() + ' ' + (c.phone_display || c.phone) + '</a>'
         : (c.phone || '—');
+      const delBtn = c.phone
+        ? '<button class="del-btn" onclick="deleteCustomer(\'' + encodeURIComponent(c.phone) + '\',\'' + (c.name || 'Unknown').replace(/'/g, "\\'") + '\')">Delete</button>'
+        : '—';
       return '<tr>' +
         '<td>' + (i+1) + '</td>' +
         '<td class="customer-name">' + (c.name || 'Unknown') + '</td>' +
@@ -191,12 +215,16 @@
         '<td>' + (c.current_reason_code ? '<span class="tag">' + c.current_reason_code + '</span>' : '—') + '</td>' +
         '<td><span class="note-text">' + (c.latest_note || c.history?.[c.history.length-1]?.note || '—') + '</span></td>' +
         '<td class="events-count">' + (c.total_events || 0) + '</td>' +
+        '<td>' + delBtn + '</td>' +
         '</tr>';
     }).join('');
 
     mobileBody.innerHTML = customers.map(c => {
       const phoneBtn = c.telegram_link
         ? '<a class="phone-link" href="' + c.telegram_link + '" target="_blank">' + telegramSvg() + ' Chat on Telegram: ' + (c.phone_display || c.phone) + '</a>'
+        : '';
+      const delBtn = c.phone
+        ? '<button class="del-btn m-card-del" onclick="deleteCustomer(\'' + encodeURIComponent(c.phone) + '\',\'' + (c.name || 'Unknown').replace(/'/g, "\\'") + '\')">Delete</button>'
         : '';
       return '<div class="m-card">' +
         '<div class="m-card-top"><span class="m-card-name">' + (c.name || 'Unknown') + '</span>' + staleTag(c.days_since_contact) + '</div>' +
@@ -208,8 +236,29 @@
           (c.current_reason_code ? '<span class="tag">' + c.current_reason_code + '</span>' : '') +
         '</div>' +
         phoneBtn +
+        delBtn +
         '</div>';
     }).join('');
+  }
+
+  async function deleteCustomer(encodedPhone, name) {
+    if (!confirm('Delete "' + name + '"? All events for this phone will be soft-deleted. This can be reversed only from the database.')) return;
+    try {
+      const resp = await fetch(API_BASE + '/api/customers/' + encodedPhone, {
+        method: 'DELETE',
+        credentials: 'same-origin',
+      });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        showToast('Deleted ' + name + ' (' + data.events_deleted + ' events)', 'success');
+        loadCustomers();
+      } else {
+        showToast(data.error || 'Delete failed', 'error');
+      }
+    } catch (err) {
+      showToast('Delete failed', 'error');
+    }
   }
 
   loadCustomers();
