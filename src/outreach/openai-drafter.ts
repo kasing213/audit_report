@@ -1,6 +1,7 @@
 import { Logger } from '../utils/logger';
 import { formatReasonDisplay } from '../constants/reason-codes';
 import { CustomerCase } from '../database/models';
+import { BrainRepository } from '../brain/brain-repository';
 
 interface ChatCompletionResponse {
   choices?: Array<{ message?: { content?: string | null } }>;
@@ -122,9 +123,34 @@ const DRAFTER_SYSTEM_PROMPT = [
   '{ "message": "<សារភាសាខ្មែរ>", "reasoning": "<ហេតុអ្វីបានជាសារនេះល្អសម្រាប់ភ្ញៀវនេះ (ជាភាសាអង់គ្លេស ១-២ ប្រយោគ)>" }',
 ].join('\n');
 
+async function loadBrainContext(): Promise<string> {
+  try {
+    const docs = await new BrainRepository().listActive();
+    if (docs.length === 0) return '';
+    const blocks = docs.map((d) => [
+      `--- Example: ${d.title} ---`,
+      d.raw_text,
+      '--- End example ---',
+    ].join('\n'));
+    return [
+      '',
+      'TONE EXAMPLES (match this voice and register; never quote verbatim):',
+      ...blocks,
+      '',
+    ].join('\n');
+  } catch (err) {
+    Logger.warn(`loadBrainContext failed: ${(err as Error).message}`);
+    return '';
+  }
+}
+
 export async function draftMessage(customer: CustomerCase): Promise<DraftResult | null> {
   const model = getModel();
-  const raw = await callOpenAI(DRAFTER_SYSTEM_PROMPT, serializeCustomerForPrompt(customer), model);
+  const brainContext = await loadBrainContext();
+  const systemPrompt = brainContext
+    ? DRAFTER_SYSTEM_PROMPT.replace('ច្បាប់:', `${brainContext}ច្បាប់:`)
+    : DRAFTER_SYSTEM_PROMPT;
+  const raw = await callOpenAI(systemPrompt, serializeCustomerForPrompt(customer), model);
   if (!raw) return null;
 
   try {

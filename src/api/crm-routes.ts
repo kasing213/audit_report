@@ -75,6 +75,17 @@ router.get('/outreach', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /crm/brain — AI brain document manager
+router.get('/brain', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/brain', {});
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving CRM brain page', error as Error);
+    res.status(500).json({ error: 'Failed to load brain page', message: (error as Error).message });
+  }
+});
+
 // GET /crm/api/customers — JSON customer data with filters
 router.get('/api/customers', async (req: Request, res: Response) => {
   try {

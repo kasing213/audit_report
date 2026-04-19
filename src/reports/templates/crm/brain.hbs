@@ -1,0 +1,290 @@
+{{> head title="Sales CRM — Brain"}}
+{{> nav activeNav="brain"}}
+
+<style>
+  .brain-wrap { padding: 1.25rem; max-width: 1000px; margin: 0 auto; }
+  .brain-intro {
+    color: var(--text-muted);
+    font-size: 0.85rem;
+    margin-bottom: 1.25rem;
+    line-height: 1.5;
+  }
+  .upload-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+    margin-bottom: 1.5rem;
+  }
+  .upload-card h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 0.5rem;
+  }
+  .form-row {
+    display: flex;
+    gap: 0.75rem;
+    margin-bottom: 0.6rem;
+    flex-wrap: wrap;
+  }
+  .form-row > * { flex: 1; min-width: 180px; }
+  .brain-wrap input[type="text"],
+  .brain-wrap textarea,
+  .brain-wrap input[type="file"] {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: var(--radius);
+    padding: 0.5rem 0.65rem;
+    font-size: 0.85rem;
+    width: 100%;
+    font-family: var(--font-body);
+  }
+  .brain-wrap textarea { min-height: 60px; resize: vertical; }
+  .brain-wrap input:focus, .brain-wrap textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 2px var(--accent-dim);
+  }
+
+  .doc-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.15rem;
+    margin-bottom: 0.75rem;
+  }
+  .doc-top {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 1rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+  }
+  .doc-title { font-weight: 600; font-size: 1rem; }
+  .doc-meta {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    display: flex;
+    gap: 0.85rem;
+    flex-wrap: wrap;
+    margin-bottom: 0.5rem;
+  }
+  .doc-preview {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.7rem;
+    max-height: 120px;
+    overflow: auto;
+    white-space: pre-wrap;
+    font-family: var(--font-mono);
+  }
+  .doc-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .switch {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+  }
+  .switch input { display: none; }
+  .switch-track {
+    width: 34px;
+    height: 18px;
+    background: var(--border);
+    border-radius: 10px;
+    position: relative;
+    transition: background 0.15s;
+  }
+  .switch-track::after {
+    content: '';
+    position: absolute;
+    left: 2px;
+    top: 2px;
+    width: 14px;
+    height: 14px;
+    background: var(--text);
+    border-radius: 50%;
+    transition: left 0.15s;
+  }
+  .switch input:checked + .switch-track { background: var(--accent); }
+  .switch input:checked + .switch-track::after { left: 18px; background: var(--bg); }
+  .empty-state-small {
+    text-align: center;
+    padding: 2.5rem 1rem;
+    color: var(--text-muted);
+  }
+  .total-budget {
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-left: 0.5rem;
+  }
+  .total-budget.warn { color: var(--yellow); }
+</style>
+
+<div class="brain-wrap">
+  <div class="brain-intro">
+    Upload PDFs containing Khmer sample messages or tone examples. All <strong>active</strong> documents are injected into the outreach drafter prompt as few-shots on every Generate. Keep it focused — quality over quantity.
+  </div>
+
+  <div class="upload-card">
+    <h3>Upload PDF</h3>
+    <form id="upload-form" onsubmit="uploadFile(event)">
+      <div class="form-row">
+        <input type="text" id="title" placeholder="Title (e.g. Formal tone — SreySros)" required>
+        <input type="file" id="file" accept=".pdf" required>
+      </div>
+      <textarea id="notes" placeholder="Optional notes for your future self"></textarea>
+      <div class="form-row" style="justify-content:flex-end;margin-top:0.6rem">
+        <button type="submit" class="btn btn-primary">Upload</button>
+      </div>
+    </form>
+  </div>
+
+  <div id="list-heading" style="display:flex;align-items:center;margin-bottom:0.6rem">
+    <h3 style="font-size:0.95rem;font-weight:600">Documents</h3>
+    <span class="total-budget" id="total-budget"></span>
+  </div>
+  <div id="list">
+    <div class="empty-state-small">Loading…</div>
+  </div>
+</div>
+
+<script>
+  const API = '/crm/api/brain';
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  async function loadList() {
+    try {
+      const resp = await fetch(API, { credentials: 'same-origin' });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      renderList(data.documents || []);
+      const total = data.total_active_chars || 0;
+      const el = document.getElementById('total-budget');
+      el.textContent = 'active total: ' + total.toLocaleString() + ' chars';
+      el.classList.toggle('warn', total > 50000);
+    } catch {
+      document.getElementById('list').innerHTML = '<div class="empty-state-small">Failed to load.</div>';
+    }
+  }
+
+  function renderList(docs) {
+    const list = document.getElementById('list');
+    if (docs.length === 0) {
+      list.innerHTML = '<div class="empty-state-small">No brain documents yet. Upload a Khmer tone PDF above to start.</div>';
+      return;
+    }
+    list.innerHTML = docs.map(d => {
+      const date = new Date(d.uploaded_at).toLocaleString();
+      const chk = d.active ? 'checked' : '';
+      return (
+        '<div class="doc-card">' +
+          '<div class="doc-top">' +
+            '<div class="doc-title">' + esc(d.title) + '</div>' +
+            '<label class="switch">' +
+              '<input type="checkbox" ' + chk + ' onchange="toggleActive(\'' + d._id + '\', this.checked)">' +
+              '<span class="switch-track"></span>' +
+              '<span>' + (d.active ? 'active' : 'inactive') + '</span>' +
+            '</label>' +
+          '</div>' +
+          '<div class="doc-meta">' +
+            '<span>' + esc(d.filename) + '</span>' +
+            '<span>' + d.char_count.toLocaleString() + ' chars</span>' +
+            '<span>' + date + '</span>' +
+            '<span>by ' + esc(d.uploaded_by) + '</span>' +
+          '</div>' +
+          (d.preview ? '<div class="doc-preview">' + esc(d.preview) + (d.char_count > 300 ? '…' : '') + '</div>' : '') +
+          (d.notes ? '<div class="doc-meta" style="margin-top:0.4rem"><em>' + esc(d.notes) + '</em></div>' : '') +
+          '<div class="doc-actions">' +
+            '<button class="btn btn-ghost" onclick="renameDoc(\'' + d._id + '\', \'' + esc(d.title).replace(/\\'/g, "\\\\'") + '\')">Rename</button>' +
+            '<button class="btn btn-ghost" style="color:var(--red);border-color:var(--red)" onclick="deleteDoc(\'' + d._id + '\', \'' + esc(d.title).replace(/\\'/g, "\\\\'") + '\')">Delete</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  async function uploadFile(ev) {
+    ev.preventDefault();
+    const fileInput = document.getElementById('file');
+    const titleInput = document.getElementById('title');
+    const notesInput = document.getElementById('notes');
+    if (!fileInput.files.length) { showToast('Pick a PDF', 'error'); return; }
+
+    const fd = new FormData();
+    fd.append('file', fileInput.files[0]);
+    fd.append('title', titleInput.value.trim());
+    if (notesInput.value.trim()) fd.append('notes', notesInput.value.trim());
+
+    showToast('Uploading…', 'success');
+    try {
+      const resp = await fetch(API, { method: 'POST', credentials: 'same-origin', body: fd });
+      const data = await resp.json();
+      if (resp.ok) {
+        showToast('Uploaded: ' + data.char_count.toLocaleString() + ' chars', 'success');
+        fileInput.value = '';
+        titleInput.value = '';
+        notesInput.value = '';
+        loadList();
+      } else {
+        showToast(data.error || 'Upload failed', 'error');
+      }
+    } catch {
+      showToast('Upload failed', 'error');
+    }
+  }
+
+  async function toggleActive(id, active) {
+    try {
+      const resp = await fetch(API + '/' + id, {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ active }),
+      });
+      if (resp.ok) { showToast(active ? 'Activated' : 'Deactivated', 'success'); loadList(); }
+      else showToast('Toggle failed', 'error');
+    } catch { showToast('Toggle failed', 'error'); }
+  }
+
+  async function renameDoc(id, currentTitle) {
+    const next = prompt('New title?', currentTitle);
+    if (next == null) return;
+    const t = next.trim();
+    if (!t) return;
+    try {
+      const resp = await fetch(API + '/' + id, {
+        method: 'PATCH', credentials: 'same-origin',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ title: t }),
+      });
+      if (resp.ok) { showToast('Renamed', 'success'); loadList(); }
+      else showToast('Rename failed', 'error');
+    } catch { showToast('Rename failed', 'error'); }
+  }
+
+  async function deleteDoc(id, title) {
+    if (!confirm('Delete "' + title + '"?')) return;
+    try {
+      const resp = await fetch(API + '/' + id, { method: 'DELETE', credentials: 'same-origin' });
+      if (resp.ok) { showToast('Deleted', 'success'); loadList(); }
+      else showToast('Delete failed', 'error');
+    } catch { showToast('Delete failed', 'error'); }
+  }
+
+  loadList();
+</script>
+
+{{> footer}}
