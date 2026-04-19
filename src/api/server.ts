@@ -2,6 +2,7 @@ import express from 'express';
 import reportRoutes from '../reports/report-routes';
 import crmRoutes from './crm-routes';
 import dataEntryRoutes from './data-entry-routes';
+import outreachRoutes from './outreach-routes';
 import { loginRouter } from './login-routes';
 import metaWebhookRoutes from './meta-webhook-routes';
 import { authMiddleware } from './auth-middleware';
@@ -65,6 +66,9 @@ export class ApiServer {
     });
     // Reports routes (auth-protected)
     this.app.use('/reports', authMiddleware, reportRoutes);
+
+    // Outreach API (auth handled inside router; covers both UI cookie + worker Bearer)
+    this.app.use('/crm/api/outreach', outreachRoutes);
 
     // CRM dashboard (auth-protected)
     this.app.use('/crm', authMiddleware, crmRoutes);

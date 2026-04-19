@@ -48,6 +48,40 @@ function isValidSession(cookie: string, secret: string): boolean {
 }
 
 /**
+ * Extract the signed-in username from a request's session cookie.
+ * Returns 'worker' for Bearer-token requests, null if unauthenticated.
+ */
+export function getSessionUser(req: Request): string | null {
+  const secret = process.env.DASHBOARD_TOKEN;
+  if (!secret) return null;
+
+  const cookies = parseCookies(req.headers.cookie);
+  const signed = cookies[COOKIE_NAME];
+  if (signed) {
+    const value = verifySignedValue(signed, secret);
+    if (value) {
+      const parts = value.split(':');
+      if (parts.length === 3 && parts[0] === 'session') {
+        const expires = parseInt(parts[2], 10);
+        if (!isNaN(expires) && Date.now() < expires) {
+          return parts[1];
+        }
+      }
+    }
+  }
+
+  const authHeader = req.headers.authorization;
+  if (authHeader) {
+    const parts = authHeader.split(' ');
+    if (parts.length === 2 && parts[0] === 'Bearer' && parts[1] === secret) {
+      return 'worker';
+    }
+  }
+
+  return null;
+}
+
+/**
  * Parse cookies from request header.
  */
 function parseCookies(cookieHeader: string | undefined): Record<string, string> {
