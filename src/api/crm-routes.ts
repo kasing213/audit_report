@@ -64,6 +64,17 @@ router.get('/import', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /crm/outreach — outreach queue page
+router.get('/outreach', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/outreach', {});
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving CRM outreach page', error as Error);
+    res.status(500).json({ error: 'Failed to load outreach page', message: (error as Error).message });
+  }
+});
+
 // GET /crm/api/customers — JSON customer data with filters
 router.get('/api/customers', async (req: Request, res: Response) => {
   try {

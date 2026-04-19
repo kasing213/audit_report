@@ -1,0 +1,346 @@
+{{> head title="Sales CRM — Outreach"}}
+{{> nav activeNav="outreach"}}
+
+<style>
+  .outreach-wrap { padding: 1.25rem; max-width: 1200px; margin: 0 auto; }
+  .outreach-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+    margin-bottom: 1rem;
+    flex-wrap: wrap;
+  }
+  .status-tabs { display: flex; gap: 0.25rem; flex-wrap: wrap; }
+  .status-tab {
+    padding: 0.4rem 0.85rem;
+    border-radius: 6px;
+    font-size: 0.82rem;
+    font-weight: 500;
+    color: var(--text-muted);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: all 0.15s;
+    font-family: var(--font-body);
+    display: inline-flex;
+    align-items: center;
+    gap: 0.4rem;
+  }
+  .status-tab:hover { color: var(--text); border-color: var(--text-muted); }
+  .status-tab.active { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+  .status-tab .count {
+    background: var(--surface-2);
+    border-radius: 10px;
+    padding: 0 0.45rem;
+    font-family: var(--font-mono);
+    font-size: 0.75rem;
+  }
+  .status-tab.active .count { background: var(--bg); color: var(--accent); }
+
+  .generate-bar { display: flex; gap: 0.5rem; align-items: center; }
+
+  .proposal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem 1.15rem;
+    margin-bottom: 0.75rem;
+  }
+  .proposal-top {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 1rem;
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .proposal-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem 0.85rem;
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    align-items: center;
+  }
+  .proposal-name { font-weight: 600; font-size: 1rem; color: var(--text); }
+  .proposal-phone {
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--telegram);
+  }
+  .proposal-message {
+    width: 100%;
+    min-height: 70px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-family: var(--font-body);
+    font-size: 0.9rem;
+    padding: 0.65rem 0.85rem;
+    resize: vertical;
+    outline: none;
+  }
+  .proposal-message:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+  .proposal-message[readonly] { opacity: 0.85; }
+
+  .proposal-actions {
+    display: flex;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .proposal-footer {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.75rem;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+  }
+  .reasoning-toggle {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.75rem;
+    padding: 0;
+    font-family: var(--font-body);
+  }
+  .reasoning-toggle:hover { color: var(--text); }
+  .reasoning-block {
+    margin-top: 0.5rem;
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.5rem 0.75rem;
+    display: none;
+    white-space: pre-wrap;
+  }
+  .reasoning-block.show { display: block; }
+  .badge {
+    display: inline-block;
+    padding: 0.1rem 0.45rem;
+    border-radius: 4px;
+    font-size: 0.72rem;
+    font-weight: 500;
+    font-family: var(--font-mono);
+  }
+  .badge-stale { background: var(--yellow-dim); color: var(--yellow); }
+  .badge-reason { background: var(--surface-2); color: var(--text-muted); }
+  .empty-state-small {
+    text-align: center;
+    padding: 3rem 1rem;
+    color: var(--text-muted);
+  }
+</style>
+
+<div class="outreach-wrap">
+  <div class="outreach-top">
+    <div class="status-tabs" id="status-tabs">
+      <button class="status-tab active" data-status="pending">Pending <span class="count" data-count="pending">0</span></button>
+      <button class="status-tab" data-status="approved">Approved <span class="count" data-count="approved">0</span></button>
+      <button class="status-tab" data-status="in_flight">In Flight <span class="count" data-count="in_flight">0</span></button>
+      <button class="status-tab" data-status="sent">Sent <span class="count" data-count="sent">0</span></button>
+      <button class="status-tab" data-status="skipped">Skipped <span class="count" data-count="skipped">0</span></button>
+      <button class="status-tab" data-status="failed">Failed <span class="count" data-count="failed">0</span></button>
+    </div>
+    <div class="generate-bar">
+      <input type="number" id="gen-limit" value="10" min="1" max="50" style="width:70px" title="Max proposals to create">
+      <button class="btn btn-ghost" onclick="openTestPrompt()">Test on me (kasing / Chan kasing)</button>
+      <button class="btn btn-primary" onclick="generateBatch()">Generate batch</button>
+    </div>
+  </div>
+
+  <div id="list">
+    <div class="empty-state-small">Loading…</div>
+  </div>
+</div>
+
+<script>
+  const API = '/crm/api/outreach';
+  let currentStatus = 'pending';
+  let pollTimer = null;
+
+  document.querySelectorAll('#status-tabs .status-tab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('#status-tabs .status-tab').forEach(t => t.classList.remove('active'));
+      tab.classList.add('active');
+      currentStatus = tab.dataset.status;
+      loadList();
+    });
+  });
+
+  async function loadList() {
+    try {
+      const resp = await fetch(API + '?status=' + encodeURIComponent(currentStatus) + '&limit=200', { credentials: 'same-origin' });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      applyCounts(data.counts || {});
+      renderProposals(data.proposals || []);
+    } catch (err) {
+      document.getElementById('list').innerHTML = '<div class="empty-state-small">Failed to load.</div>';
+    }
+    schedulePoll();
+  }
+
+  function schedulePoll() {
+    if (pollTimer) clearTimeout(pollTimer);
+    const tabsToPoll = ['pending', 'approved', 'in_flight'];
+    if (tabsToPoll.includes(currentStatus)) {
+      pollTimer = setTimeout(loadList, 10000);
+    }
+  }
+
+  function applyCounts(counts) {
+    Object.entries(counts).forEach(([status, count]) => {
+      const el = document.querySelector('.count[data-count="' + status + '"]');
+      if (el) el.textContent = count;
+    });
+  }
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
+
+  function actionsHtml(p) {
+    if (p.status === 'pending') {
+      return (
+        '<button class="btn btn-primary" onclick="saveEdit(\'' + p._id + '\')">Save draft edit</button>' +
+        '<button class="btn btn-primary" onclick="approve(\'' + p._id + '\')">Approve</button>' +
+        '<button class="btn btn-ghost" onclick="skip(\'' + p._id + '\')">Skip</button>'
+      );
+    }
+    if (p.status === 'approved') {
+      return '<button class="btn btn-ghost" onclick="skip(\'' + p._id + '\')">Cancel / Skip</button>';
+    }
+    return '';
+  }
+
+  function statusBadge(p) {
+    const color = {
+      pending: 'var(--text-muted)',
+      approved: 'var(--accent)',
+      in_flight: 'var(--yellow)',
+      sent: 'var(--green)',
+      skipped: 'var(--text-muted)',
+      failed: 'var(--red)',
+    }[p.status] || 'var(--text-muted)';
+    return '<span class="badge" style="color:' + color + ';border:1px solid ' + color + '55">' + p.status + '</span>';
+  }
+
+  function renderProposals(proposals) {
+    const list = document.getElementById('list');
+    if (proposals.length === 0) {
+      list.innerHTML = '<div class="empty-state-small">No ' + currentStatus.replace('_',' ') + ' proposals.</div>';
+      return;
+    }
+    list.innerHTML = proposals.map(p => {
+      const daysBadge = p.days_since_contact != null ? '<span class="badge badge-stale">' + p.days_since_contact + 'd stale</span>' : '';
+      const reasonBadge = p.reason_code ? '<span class="badge badge-reason">' + esc(p.reason_code) + '</span>' : '';
+      const phoneLink = '<a href="https://t.me/' + encodeURIComponent(p.customer_phone) + '" target="_blank" class="proposal-phone">' + esc(p.customer_phone) + '</a>';
+      const editable = p.status === 'pending' ? '' : 'readonly';
+      const statusTail = p.status === 'skipped' && p.skipped_reason ? '<span>· ' + esc(p.skipped_reason) + '</span>' : '';
+      const failedTail = p.status === 'failed' && p.failed_reason ? '<span>· ' + esc(p.failed_reason) + '</span>' : '';
+      const approvedTail = p.approved_by ? '<span>· approved by ' + esc(p.approved_by) + '</span>' : '';
+      return (
+        '<div class="proposal" id="p-' + p._id + '">' +
+          '<div class="proposal-top">' +
+            '<div>' +
+              '<div class="proposal-name">' + esc(p.customer_name || 'Unknown') + '</div>' +
+              '<div class="proposal-meta">' + phoneLink + ' ' + daysBadge + ' ' + reasonBadge + ' ' + (p.follower ? '<span>follower: ' + esc(p.follower) + '</span>' : '') + '</div>' +
+            '</div>' +
+            '<div>' + statusBadge(p) + '</div>' +
+          '</div>' +
+          '<textarea class="proposal-message" id="m-' + p._id + '" ' + editable + '>' + esc(p.message) + '</textarea>' +
+          '<div class="proposal-actions">' + actionsHtml(p) + '</div>' +
+          '<div class="proposal-footer">' +
+            '<button class="reasoning-toggle" onclick="toggleReason(\'' + p._id + '\')">Show reasoning</button>' +
+            '<div>' + new Date(p.created_at).toLocaleString() + ' ' + approvedTail + ' ' + statusTail + ' ' + failedTail + '</div>' +
+          '</div>' +
+          '<div class="reasoning-block" id="r-' + p._id + '">' + esc(p.reasoning || '') + '</div>' +
+        '</div>'
+      );
+    }).join('');
+  }
+
+  function toggleReason(id) {
+    const block = document.getElementById('r-' + id);
+    if (!block) return;
+    block.classList.toggle('show');
+  }
+
+  async function saveEdit(id) {
+    const msg = document.getElementById('m-' + id).value;
+    try {
+      const resp = await fetch(API + '/' + id, {
+        method: 'PATCH',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      });
+      if (resp.ok) showToast('Draft saved', 'success'); else showToast('Save failed', 'error');
+    } catch { showToast('Save failed', 'error'); }
+  }
+
+  async function approve(id) {
+    await saveEdit(id);
+    try {
+      const resp = await fetch(API + '/' + id + '/approve', { method: 'POST', credentials: 'same-origin' });
+      if (resp.ok) { showToast('Approved', 'success'); loadList(); }
+      else showToast('Approve failed', 'error');
+    } catch { showToast('Approve failed', 'error'); }
+  }
+
+  async function skip(id) {
+    const reason = prompt('Skip reason?', 'not relevant');
+    if (reason == null) return;
+    try {
+      const resp = await fetch(API + '/' + id + '/skip', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason }),
+      });
+      if (resp.ok) { showToast('Skipped', 'success'); loadList(); }
+      else showToast('Skip failed', 'error');
+    } catch { showToast('Skip failed', 'error'); }
+  }
+
+  async function generateBatch() {
+    const limit = parseInt(document.getElementById('gen-limit').value, 10) || 10;
+    if (!confirm('Generate ' + limit + ' outreach drafts for stale (45d+) leads?')) return;
+    await postGenerate({ limit });
+  }
+
+  async function openTestPrompt() {
+    if (!confirm('Generate drafts targeted at kasing (+85570597666) and Chan kasing (+85511228226)?')) return;
+    await postGenerate({ phones: ['+85570597666', '+85511228226'] });
+  }
+
+  async function postGenerate(body) {
+    showToast('Generating…', 'success');
+    try {
+      const resp = await fetch(API + '/generate', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (!resp.ok) { showToast(data.error || 'Generate failed', 'error'); return; }
+      showToast('Created ' + data.created + ', skipped ' + data.skipped, 'success');
+      currentStatus = 'pending';
+      document.querySelectorAll('#status-tabs .status-tab').forEach(t => t.classList.toggle('active', t.dataset.status === 'pending'));
+      loadList();
+    } catch (err) {
+      showToast('Generate failed', 'error');
+    }
+  }
+
+  loadList();
+</script>
+
+{{> footer}}
