@@ -25,22 +25,25 @@ function verifySignedValue(signed: string, secret: string): string | null {
 }
 
 /**
- * Create a session cookie value with expiry.
+ * Create a session cookie value with expiry. Signed with DASHBOARD_TOKEN.
  */
-export function createSessionCookie(secret: string): string {
+export function createSessionCookie(username: string): string {
+  const secret = process.env.DASHBOARD_TOKEN;
+  if (!secret) throw new Error('DASHBOARD_TOKEN not configured');
   const expires = Date.now() + SESSION_DURATION_MS;
-  return signValue(`session:${expires}`, secret);
+  return signValue(`session:${username}:${expires}`, secret);
 }
 
 /**
  * Verify session cookie is valid and not expired.
+ * Claim format: session:<username>:<expires>
  */
 function isValidSession(cookie: string, secret: string): boolean {
   const value = verifySignedValue(cookie, secret);
   if (!value) return false;
   const parts = value.split(':');
-  if (parts[0] !== 'session') return false;
-  const expires = parseInt(parts[1], 10);
+  if (parts.length !== 3 || parts[0] !== 'session') return false;
+  const expires = parseInt(parts[2], 10);
   return !isNaN(expires) && Date.now() < expires;
 }
 

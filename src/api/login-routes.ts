@@ -4,27 +4,37 @@ import { Logger } from '../utils/logger';
 
 export const loginRouter = express.Router();
 
+const ACCOUNTS: Record<string, () => string | undefined> = {
+  developer: () => process.env.DASHBOARD_TOKEN,
+  manager: () => process.env.MANAGER_TOKEN,
+};
+
 // GET /login — show login page
 loginRouter.get('/login', (_req: Request, res: Response) => {
-  const error = _req.query.error ? 'Invalid password. Please try again.' : '';
+  const error = _req.query.error ? 'Invalid username or password.' : '';
   res.send(buildLoginPage(error));
 });
 
 // POST /login — authenticate
 loginRouter.post('/login', express.urlencoded({ extended: true }), (req: Request, res: Response) => {
   try {
-    const token = process.env.DASHBOARD_TOKEN;
-    const password = req.body?.password;
-
-    Logger.info(`Login attempt — body: ${JSON.stringify(req.body)}, token set: ${!!token}`);
-
-    if (!token) {
+    const signingSecret = process.env.DASHBOARD_TOKEN;
+    if (!signingSecret) {
       res.status(500).send('DASHBOARD_TOKEN not configured on server.');
       return;
     }
 
-    if (typeof password === 'string' && password.trim() === token.trim()) {
-      const cookie = createSessionCookie(token);
+    const rawUsername = req.body?.username;
+    const password = req.body?.password;
+    const username = typeof rawUsername === 'string' ? rawUsername.trim().toLowerCase() : '';
+
+    Logger.info(`Login attempt — username: ${username}`);
+
+    const resolver = ACCOUNTS[username];
+    const expected = resolver?.();
+
+    if (expected && typeof password === 'string' && password.trim() === expected.trim()) {
+      const cookie = createSessionCookie(username);
       res.setHeader('Set-Cookie', `audit_session=${encodeURIComponent(cookie)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${7 * 24 * 60 * 60}`);
       res.redirect('/crm');
     } else {
@@ -109,7 +119,8 @@ function buildLoginPage(error: string): string {
       font-weight: 500;
       margin-bottom: 0.4rem;
     }
-    input[type="password"] {
+    input[type="password"],
+    input[type="text"] {
       width: 100%;
       font-family: 'Outfit', sans-serif;
       background: var(--bg);
@@ -121,10 +132,12 @@ function buildLoginPage(error: string): string {
       outline: none;
       transition: border-color 0.15s;
     }
-    input[type="password"]:focus {
+    input[type="password"]:focus,
+    input[type="text"]:focus {
       border-color: var(--accent);
       box-shadow: 0 0 0 3px var(--accent-dim);
     }
+    .field + .field { margin-top: 1rem; }
     .btn {
       width: 100%;
       margin-top: 1.25rem;
@@ -166,8 +179,14 @@ function buildLoginPage(error: string): string {
     </div>
     ${error ? `<div class="error">${error}</div>` : ''}
     <form method="POST" action="/login">
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" placeholder="Enter admin password" autofocus required>
+      <div class="field">
+        <label for="username">Username</label>
+        <input type="text" id="username" name="username" placeholder="developer or manager" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" autofocus required>
+      </div>
+      <div class="field">
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" placeholder="Enter admin password" autocomplete="current-password" required>
+      </div>
       <button type="submit" class="btn">Sign In</button>
     </form>
     <div class="footer">Secured access only</div>
