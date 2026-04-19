@@ -74,7 +74,8 @@ export class OutreachRepository {
         { _id: new ObjectId(id), status: 'pending' },
         { $set: { message } }
       );
-      return result.modifiedCount > 0;
+      // matchedCount covers the "saved with no change" case; modifiedCount would be 0.
+      return result.matchedCount > 0;
     } catch {
       return false;
     }
