@@ -86,6 +86,17 @@ router.patch('/:id', express.json(), async (req: Request, res: Response) => {
   }
 });
 
+// DELETE /crm/api/outreach/all — nuke all proposals (admin cleanup)
+router.delete('/all', async (_req: Request, res: Response) => {
+  try {
+    const deleted = await new OutreachRepository().deleteAll();
+    res.json({ deleted });
+  } catch (err) {
+    Logger.error('outreach deleteAll failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // POST /crm/api/outreach/claim  (worker)
 router.post('/claim', async (_req: Request, res: Response) => {
   try {

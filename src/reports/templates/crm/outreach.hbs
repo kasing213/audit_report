@@ -153,6 +153,7 @@
       <input type="number" id="gen-limit" value="10" min="1" max="50" style="width:70px" title="Max proposals to create">
       <button class="btn btn-ghost" onclick="openTestPrompt()">Test on me (kasing / Chan kasing)</button>
       <button class="btn btn-primary" onclick="generateBatch()">Generate batch</button>
+      <button class="btn btn-ghost" style="color:var(--red);border-color:var(--red)" onclick="clearAll()">Clear all</button>
     </div>
   </div>
 
@@ -338,6 +339,16 @@
     } catch (err) {
       showToast('Generate failed', 'error');
     }
+  }
+
+  async function clearAll() {
+    if (!confirm('Delete ALL outreach proposals (every status)? This cannot be undone.')) return;
+    try {
+      const resp = await fetch(API + '/all', { method: 'DELETE', credentials: 'same-origin' });
+      const data = await resp.json();
+      if (resp.ok) { showToast('Deleted ' + data.deleted + ' proposals', 'success'); loadList(); }
+      else showToast(data.error || 'Delete failed', 'error');
+    } catch { showToast('Delete failed', 'error'); }
   }
 
   loadList();

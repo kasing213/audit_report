@@ -174,6 +174,11 @@ export class OutreachRepository {
     return Boolean(existing);
   }
 
+  async deleteAll(): Promise<number> {
+    const result = await this.col.deleteMany({});
+    return result.deletedCount;
+  }
+
   async counts(): Promise<Record<OutreachStatus, number>> {
     const pipeline = [{ $group: { _id: '$status', count: { $sum: 1 } } }];
     const rows = await this.col.aggregate<{ _id: OutreachStatus; count: number }>(pipeline).toArray();
