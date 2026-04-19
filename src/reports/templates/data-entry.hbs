@@ -411,17 +411,9 @@
 </head>
 <body>
 
-<!-- HEADER -->
-<div class="header">
-  <div class="header-top">
-    <div class="logo">
-      <div class="logo-mark">DE</div>
-      Data Entry
-    </div>
-    <div class="stats-bar">
-      <span>Today: <span class="stat-val" id="stat-today">-</span></span>
-    </div>
-  </div>
+{{> nav activeNav="data-entry"}}
+<div style="text-align:right;padding:0.5rem 1.25rem;font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);border-bottom:1px solid var(--border);background:var(--surface)">
+  Today: <span class="stat-val" id="stat-today" style="color:var(--accent)">-</span>
 </div>
 
 <!-- TABS -->

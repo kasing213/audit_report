@@ -1,8 +1,5 @@
 import express, { Request, Response } from 'express';
 import multer from 'multer';
-import * as handlebars from 'handlebars';
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import ExcelJS from 'exceljs';
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
@@ -10,6 +7,7 @@ import { REASON_CODES } from '../constants/reason-codes';
 import { GroupConfigManager } from '../utils/group-config';
 import { formatTelegramLink, formatPhoneDisplay } from '../utils/phone-utils';
 import { Logger } from '../utils/logger';
+import { renderPage } from './template-helper';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -18,26 +16,51 @@ function getRepository(): SalesCaseRepository {
   return new SalesCaseRepository();
 }
 
-// GET /crm — serve the dashboard HTML
+// GET /crm — customers page
 router.get('/', async (_req: Request, res: Response) => {
   try {
-    const templatePath = path.join(__dirname, '..', 'reports', 'templates', 'crm-dashboard.hbs');
-    const templateContent = await fs.readFile(templatePath, 'utf-8');
-
     const groupConfig = GroupConfigManager.getInstance();
-    const followers = groupConfig.getAllFollowerNames();
-
-    const template = handlebars.compile(templateContent);
-    const html = template({
-      followers,
-      reasonCodes: REASON_CODES
+    const html = await renderPage('crm/customers', {
+      followers: groupConfig.getAllFollowerNames(),
+      reasonCodes: REASON_CODES,
     });
-
-    res.set('Content-Type', 'text/html');
-    res.send(html);
+    res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
-    Logger.error('Error serving CRM dashboard', error as Error);
+    Logger.error('Error serving CRM customers page', error as Error);
     res.status(500).json({ error: 'Failed to load dashboard', message: (error as Error).message });
+  }
+});
+
+// GET /crm/groups — groups page
+router.get('/groups', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/groups', {});
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving CRM groups page', error as Error);
+    res.status(500).json({ error: 'Failed to load groups page', message: (error as Error).message });
+  }
+});
+
+// GET /crm/reports — reports page
+router.get('/reports', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/reports', {});
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving CRM reports page', error as Error);
+    res.status(500).json({ error: 'Failed to load reports page', message: (error as Error).message });
+  }
+});
+
+// GET /crm/import — import page
+router.get('/import', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/import', {});
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving CRM import page', error as Error);
+    res.status(500).json({ error: 'Failed to load import page', message: (error as Error).message });
   }
 });
 

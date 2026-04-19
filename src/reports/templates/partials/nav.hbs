@@ -1,0 +1,68 @@
+<style>
+  .main-nav {
+    display: flex;
+    gap: 0.25rem;
+    flex: 1;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+  .main-nav::-webkit-scrollbar { display: none; }
+  .nav-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.85rem;
+    padding: 0.4rem 0.9rem;
+    border-radius: 6px;
+    font-weight: 500;
+    transition: all 0.15s;
+    white-space: nowrap;
+  }
+  .nav-link:hover { color: var(--text); background: var(--surface-2); }
+  .nav-link.active { color: var(--accent); background: var(--accent-dim); }
+  .header-right {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+  .stat-pill { font-family: var(--font-mono); }
+  .stat-val { color: var(--accent); font-weight: 500; }
+  .logout-link {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.75rem;
+    font-family: var(--font-body);
+  }
+  .logout-link:hover { color: var(--text); }
+  @media (max-width: 768px) {
+    .header-top { gap: 0.5rem; flex-wrap: wrap; }
+    .header-right { font-size: 0.75rem; gap: 0.5rem; }
+    .logo { font-size: 1rem; }
+  }
+</style>
+<div class="header">
+  <div class="header-top">
+    <div class="logo">
+      <div class="logo-mark">AS</div>
+      Audit Sales
+    </div>
+    <nav class="main-nav">
+      <a href="/crm" class="nav-link{{#if (eq activeNav "customers")}} active{{/if}}">Customers</a>
+      <a href="/crm/groups" class="nav-link{{#if (eq activeNav "groups")}} active{{/if}}">Groups</a>
+      <a href="/crm/reports" class="nav-link{{#if (eq activeNav "reports")}} active{{/if}}">Reports</a>
+      <a href="/crm/import" class="nav-link{{#if (eq activeNav "import")}} active{{/if}}">Import</a>
+      <a href="/data-entry" class="nav-link{{#if (eq activeNav "data-entry")}} active{{/if}}">Data Entry</a>
+    </nav>
+    <div class="header-right">
+      {{#if showStats}}
+      <span class="stat-pill">Total: <span class="stat-val" id="stat-total">—</span></span>
+      <span class="stat-pill">Stale: <span class="stat-val" id="stat-stale" style="color:var(--red)">—</span></span>
+      {{/if}}
+      <a href="/logout" class="logout-link">Logout</a>
+    </div>
+  </div>
+</div>

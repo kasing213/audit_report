@@ -1,0 +1,218 @@
+{{> head title="Sales CRM — Customers"}}
+{{> nav activeNav="customers" showStats=true}}
+
+<!-- FILTERS -->
+<div class="filters">
+  <div class="filter-group">
+    <span class="filter-label">Follower</span>
+    <select id="filter-follower">
+      <option value="all">All</option>
+      {{#each followers}}
+      <option value="{{this}}">{{this}}</option>
+      {{/each}}
+    </select>
+  </div>
+  <div class="filter-group">
+    <span class="filter-label">Filter</span>
+    <select id="filter-type">
+      <option value="all">All Customers</option>
+      <option value="stale">Stale (No contact)</option>
+      <option value="reason">By Reason</option>
+    </select>
+  </div>
+  <div class="filter-group" id="reason-group" style="display:none">
+    <span class="filter-label">Reason</span>
+    <select id="filter-reason">
+      {{#each reasonCodes}}
+      <option value="{{this.code}}">{{this.code}} - {{this.label}}</option>
+      {{/each}}
+    </select>
+  </div>
+  <div class="filter-group" id="days-group" style="display:none">
+    <span class="filter-label">Days</span>
+    <input type="number" id="filter-days" value="14" min="1" max="365">
+  </div>
+  <div class="filter-group">
+    <span class="filter-label">Temp</span>
+    <select id="filter-temperature">
+      <option value="">All</option>
+      <option value="hot">🔥 Hot</option>
+      <option value="warm">🌤️ Warm</option>
+      <option value="cold">❄️ Cold</option>
+    </select>
+  </div>
+  <div class="filter-group search-wrap">
+    <span class="filter-label">Search</span>
+    <input type="text" id="search-input" placeholder="Name or phone...">
+  </div>
+  <div class="filter-group" style="justify-content:flex-end">
+    <span class="filter-label">&nbsp;</span>
+    <button class="btn btn-primary" onclick="loadCustomers()">Load</button>
+  </div>
+</div>
+
+<!-- TABLE (desktop) -->
+<div class="table-wrap">
+  <table class="customer-table">
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>Name</th>
+        <th>Phone / Telegram</th>
+        <th>Page</th>
+        <th>Follower</th>
+        <th>Last Contact</th>
+        <th>Temp</th>
+        <th>Reason</th>
+        <th>Note</th>
+        <th>Events</th>
+      </tr>
+    </thead>
+    <tbody id="table-body">
+    </tbody>
+  </table>
+</div>
+
+<!-- CARDS (mobile) -->
+<div class="mobile-cards" id="mobile-body"></div>
+
+<!-- LOADING -->
+<div class="loading" id="loading" style="display:none">
+  <div class="spinner"></div>
+  <span>Loading customers...</span>
+</div>
+
+<!-- EMPTY -->
+<div class="empty-state" id="empty" style="display:none">
+  <h3>No customers found</h3>
+  <p>Try adjusting your filters or load a different follower.</p>
+</div>
+
+<script>
+  const API_BASE = '/crm';
+  let allCustomers = [];
+
+  document.getElementById('filter-type').addEventListener('change', function() {
+    document.getElementById('reason-group').style.display = this.value === 'reason' ? '' : 'none';
+    document.getElementById('days-group').style.display = this.value === 'stale' ? '' : 'none';
+  });
+
+  document.getElementById('search-input').addEventListener('input', function() {
+    renderCustomers(filterBySearch(allCustomers, this.value));
+  });
+
+  function filterBySearch(customers, query) {
+    if (!query) return customers;
+    const q = query.toLowerCase();
+    return customers.filter(c =>
+      (c.name && c.name.toLowerCase().includes(q)) ||
+      (c.phone && c.phone.includes(q)) ||
+      (c.phone_display && c.phone_display.includes(q))
+    );
+  }
+
+  async function loadCustomers() {
+    const follower = document.getElementById('filter-follower').value;
+    const filter = document.getElementById('filter-type').value;
+    const reason = document.getElementById('filter-reason').value;
+    const days = document.getElementById('filter-days').value;
+    const temperature = document.getElementById('filter-temperature').value;
+
+    let url = API_BASE + '/api/customers?filter=' + filter;
+    if (follower !== 'all') url += '&follower=' + encodeURIComponent(follower);
+    if (filter === 'reason') url += '&reason=' + encodeURIComponent(reason);
+    if (filter === 'stale') url += '&days=' + days;
+    if (temperature) url += '&temperature=' + temperature;
+
+    document.getElementById('loading').style.display = '';
+    document.getElementById('empty').style.display = 'none';
+    document.getElementById('table-body').innerHTML = '';
+    document.getElementById('mobile-body').innerHTML = '';
+
+    try {
+      const resp = await fetch(url, { credentials: 'same-origin' });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      allCustomers = data.customers || [];
+
+      document.getElementById('stat-total').textContent = allCustomers.length;
+      const staleCount = allCustomers.filter(c => c.days_since_contact > 14).length;
+      document.getElementById('stat-stale').textContent = staleCount;
+
+      const query = document.getElementById('search-input').value;
+      renderCustomers(filterBySearch(allCustomers, query));
+    } catch (err) {
+      showToast('Failed to load customers', 'error');
+    }
+    document.getElementById('loading').style.display = 'none';
+  }
+
+  function staleTag(days) {
+    if (days === null || days === undefined) return '<span class="tag tag-stale-green">New</span>';
+    if (days <= 7) return '<span class="tag tag-stale-green">' + days + 'd</span>';
+    if (days <= 14) return '<span class="tag tag-stale-yellow">' + days + 'd</span>';
+    return '<span class="tag tag-stale-red">' + days + 'd</span>';
+  }
+
+  function tempTag(t) {
+    if (!t) return '<span style="color:var(--text-muted)">—</span>';
+    const emoji = t === 'hot' ? '🔥' : t === 'warm' ? '🌤️' : '❄️';
+    return '<span class="tag tag-temp-' + t + '">' + emoji + ' ' + t + '</span>';
+  }
+
+  function telegramSvg() {
+    return '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.51 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>';
+  }
+
+  function renderCustomers(customers) {
+    const tbody = document.getElementById('table-body');
+    const mobileBody = document.getElementById('mobile-body');
+
+    if (customers.length === 0) {
+      tbody.innerHTML = '';
+      mobileBody.innerHTML = '';
+      document.getElementById('empty').style.display = '';
+      return;
+    }
+    document.getElementById('empty').style.display = 'none';
+
+    tbody.innerHTML = customers.map((c, i) => {
+      const phoneCell = c.telegram_link
+        ? '<a class="phone-link" href="' + c.telegram_link + '" target="_blank">' + telegramSvg() + ' ' + (c.phone_display || c.phone) + '</a>'
+        : (c.phone || '—');
+      return '<tr>' +
+        '<td>' + (i+1) + '</td>' +
+        '<td class="customer-name">' + (c.name || 'Unknown') + '</td>' +
+        '<td>' + phoneCell + '</td>' +
+        '<td>' + (c.page || '—') + '</td>' +
+        '<td>' + (c.follower || '—') + '</td>' +
+        '<td>' + staleTag(c.days_since_contact) + ' ' + (c.last_update_date || '—') + '</td>' +
+        '<td>' + tempTag(c.temperature) + '</td>' +
+        '<td>' + (c.current_reason_code ? '<span class="tag">' + c.current_reason_code + '</span>' : '—') + '</td>' +
+        '<td><span class="note-text">' + (c.latest_note || c.history?.[c.history.length-1]?.note || '—') + '</span></td>' +
+        '<td class="events-count">' + (c.total_events || 0) + '</td>' +
+        '</tr>';
+    }).join('');
+
+    mobileBody.innerHTML = customers.map(c => {
+      const phoneBtn = c.telegram_link
+        ? '<a class="phone-link" href="' + c.telegram_link + '" target="_blank">' + telegramSvg() + ' Chat on Telegram: ' + (c.phone_display || c.phone) + '</a>'
+        : '';
+      return '<div class="m-card">' +
+        '<div class="m-card-top"><span class="m-card-name">' + (c.name || 'Unknown') + '</span>' + staleTag(c.days_since_contact) + '</div>' +
+        '<div class="m-card-meta">' +
+          '<span>' + (c.page || '') + '</span>' +
+          '<span>' + (c.follower || '') + '</span>' +
+          '<span>' + (c.last_update_date || '') + '</span>' +
+          (c.temperature ? tempTag(c.temperature) : '') +
+          (c.current_reason_code ? '<span class="tag">' + c.current_reason_code + '</span>' : '') +
+        '</div>' +
+        phoneBtn +
+        '</div>';
+    }).join('');
+  }
+
+  loadCustomers();
+</script>
+
+{{> footer}}

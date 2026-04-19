@@ -1,7 +1,4 @@
 import express, { Request, Response } from 'express';
-import * as handlebars from 'handlebars';
-import * as fs from 'fs/promises';
-import * as path from 'path';
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
 import { REASON_CODES } from '../constants/reason-codes';
@@ -9,6 +6,7 @@ import { DESTINATION_OPTIONS } from '../constants/destination-options';
 import { GroupConfigManager } from '../utils/group-config';
 import { formatTelegramLink, formatPhoneDisplay } from '../utils/phone-utils';
 import { Logger } from '../utils/logger';
+import { renderPage } from './template-helper';
 
 const router = express.Router();
 
@@ -34,25 +32,21 @@ function buildEventSummary(event: LeadEventDocument) {
 // GET /data-entry — serve the dashboard HTML
 router.get('/', async (req: Request, res: Response) => {
   try {
-    const templatePath = path.join(__dirname, '..', 'reports', 'templates', 'data-entry.hbs');
-    const templateContent = await fs.readFile(templatePath, 'utf-8');
-
     const groupConfig = GroupConfigManager.getInstance();
     const followers = groupConfig.getAllFollowerNames();
 
-    const template = handlebars.compile(templateContent);
-    const html = template({
+    const html = await renderPage('data-entry', {
       followers,
       reasonCodes: REASON_CODES,
       destinationOptions: DESTINATION_OPTIONS,
       token: (req.query.token as string) || '',
       followersJson: JSON.stringify(followers),
       reasonsJson: JSON.stringify(REASON_CODES.map(r => r.code)),
-      destOptionsJson: JSON.stringify(DESTINATION_OPTIONS.map(d => d.label))
+      destOptionsJson: JSON.stringify(DESTINATION_OPTIONS.map(d => d.label)),
+      activeNav: 'data-entry',
     });
 
-    res.set('Content-Type', 'text/html');
-    res.send(html);
+    res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving Data Entry dashboard', error as Error);
     res.status(500).json({ error: 'Failed to load dashboard', message: (error as Error).message });

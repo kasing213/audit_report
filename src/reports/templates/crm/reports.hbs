@@ -1,0 +1,92 @@
+{{> head title="Sales CRM — Reports"}}
+{{> nav activeNav="reports"}}
+
+<style>
+  .report-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 1rem;
+  }
+  .report-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1.25rem;
+  }
+  .report-card h3 {
+    font-size: 0.95rem;
+    font-weight: 600;
+    margin-bottom: 0.25rem;
+  }
+  .report-card p {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+    margin-bottom: 1rem;
+  }
+  .report-controls {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .report-controls input { flex: 1; min-width: 130px; }
+</style>
+
+<div class="section-wrap">
+  <h2 class="section-title">
+    <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="vertical-align:-3px;margin-right:0.35rem"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+    Reports
+  </h2>
+  <div class="report-grid">
+    <div class="report-card">
+      <h3>Daily Report</h3>
+      <p>Rendered JPG snapshot of the selected day's activity.</p>
+      <div class="report-controls">
+        <input type="date" id="report-date">
+        <button class="btn btn-primary" onclick="downloadDailyReport()">Download JPG</button>
+      </div>
+    </div>
+    <div class="report-card">
+      <h3>Monthly Report</h3>
+      <p>Excel workbook with per-follower breakdowns for the month.</p>
+      <div class="report-controls">
+        <input type="month" id="report-month">
+        <button class="btn btn-primary" onclick="downloadMonthlyReport()">Download Excel</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  (function() {
+    const today = new Date();
+    const yesterday = new Date(today);
+    yesterday.setDate(today.getDate() - 1);
+    document.getElementById('report-date').value = yesterday.toISOString().slice(0, 10);
+    document.getElementById('report-month').value = today.toISOString().slice(0, 7);
+  })();
+
+  function downloadDailyReport() {
+    const date = document.getElementById('report-date').value;
+    if (!date) { showToast('Please select a date', 'error'); return; }
+    const a = document.createElement('a');
+    a.href = '/reports/daily/jpg?date=' + encodeURIComponent(date);
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  function downloadMonthlyReport() {
+    const month = document.getElementById('report-month').value;
+    if (!month) { showToast('Please select a month', 'error'); return; }
+    const a = document.createElement('a');
+    a.href = '/reports/monthly/excel?month=' + encodeURIComponent(month);
+    a.download = '';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+</script>
+
+{{> footer}}
