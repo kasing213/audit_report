@@ -2,6 +2,7 @@ import { randomUUID } from 'crypto';
 import { SalesCaseRepository } from '../database/repository';
 import { CustomerCase } from '../database/models';
 import { Logger } from '../utils/logger';
+import { toInternationalPhone } from '../utils/phone-utils';
 import { draftMessage, reviewMessage } from './openai-drafter';
 import { OutreachRepository, OutreachProposalDocument } from './outreach-repository';
 
@@ -40,9 +41,9 @@ async function selectCandidates(
   opts: GenerateOptions
 ): Promise<CustomerCase[]> {
   if (opts.phones && opts.phones.length > 0) {
-    const normalized = new Set(opts.phones.map((p) => p.trim()));
+    const wanted = new Set(opts.phones.map((p) => toInternationalPhone(p.trim())));
     const all = await salesRepo.getAllCustomers();
-    return all.filter((c) => c.phone && normalized.has(c.phone.trim()));
+    return all.filter((c) => c.phone && wanted.has(toInternationalPhone(c.phone.trim())));
   }
 
   const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS;
@@ -66,14 +67,16 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       continue;
     }
 
-    if (await outreachRepo.hasRecentProposalForPhone(customer.phone)) {
-      details.push({ phone: customer.phone, outcome: 'duplicate', reason: 'proposal within 14 days' });
+    const intlPhone = toInternationalPhone(customer.phone.trim());
+
+    if (await outreachRepo.hasRecentProposalForPhone(intlPhone)) {
+      details.push({ phone: intlPhone, outcome: 'duplicate', reason: 'proposal within 14 days' });
       continue;
     }
 
     const draft = await draftMessage(customer);
     if (!draft) {
-      details.push({ phone: customer.phone, outcome: 'errored', reason: 'drafter failed' });
+      details.push({ phone: intlPhone, outcome: 'errored', reason: 'drafter failed' });
       continue;
     }
 
@@ -84,7 +87,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       // Reviewer failed entirely — err on the safe side, mark as pending but flag reasoning.
       toInsert.push({
         generation_id: generationId,
-        customer_phone: customer.phone,
+        customer_phone: intlPhone,
         customer_name: customer.name,
         reason_code: customer.current_reason_code ?? null,
         days_since_contact: daysSince(customer.last_update_date),
@@ -101,14 +104,14 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
         lease_expires_at: null,
         model: draft.model,
       });
-      details.push({ phone: customer.phone, outcome: 'created', reason: 'reviewer unavailable' });
+      details.push({ phone: intlPhone, outcome: 'created', reason: 'reviewer unavailable' });
       continue;
     }
 
     if (review.approve) {
       toInsert.push({
         generation_id: generationId,
-        customer_phone: customer.phone,
+        customer_phone: intlPhone,
         customer_name: customer.name,
         reason_code: customer.current_reason_code ?? null,
         days_since_contact: daysSince(customer.last_update_date),
@@ -125,11 +128,11 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
         lease_expires_at: null,
         model: draft.model,
       });
-      details.push({ phone: customer.phone, outcome: 'created' });
+      details.push({ phone: intlPhone, outcome: 'created' });
     } else {
       toInsert.push({
         generation_id: generationId,
-        customer_phone: customer.phone,
+        customer_phone: intlPhone,
         customer_name: customer.name,
         reason_code: customer.current_reason_code ?? null,
         days_since_contact: daysSince(customer.last_update_date),
@@ -146,7 +149,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
         lease_expires_at: null,
         model: draft.model,
       });
-      details.push({ phone: customer.phone, outcome: 'skipped', reason: review.reason });
+      details.push({ phone: intlPhone, outcome: 'skipped', reason: review.reason });
     }
   }
 
