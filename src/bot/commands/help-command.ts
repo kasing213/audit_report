@@ -74,6 +74,7 @@ export class HelpCommand {
   private buildManagementHelpMessage(): string {
     const auditChatId = process.env.AUDIT_CHAT_ID;
     const summaryChatId = process.env.SUMMARY_CHAT_ID;
+    const baseUrl = (process.env.DASHBOARD_BASE_URL || '<BASE_URL>').replace(/\/$/, '');
 
     return [
       '📊 *ប្រព័ន្ធគ្រប់គ្រងការលក់ - សម្រាប់អ្នកគ្រប់គ្រង*',
@@ -141,6 +142,7 @@ export class HelpCommand {
       '🌐 *ការចូលប្រើប្រាស់ដោយដៃ៖*',
       '• ពិនិត្យសុខភាពប្រព័ន្ធ៖ `/health`',
       '• របាយការណ៍តាម API endpoints',
+      `• 🧾 *Bulk follow-up paste:* \`${baseUrl}/data-entry/bulk\` — paste the daily follow-up report template to import multiple leads + daily counters in one shot.`,
       '',
       '📞 *ការជួយដោះស្រាយ៖*',
       'សូមពិនិត្យកំណត់ត្រាប្រព័ន្ធ ឬ ទាក់ទងអ្នកគ្រប់គ្រងប្រព័ន្ធ',

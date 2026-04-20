@@ -1,0 +1,343 @@
+{{> head title="Bulk Data Entry"}}
+{{> nav activeNav="bulk-entry"}}
+
+<style>
+  .bulk-wrap { padding: 1.25rem; max-width: 1200px; margin: 0 auto; }
+  .bulk-card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 1rem;
+    margin-bottom: 1rem;
+  }
+  .bulk-card h3 { font-size: 0.95rem; margin-bottom: 0.6rem; }
+  .bulk-textarea {
+    width: 100%;
+    min-height: 240px;
+    font-family: var(--font-mono);
+    font-size: 0.8rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 0.75rem;
+    border-radius: var(--radius);
+    resize: vertical;
+    white-space: pre;
+  }
+  .bulk-textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); outline: none; }
+  .bulk-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+  .header-grid {
+    display: grid;
+    grid-template-columns: 160px 180px 1fr;
+    gap: 0.75rem;
+    align-items: end;
+  }
+  .header-grid label { font-size: 0.7rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); display: block; margin-bottom: 0.25rem; }
+  .header-grid input, .header-grid select { width: 100%; }
+  .counters-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 0.4rem 0.85rem;
+    font-size: 0.8rem;
+  }
+  .counter-row { display: flex; justify-content: space-between; padding: 0.25rem 0; border-bottom: 1px dashed var(--border); }
+  .counter-key { color: var(--text-muted); font-family: var(--font-mono); }
+  .counter-val { color: var(--accent); font-family: var(--font-mono); font-weight: 500; }
+  .drafts-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+  .drafts-table th {
+    text-align: left;
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    padding: 0.45rem 0.4rem;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    background: var(--bg);
+  }
+  .drafts-table td {
+    padding: 0.35rem 0.4rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  .drafts-table input, .drafts-table select {
+    width: 100%;
+    font-size: 0.78rem;
+    padding: 0.25rem 0.35rem;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 4px;
+    font-family: var(--font-body);
+  }
+  .drafts-table input.mono { font-family: var(--font-mono); }
+  .row-bad { background: var(--red-dim); }
+  .warn-chip {
+    display: inline-block;
+    background: var(--yellow-dim);
+    color: var(--yellow);
+    font-size: 0.7rem;
+    padding: 0.1rem 0.35rem;
+    border-radius: 3px;
+    margin: 0 2px 2px 0;
+    font-family: var(--font-mono);
+  }
+  .footer-bar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 0.75rem;
+    font-size: 0.85rem;
+    color: var(--text-muted);
+  }
+  .preview-hidden { display: none; }
+  .chk { text-align: center; width: 36px; }
+  .slot-cell { font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted); white-space: nowrap; }
+  @media (max-width: 768px) {
+    .header-grid { grid-template-columns: 1fr; }
+    .drafts-table { font-size: 0.72rem; }
+  }
+</style>
+
+<div class="bulk-wrap">
+  <div class="bulk-card">
+    <h3>Paste daily follow-up report</h3>
+    <textarea class="bulk-textarea" id="bulk-text" placeholder="Paste the full Jim-style daily report here (including header, Tel1..Tel10 slots, and Dating visit section)..."></textarea>
+    <div class="bulk-actions">
+      <button class="btn btn-primary" onclick="doPreview()">Parse Preview</button>
+      <button class="btn btn-ghost" onclick="doClear()">Clear</button>
+    </div>
+  </div>
+
+  <div id="preview-block" class="preview-hidden">
+    <div class="bulk-card">
+      <h3>Report header</h3>
+      <div class="header-grid">
+        <div>
+          <label>Date</label>
+          <input type="text" id="hdr-date" placeholder="YYYY-MM-DD">
+        </div>
+        <div>
+          <label>Follower</label>
+          <select id="hdr-follower">
+            <option value="">-- Select --</option>
+            {{#each followers}}
+            <option value="{{this}}">{{this}}</option>
+            {{/each}}
+          </select>
+        </div>
+        <div>
+          <label>Page</label>
+          <input type="text" id="hdr-page" placeholder="Page / destination line">
+        </div>
+      </div>
+      <div id="hdr-warnings" style="margin-top:0.5rem"></div>
+    </div>
+
+    <div class="bulk-card" id="summary-card">
+      <h3 style="display:flex;justify-content:space-between;align-items:center">
+        <span>Aggregate counters</span>
+        <label style="font-size:0.78rem;font-weight:400;color:var(--text-muted)">
+          <input type="checkbox" id="save-summary" checked> Save daily summary
+        </label>
+      </h3>
+      <div class="counters-grid" id="counters-grid"></div>
+    </div>
+
+    <div class="bulk-card">
+      <h3>Lead drafts</h3>
+      <div style="overflow-x:auto">
+        <table class="drafts-table" id="drafts-table">
+          <thead>
+            <tr>
+              <th class="chk">&#9745;</th>
+              <th>Slot</th>
+              <th>Date</th>
+              <th>Name</th>
+              <th>Phone</th>
+              <th>Reason</th>
+              <th>Promise</th>
+              <th>Note</th>
+              <th>Warnings</th>
+            </tr>
+          </thead>
+          <tbody id="drafts-body"></tbody>
+        </table>
+      </div>
+      <div class="footer-bar">
+        <div id="footer-summary"></div>
+        <button class="btn btn-primary" onclick="doConfirm()">Confirm Import</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  const TOKEN = '{{token}}';
+  const FOLLOWERS = {{{followersJson}}};
+  const REASONS = {{{reasonsJson}}};
+  let lastPreview = null;
+
+  function apiHeaders() {
+    const h = { 'Content-Type': 'application/json' };
+    if (TOKEN) h['Authorization'] = 'Bearer ' + TOKEN;
+    return h;
+  }
+  function apiUrl(path) {
+    return TOKEN ? path + (path.includes('?') ? '&' : '?') + 'token=' + encodeURIComponent(TOKEN) : path;
+  }
+  function esc(s) {
+    if (s === null || s === undefined) return '';
+    const d = document.createElement('div');
+    d.textContent = String(s);
+    return d.innerHTML;
+  }
+
+  async function doPreview() {
+    const text = document.getElementById('bulk-text').value;
+    if (!text.trim()) { showToast('Paste a report first', 'error'); return; }
+    try {
+      const resp = await fetch(apiUrl('/data-entry/api/bulk/preview'), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: apiHeaders(),
+        body: JSON.stringify({ text })
+      });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      if (!resp.ok || data.error) {
+        showToast(data.error || 'Parse failed', 'error');
+        return;
+      }
+      lastPreview = data;
+      renderPreview(data);
+    } catch (e) {
+      showToast('Failed to parse', 'error');
+    }
+  }
+
+  function renderPreview(data) {
+    document.getElementById('preview-block').classList.remove('preview-hidden');
+    document.getElementById('hdr-date').value = data.header?.date || '';
+    document.getElementById('hdr-follower').value = data.header?.follower || '';
+    document.getElementById('hdr-page').value = data.header?.page || '';
+
+    const hdrWarn = document.getElementById('hdr-warnings');
+    if (data.warnings && data.warnings.length) {
+      hdrWarn.innerHTML = data.warnings.map(w => '<span class="warn-chip">' + esc(w) + '</span>').join('');
+    } else {
+      hdrWarn.innerHTML = '';
+    }
+
+    const grid = document.getElementById('counters-grid');
+    const counters = data.summary?.counters || {};
+    const keys = Object.keys(counters);
+    if (keys.length === 0) {
+      grid.innerHTML = '<div style="color:var(--text-muted)">No counters detected</div>';
+    } else {
+      grid.innerHTML = keys.map(k =>
+        '<div class="counter-row"><span class="counter-key">' + esc(k) + '</span><span class="counter-val">' + esc(counters[k]) + '</span></div>'
+      ).join('');
+    }
+
+    const tbody = document.getElementById('drafts-body');
+    const drafts = data.drafts || [];
+    if (drafts.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="9" style="text-align:center;color:var(--text-muted);padding:1rem">No leads extracted</td></tr>';
+    } else {
+      tbody.innerHTML = drafts.map((d, i) => renderDraftRow(d, i)).join('');
+    }
+
+    const ready = drafts.filter(d => d.customer_phone).length;
+    document.getElementById('footer-summary').textContent =
+      (data.empty_slots || 0) + ' of 10 Tel slots empty \u2022 ' + ready + ' leads ready';
+  }
+
+  function renderDraftRow(d, i) {
+    const reasonOpts = ['<option value="">-</option>'].concat(
+      REASONS.map(r => '<option value="' + r + '"' + (d.reason_code === r ? ' selected' : '') + '>' + r + '</option>')
+    ).join('');
+    const warn = (d.warnings || []).map(w => '<span class="warn-chip">' + esc(w) + '</span>').join('');
+    const badRow = !d.customer_phone ? ' row-bad' : '';
+    const checked = d.include !== false && d.customer_phone ? 'checked' : '';
+    return '<tr class="draft-row' + badRow + '" data-idx="' + i + '">' +
+      '<td class="chk"><input type="checkbox" class="row-include" ' + checked + '></td>' +
+      '<td class="slot-cell">' + esc(d.slot) + '</td>' +
+      '<td><input type="text" class="row-date" value="' + esc(d.date || '') + '" style="width:100px"></td>' +
+      '<td><input type="text" class="row-name" value="' + esc(d.customer_name || '') + '"></td>' +
+      '<td><input type="text" class="row-phone mono" value="' + esc(d.customer_phone || '') + '" style="width:130px"></td>' +
+      '<td><select class="row-reason" style="width:70px">' + reasonOpts + '</select></td>' +
+      '<td><input type="text" class="row-promise" value="' + esc(d.promise_date || '') + '" style="width:105px" placeholder="YYYY-MM-DD"></td>' +
+      '<td><input type="text" class="row-note" value="' + esc(d.note || '') + '"></td>' +
+      '<td>' + (warn || '<span style="color:var(--text-muted);font-size:0.7rem">-</span>') + '</td>' +
+      '</tr>';
+  }
+
+  function collectDrafts() {
+    const rows = document.querySelectorAll('#drafts-body tr.draft-row');
+    const out = [];
+    rows.forEach(row => {
+      const include = row.querySelector('.row-include').checked;
+      if (!include) return;
+      const idx = parseInt(row.dataset.idx, 10);
+      const base = lastPreview.drafts[idx] || {};
+      out.push({
+        slot: base.slot,
+        date: row.querySelector('.row-date').value || null,
+        follower: document.getElementById('hdr-follower').value || base.follower || null,
+        page: document.getElementById('hdr-page').value || base.page || null,
+        customer_name: row.querySelector('.row-name').value || null,
+        customer_phone: row.querySelector('.row-phone').value || null,
+        reason_code: row.querySelector('.row-reason').value || null,
+        promise_date: row.querySelector('.row-promise').value || null,
+        note: row.querySelector('.row-note').value || null
+      });
+    });
+    return out;
+  }
+
+  async function doConfirm() {
+    if (!lastPreview) { showToast('Preview first', 'error'); return; }
+    const header = {
+      date: document.getElementById('hdr-date').value,
+      follower: document.getElementById('hdr-follower').value || null,
+      page: document.getElementById('hdr-page').value || null
+    };
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(header.date)) { showToast('Header date must be YYYY-MM-DD', 'error'); return; }
+
+    const drafts = collectDrafts();
+    const saveSummary = document.getElementById('save-summary').checked;
+    const summary = saveSummary && lastPreview.summary && lastPreview.summary.counters && Object.keys(lastPreview.summary.counters).length > 0
+      ? lastPreview.summary
+      : null;
+
+    try {
+      const resp = await fetch(apiUrl('/data-entry/api/bulk/confirm'), {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: apiHeaders(),
+        body: JSON.stringify({ header, drafts, summary })
+      });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      if (data.success) {
+        showToast('Imported ' + data.imported + (data.skipped ? ' (skipped ' + data.skipped + ')' : '') + (data.summary_id ? ' + summary' : ''), 'success');
+        lastPreview = null;
+        document.getElementById('bulk-text').value = '';
+        document.getElementById('preview-block').classList.add('preview-hidden');
+      } else {
+        showToast(data.error || 'Import failed', 'error');
+      }
+    } catch (e) {
+      showToast('Import failed', 'error');
+    }
+  }
+
+  function doClear() {
+    document.getElementById('bulk-text').value = '';
+    document.getElementById('preview-block').classList.add('preview-hidden');
+    lastPreview = null;
+  }
+</script>
+
+{{> footer}}

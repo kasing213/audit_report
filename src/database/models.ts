@@ -60,6 +60,19 @@ export interface ChangeLogDocument {
   actor: string;
 }
 
+export interface DailySummaryDocument {
+  _id?: string;
+  date: string;
+  follower: string | null;
+  page: string | null;
+  counters: Record<string, number>;
+  raw_text: string;
+  source: {
+    model: string;
+  };
+  created_at: Date;
+}
+
 export interface CustomerCase {
   phone: string | null;
   name: string | null;

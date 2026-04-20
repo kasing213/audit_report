@@ -1,6 +1,6 @@
 import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from './connection';
-import { LeadEventDocument, AuditLog, CustomerCase, ChangeLogDocument } from './models';
+import { LeadEventDocument, AuditLog, CustomerCase, ChangeLogDocument, DailySummaryDocument } from './models';
 import { ensureIndexes } from './indexes';
 import {
   buildCasesByFollowerAndMonthPipeline,
@@ -17,12 +17,14 @@ export class SalesCaseRepository {
   private leadsEventsCollection: Collection<LeadEventDocument>;
   private auditCollection: Collection<AuditLog>;
   private changeLogsCollection: Collection<ChangeLogDocument>;
+  private dailySummariesCollection: Collection<DailySummaryDocument>;
 
   constructor() {
     const database = this.db.getDb();
     this.leadsEventsCollection = database.collection<LeadEventDocument>('leads_events');
     this.auditCollection = database.collection<AuditLog>('audit_logs');
     this.changeLogsCollection = database.collection<ChangeLogDocument>('change_logs');
+    this.dailySummariesCollection = database.collection<DailySummaryDocument>('daily_summaries');
 
     // Ensure indexes exist (non-blocking)
     ensureIndexes(this.leadsEventsCollection).catch(err => {
@@ -35,10 +37,15 @@ export class SalesCaseRepository {
     return result.insertedId.toString();
   }
 
-  async saveLeadEvents(leadEvents: LeadEventDocument[]): Promise<void> {
-    if (leadEvents.length > 0) {
-      await this.leadsEventsCollection.insertMany(leadEvents);
-    }
+  async saveLeadEvents(leadEvents: LeadEventDocument[]): Promise<string[]> {
+    if (leadEvents.length === 0) return [];
+    const result = await this.leadsEventsCollection.insertMany(leadEvents);
+    return Object.values(result.insertedIds).map(id => id.toString());
+  }
+
+  async saveDailySummary(summary: DailySummaryDocument): Promise<string> {
+    const result = await this.dailySummariesCollection.insertOne(summary);
+    return result.insertedId.toString();
   }
 
   async getLeadEventsByFollowerAndMonth(follower: string, month: string): Promise<LeadEventDocument[]> {
