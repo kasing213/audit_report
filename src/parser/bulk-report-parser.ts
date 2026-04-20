@@ -107,8 +107,12 @@ function extractPage(lines: string[]): string | null {
 function extractCounters(section: string): Record<string, number> {
   const counters: Record<string, number> = {};
   const lines = section.split('\n');
+  // List-marker prefixes look like `1.`, `1)`, `A.`, `a)`, or nested combos
+  // like `1.a.`. We require a `.`, `)`, or `/` separator so a bare leading
+  // letter (F in "Follow up", C in "Cold", etc.) is NOT mistaken for a list
+  // marker and eaten from the label.
   for (const line of lines) {
-    const match = line.match(/^[\s\d.a-jA-J)\/]*([A-Za-z][^=]*?)\s*=\s*(\d+)\s*$/);
+    const match = line.match(/^\s*(?:\d+[.)/]\s*)?(?:[a-jA-J][.)/]\s*)?([A-Za-z][^=]*?)\s*=\s*(\d+)\s*$/);
     if (!match) continue;
     const rawLabel = match[1];
     const latinOnly = rawLabel.match(/^([A-Za-z][A-Za-z0-9 _\/]*)/);

@@ -11,6 +11,7 @@ import { SummaryCommand } from './commands/summary-command';
 import { TemperatureCommand } from './commands/temperature-command';
 import { ReclassifyCommand } from './commands/reclassify-command';
 import { SalesEntryFlow } from './flows/sales-entry-flow';
+import { BulkEntryFlow } from './flows/bulk-entry-flow';
 import { GroupConfigManager } from '../utils/group-config';
 import { isInlineExpired } from './actions/inline-edit-delete';
 import dotenv from 'dotenv';
@@ -30,6 +31,7 @@ export class TelegrafBotService {
   private temperatureCommand: TemperatureCommand;
   private reclassifyCommand: ReclassifyCommand;
   private salesEntryFlow: SalesEntryFlow;
+  private bulkEntryFlow: BulkEntryFlow;
   private groupConfigManager: GroupConfigManager;
   private pendingReschedules: Map<number, { eventId: string; expiresAt: number }> = new Map();
 
@@ -52,6 +54,7 @@ export class TelegrafBotService {
     this.temperatureCommand = new TemperatureCommand(this.repository);
     this.reclassifyCommand = new ReclassifyCommand(this.repository);
     this.salesEntryFlow = new SalesEntryFlow(this.repository);
+    this.bulkEntryFlow = new BulkEntryFlow(this.repository);
     this.groupConfigManager = GroupConfigManager.getInstance();
     this.setupHandlers();
   }
@@ -299,6 +302,24 @@ export class TelegrafBotService {
       }
     });
 
+    // Bulk-report callbacks
+    this.bot.action(/^bulk_confirm:(.+)$/, async (ctx) => {
+      try {
+        await this.bulkEntryFlow.handleConfirm(ctx, (ctx as any).match[1]);
+      } catch (error) {
+        Logger.error('Error handling bulk_confirm', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+    this.bot.action(/^bulk_cancel:(.+)$/, async (ctx) => {
+      try {
+        await this.bulkEntryFlow.handleCancel(ctx, (ctx as any).match[1]);
+      } catch (error) {
+        Logger.error('Error handling bulk_cancel', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+
     // Text handler
     this.bot.on('text', async (ctx: Context) => {
       try {
@@ -378,6 +399,18 @@ export class TelegrafBotService {
           if (userId && this.salesEntryFlow.isPending(userId)) {
             const handled = await this.salesEntryFlow.handlePending(ctx, text);
             if (handled) return;
+          }
+
+          // Bulk daily-report paste — detect via header + Tel lines.
+          if (BulkEntryFlow.detectsBulkReport(text)) {
+            const chatId = ctx.chat?.id || 0;
+            if (
+              this.groupConfigManager.isSalesGroupChat(chatId) ||
+              this.groupConfigManager.isCommandAllowedInChat(chatId)
+            ) {
+              const handled = await this.bulkEntryFlow.tryBulkEntry(ctx, text);
+              if (handled) return;
+            }
           }
 
           // Handle /add with arrow format from code block copy-paste
