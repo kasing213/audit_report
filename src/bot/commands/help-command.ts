@@ -16,6 +16,8 @@ export class HelpCommand {
         await ctx.reply(this.buildCopyTemplate());
       } else {
         await ctx.reply(this.buildManagementHelpMessage(), { parse_mode: 'Markdown' });
+        // Separate plain-text message for easy copy of bulk-entry template on mobile
+        await ctx.reply(this.buildBulkCopyTemplate());
       }
 
       Logger.info(`${isSalesChat ? 'Sales' : 'Management'} help message sent to user ${userId}`);
@@ -23,6 +25,45 @@ export class HelpCommand {
       Logger.error('Error handling /help command', error as Error);
       await ctx.reply('Failed to display help information.');
     }
+  }
+
+  private buildBulkCopyTemplate(): string {
+    return [
+      '#របាយការណ៍ថ្ងៃទី DD/M/YY',
+      '<FollowerName>',
+      '🚩Pae<page description>',
+      '',
+      'A.Follow',
+      '  1.Messege=0',
+      '     a.Night=0',
+      '     b.PV=0',
+      '  3.Fack=0',
+      '  6.Liked=0',
+      '  9.Phone=0',
+      '',
+      'Tel1=<phone>',
+      '   Name=<name>',
+      '   Pv=<province>',
+      '   a.ថ្លៃពេក=',
+      '   b.ទីតាំងមិនត្រូវ=',
+      '   i.ចាំរកថ្ងៃទំនេរមកមើល=',
+      '   j.ផ្សេងៗ=',
+      'Tel2=',
+      '   Name=',
+      '   Pv=',
+      'Tel3=',
+      '   Name=',
+      '   Pv=',
+      '',
+      '/🥰10 .Dating visit (សន្យាមកមើល)',
+      '   1/លេខទូរស័ព្ =<phone>',
+      '      a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង  <time> DD/M/YY',
+      '      b.ថ្ងៃ.ខែ.ឆ្នាំទាក់ទងដំបូង',
+      '         1/1-3day=',
+      '         2/4-7day=',
+      '   2/លេខទូរស័ព្ =',
+      '      a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង='
+    ].join('\n');
   }
 
   private buildSalesHelpMessage(): string {

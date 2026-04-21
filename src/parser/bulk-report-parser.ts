@@ -146,7 +146,7 @@ function extractTelBlocks(text: string, datingStart: number): Array<{ num: numbe
   const regionEnd = Math.min(text.length, datingStart);
   const region = text.slice(0, regionEnd);
 
-  const telRegex = /(^|\n)\s*(?:[☎️☎]\s*)?T\s*el?\s*(\d{1,2})\s*=\s*([^\n]*)/gi;
+  const telRegex = /(^|\n)[ \t]*(?:[☎️☎][ \t]*)?T[ \t]*el?[ \t]*(\d{1,2})[ \t]*=[ \t]*([^\n]*)/gi;
   const starts: Array<{ num: number; index: number; firstLine: string }> = [];
   let m: RegExpExecArray | null;
   while ((m = telRegex.exec(region)) !== null) {
