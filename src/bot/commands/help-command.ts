@@ -12,12 +12,12 @@ export class HelpCommand {
 
       if (isSalesChat) {
         await ctx.reply(this.buildSalesHelpMessage(), { parse_mode: 'Markdown' });
-        // Send template as separate plain text message for easy copy on mobile
+        // Single-customer /add template (line-by-line flow)
         await ctx.reply(this.buildCopyTemplate());
+        // Bulk daily follow-up report template (paste into web dashboard)
+        await ctx.reply(this.buildBulkCopyTemplate());
       } else {
         await ctx.reply(this.buildManagementHelpMessage(), { parse_mode: 'Markdown' });
-        // Separate plain-text message for easy copy of bulk-entry template on mobile
-        await ctx.reply(this.buildBulkCopyTemplate());
       }
 
       Logger.info(`${isSalesChat ? 'Sales' : 'Management'} help message sent to user ${userId}`);
@@ -67,6 +67,7 @@ export class HelpCommand {
   }
 
   private buildSalesHelpMessage(): string {
+    const baseUrl = (process.env.DASHBOARD_BASE_URL || '<BASE_URL>').replace(/\/$/, '');
     return [
       '📋 *មគ្គុទេសក៍បញ្ចូលទិន្នន័យការលក់*',
       '',
@@ -94,7 +95,13 @@ export class HelpCommand {
       '',
       '• បញ្ចូលម្តងមួយអតិថិជន',
       '• ទិន្នន័យផុតកំណត់ក្នុង ៥ នាទី បើមិនបំពេញ',
-      '• បើខុស សូមវាយ /edit ដើម្បីកែ ឬ /delete ដើម្បីលុប'
+      '• បើខុស សូមវាយ /edit ដើម្បីកែ ឬ /delete ដើម្បីលុប',
+      '',
+      '🔸 *របាយការណ៍ប្រចាំថ្ងៃ (Bulk follow-up)*',
+      '',
+      `🧾 *Bulk paste:* \`${baseUrl}/data-entry/bulk\``,
+      '• បិទភ្ជាប់របាយការណ៍ប្រចាំថ្ងៃដើម្បីបញ្ចូលអតិថិជនច្រើននាក់ក្នុងពេលតែមួយ',
+      '• ទំរង់របាយការណ៍សូមចម្លងពីសារខាងក្រោម'
     ].join('\n');
   }
 
@@ -115,7 +122,6 @@ export class HelpCommand {
   private buildManagementHelpMessage(): string {
     const auditChatId = process.env.AUDIT_CHAT_ID;
     const summaryChatId = process.env.SUMMARY_CHAT_ID;
-    const baseUrl = (process.env.DASHBOARD_BASE_URL || '<BASE_URL>').replace(/\/$/, '');
 
     return [
       '📊 *ប្រព័ន្ធគ្រប់គ្រងការលក់ - សម្រាប់អ្នកគ្រប់គ្រង*',
@@ -183,7 +189,6 @@ export class HelpCommand {
       '🌐 *ការចូលប្រើប្រាស់ដោយដៃ៖*',
       '• ពិនិត្យសុខភាពប្រព័ន្ធ៖ `/health`',
       '• របាយការណ៍តាម API endpoints',
-      `• 🧾 *Bulk follow-up paste:* \`${baseUrl}/data-entry/bulk\` — paste the daily follow-up report template to import multiple leads + daily counters in one shot.`,
       '',
       '📞 *ការជួយដោះស្រាយ៖*',
       'សូមពិនិត្យកំណត់ត្រាប្រព័ន្ធ ឬ ទាក់ទងអ្នកគ្រប់គ្រងប្រព័ន្ធ',
