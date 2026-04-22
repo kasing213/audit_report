@@ -127,7 +127,7 @@ function extractCounters(section: string): Record<string, number> {
     const match = line.match(/^\s*(?:\d+[.)/]\s*)?(?:[a-jA-J][.)/]\s*)?([A-Za-z][^=]*?)\s*=\s*(\d+)\s*$/);
     if (!match) continue;
     const rawLabel = match[1];
-    const latinOnly = rawLabel.match(/^([A-Za-z][A-Za-z0-9 _\/]*)/);
+    const latinOnly = rawLabel.match(/^([A-Za-z][A-Za-z0-9 _\/]+)/);
     if (!latinOnly) continue;
     const key = normalizeKey(latinOnly[1]);
     const val = parseInt(match[2], 10);

@@ -1,5 +1,7 @@
 import { Context } from 'telegraf';
 import { Logger } from '../../utils/logger';
+import { GroupConfigManager } from '../../utils/group-config';
+import { getTodayDate } from '../../utils/time';
 
 export class HelpCommand {
 
@@ -11,13 +13,17 @@ export class HelpCommand {
       Logger.info(`Help command requested by user ${userId} in chat ${chatId} (sales: ${isSalesChat})`);
 
       if (isSalesChat) {
+        const follower = this.getFollowerForChat(chatId) || 'YourName';
+        const dateIso = getTodayDate();
+        const dateShort = this.isoToDdMmYy(dateIso);
         await ctx.reply(this.buildSalesHelpMessage(), { parse_mode: 'Markdown' });
         // Single-customer /add template (line-by-line flow)
-        await ctx.reply(this.buildCopyTemplate());
+        await ctx.reply(this.buildCopyTemplate(dateIso, follower));
         // Bulk daily follow-up report template — split across two messages to
-        // stay under Telegram's 4096-char per-message cap.
-        await ctx.reply(this.buildBulkCopyTemplatePart1());
-        await ctx.reply(this.buildBulkCopyTemplatePart2());
+        // stay under Telegram's 4096-char per-message cap. Pre-filled with
+        // today's date + caller's follower name + one example Tel1 row.
+        await ctx.reply(this.buildBulkCopyTemplatePart1(follower, dateShort));
+        await ctx.reply(this.buildBulkCopyTemplatePart2(dateShort));
       } else {
         await ctx.reply(this.buildManagementHelpMessage(), { parse_mode: 'Markdown' });
       }
@@ -29,13 +35,28 @@ export class HelpCommand {
     }
   }
 
-  private buildBulkCopyTemplatePart1(): string {
+  private getFollowerForChat(chatId: number | undefined): string | null {
+    if (chatId == null) return null;
+    const gm = GroupConfigManager.getInstance();
+    const groupId = gm.getGroupIdFromChatId(chatId);
+    if (!groupId) return null;
+    return gm.getGroupConfig(groupId)?.name ?? null;
+  }
+
+  private isoToDdMmYy(iso: string): string {
+    const [y, m, d] = iso.split('-');
+    return `${parseInt(d, 10)}/${parseInt(m, 10)}/${y.slice(-2)}`;
+  }
+
+  private buildBulkCopyTemplatePart1(follower: string, date: string): string {
     return [
+      '📋 Part 1 / 2 — កែទិន្នន័យខាងក្រោម រួចចម្លង Part 1 + Part 2 ទាំងពីរ ទៅកាន់ទំព័រ Bulk',
       '💞Follow up',
-      '#របាយការណ៍ថ្ងៃទី DD/M/YY',
+      `#របាយការណ៍ថ្ងៃទី${date}`,
       '(ធ្វើប្រចាំថ្ងៃបន្ទាប់មុនម៉ោង10ព្រឹក ទោះចំថ្ងៃសំរាកក៏ដោយ)',
       '',
-      '🚩Page <page description>',
+      follower,
+      '🚩Page ឈ្មោះផេករបស់អ្នក',
       'A.Follow (Boots Page)',
       '    1.Messege=0',
       '       a.Night(ទទួលពេលយប់)=',
@@ -48,9 +69,10 @@ export class HelpCommand {
       '   6.Liked(ចុចមេដៃ)=0',
       '   7.Other(ផ្សេងៗ)=',
       '☎️9.Phone (ចំនួនលេខទូរស័ព្ទ)=',
-      'Tel1=<phone>',
-      '       Name=<name>',
-      '            Pv=<province>',
+      '# ── ឧទាហរណ៍ Tel1 (លុបបន្ទាត់នេះ ហើយកែខាងក្រោម) ──',
+      'Tel1=012345678',
+      '       Name=Sok Dara',
+      '            Pv=PP',
       'Tel2=',
       '       Name=',
       '           Pv=',
@@ -111,11 +133,13 @@ export class HelpCommand {
     ].join('\n');
   }
 
-  private buildBulkCopyTemplatePart2(): string {
+  private buildBulkCopyTemplatePart2(date: string): string {
     return [
+      '📋 Part 2 / 2 — ផ្នែកខាងក្រោមបង្ហាញមូលហេតុ a–j និងកាលវិភាគ Dating',
       '  👉 g.ភ្ញៀវឆ្លើយតបដូចខាងក្រោម',
+      '# ── ឧទាហរណ៍ Tel1: ភ្ញៀវឆ្លើយថាថ្លៃពេក ដាក់ "1" នៅបន្ទាត់ a ──',
       '    Tel1=',
-      '      a.ថ្លៃពេក=',
+      '      a.ថ្លៃពេក=1',
       '      b.ទីតាំងមិនត្រូវ=',
       '      c ខ្ញុំមិនមែនអ្នកសំរេច=',
       '      d គ្មានចំណាប់អារម្មណ៍=',
@@ -163,10 +187,11 @@ export class HelpCommand {
       '      j.ផ្សេងៗ=',
       '',
       '🥰10 .Dating visit (សន្យាមកមើល)',
-      '   1/លេខទូរស័ព្ =<phone>',
-      '       a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= <time> DD/M/YY',
+      '# ── ឧទាហរណ៍ 1/ សន្យាមកមើល (លេខ Tel1 + ម៉ោងសន្យា) ──',
+      '   1/លេខទូរស័ព្ =012345678',
+      `       a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= 2pm ${date}`,
       '       b.ថ្ងៃ.ខែ.ឆ្នាំទាក់ទងដំបូង',
-      '          1/1-3day=',
+      '          1/1-3day=1',
       '          2/4-7day=',
       '          3/8-15day=',
       '          4/16-31day=',
@@ -215,17 +240,24 @@ export class HelpCommand {
       '🔸 *របាយការណ៍ប្រចាំថ្ងៃ (Bulk follow-up)*',
       '',
       `🧾 *Bulk paste:* \`${baseUrl}/data-entry/bulk\``,
-      '• បិទភ្ជាប់របាយការណ៍ប្រចាំថ្ងៃដើម្បីបញ្ចូលអតិថិជនច្រើននាក់ក្នុងពេលតែមួយ',
-      '• ទំរង់របាយការណ៍សូមចម្លងពីសារ ២ ខាងក្រោម (Part 1 + Part 2)'
+      '',
+      '*វិធីប្រើ៖*',
+      '1️⃣ ចម្លងសារ Part 1 + Part 2 ខាងក្រោម (ទាំងពីរ)',
+      '2️⃣ កែទិន្នន័យជំនួសឧទាហរណ៍ (កាលបរិច្ឆេទ ឈ្មោះ លេខ ...)',
+      '3️⃣ បើក link ខាងលើ → បិទភ្ជាប់ → ចុច *Parse Preview* → បញ្ជាក់ *Confirm Import*',
+      '',
+      '⚠️ បន្ទាត់ដែលចាប់ផ្តើមដោយ `#` ជាឧទាហរណ៍ — លុបចេញ ឬទុកក៏បានដែរ (Parser មិនរាប់វា)',
+      '✅ ឈ្មោះ follower និងកាលបរិច្ឆេទបំពេញស្វ័យប្រវត្តិដោយ Bot'
     ].join('\n');
   }
 
-  private buildCopyTemplate(): string {
+  private buildCopyTemplate(dateIso: string, _follower: string): string {
     return [
+      '📋 ឧទាហរណ៍ /add (កែជាទិន្នន័យអតិថិជនរបស់អ្នក)',
       '/add',
-      '→ 2026-02-11',
+      `→ ${dateIso}`,
       '→ Sok Dara',
-      '→ 093724678',
+      '→ 012345678',
       '→ Facebook',
       '→ Messenger',
       '→ A',
