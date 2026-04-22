@@ -80,5 +80,73 @@ check('counters: Cold keeps C',      r4.summary.counters.cold === 8,      JSON.s
 check('counters: Hot keeps H',       r4.summary.counters.hot === 3,       JSON.stringify(r4.summary.counters));
 check('counters: Jim keeps J',       r4.summary.counters.jim === 0,       JSON.stringify(r4.summary.counters));
 
+// === Fixture 5: Theary layout — reason codes in a separate bottom section, plus connection grid ===
+const theary = `#របាយការណ៍ថ្ងៃទី25/02/26
+Theary
+🚩Page king  (បូរី)
+A.Follow (Boots Page)
+    1.Messege=5
+       a.Night=2
+Tel1=070597666
+       Name=kasing
+           Pv=PP
+Tel2=
+       Name=
+           Pv=
+Tel3=
+       Name=
+           Pv=
+    a.Messager=
+      1/Connected by message=2
+      2/Connected by telegram=1
+      3/Connected by Phone=0
+      4/Connected by other=0
+    b.Comment=
+      1/Connected by message=0
+      2/Connected by telegram=3
+      3/Connected by Phone=0
+      4/Connected by other=0
+    c.Call in=
+      1/Connected by message=0
+      2/Connected by telegram=0
+      3/Connected by Phone=4
+      4/Connected by other=0
+  👉 g.ភ្ញៀវឆ្លើយតបដូចខាងក្រោម
+    Tel1=
+      a.ថ្លៃពេក=1
+      b.ទីតាំងមិនត្រូវ=
+      j.ផ្សេងៗ=
+  Tel2=
+      a.ថ្លៃពេក=
+      b.ទីតាំងមិនត្រូវ=1
+      j.ផ្សេងៗ=
+  Tel3=
+      a.ថ្លៃពេក=
+      b.ទីតាំងមិនត្រូវ=
+      j.ផ្សេងៗ=
+`;
+
+const r5 = parseBulkReport(theary);
+check('theary: exactly 1 draft',        r5.drafts.length === 1,                                        JSON.stringify(r5.drafts.map(d => ({ slot: d.slot, phone: d.customer_phone }))));
+check('theary: Tel1 phone',             r5.drafts[0]?.customer_phone === '+85570597666',               JSON.stringify(r5.drafts[0]));
+check('theary: Tel1 name',              r5.drafts[0]?.customer_name === 'kasing',                      JSON.stringify(r5.drafts[0]));
+check('theary: Tel1 reason A (merged)', r5.drafts[0]?.reason_code === 'A',                             JSON.stringify(r5.drafts[0]));
+check('theary: conn msgr/message=2',    r5.summary.counters.messager_connected_by_message === 2,       JSON.stringify(r5.summary.counters));
+check('theary: conn msgr/telegram=1',   r5.summary.counters.messager_connected_by_telegram === 1,      JSON.stringify(r5.summary.counters));
+check('theary: conn comment/telegram=3',r5.summary.counters.comment_connected_by_telegram === 3,       JSON.stringify(r5.summary.counters));
+check('theary: conn call_in/phone=4',   r5.summary.counters.call_in_connected_by_phone === 4,          JSON.stringify(r5.summary.counters));
+check('theary: no bare connected_by',   r5.summary.counters.connected_by_message === undefined,        JSON.stringify(r5.summary.counters));
+check('theary: header messege=5',       r5.summary.counters.messege === 5,                             JSON.stringify(r5.summary.counters));
+check('theary: header night=2',         r5.summary.counters.night === 2,                               JSON.stringify(r5.summary.counters));
+
+// === Fixture 6: Jim regression — same filled fixture should still produce Tel1/Tel3 with reasons ===
+const r6 = parseBulkReport(filled);
+check('jim-regress: Tel1 draft',        r6.drafts.some(d => d.slot === 'Tel1' && d.customer_phone === '+85570597666'), JSON.stringify(r6.drafts.map(d => d.slot)));
+check('jim-regress: Tel3 draft',        r6.drafts.some(d => d.slot === 'Tel3' && d.customer_phone === '+85593724678'), '');
+check('jim-regress: Tel2 skipped',      !r6.drafts.some(d => d.slot === 'Tel2'), '');
+check('jim-regress: Tel1 reason A',     r6.drafts.find(d => d.slot === 'Tel1')?.reason_code === 'A',   '');
+check('jim-regress: Tel3 reason B',     r6.drafts.find(d => d.slot === 'Tel3')?.reason_code === 'B',   '');
+check('jim-regress: Tel1 promise date', r6.drafts.find(d => d.slot === 'Tel1')?.promise_date === '2026-04-22', '');
+
 console.log(failures === 0 ? `\nALL GOOD` : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

@@ -111,7 +111,19 @@ function extractCounters(section: string): Record<string, number> {
   // like `1.a.`. We require a `.`, `)`, or `/` separator so a bare leading
   // letter (F in "Follow up", C in "Cold", etc.) is NOT mistaken for a list
   // marker and eaten from the label.
+  let currentCategory: string | null = null;
   for (const line of lines) {
+    if (/^\s*$/.test(line)) { currentCategory = null; continue; }
+
+    // Category header for connection-breakdown grid: `a.Messager=`, `b.Comment=`,
+    // `c.Call in=`, `d Group=`, `e.Telegram=`, `f Other=`. Value slot is empty.
+    const catMatch = line.match(/^\s*([a-fA-F])[\.\)\s]+([A-Za-z][^=\n]*?)\s*=\s*$/);
+    if (catMatch) {
+      const catLatin = catMatch[2].match(/^([A-Za-z][A-Za-z0-9 _\/]*)/);
+      currentCategory = catLatin ? (normalizeKey(catLatin[1]) || null) : null;
+      continue;
+    }
+
     const match = line.match(/^\s*(?:\d+[.)/]\s*)?(?:[a-jA-J][.)/]\s*)?([A-Za-z][^=]*?)\s*=\s*(\d+)\s*$/);
     if (!match) continue;
     const rawLabel = match[1];
@@ -121,7 +133,10 @@ function extractCounters(section: string): Record<string, number> {
     const val = parseInt(match[2], 10);
     if (!key || !Number.isFinite(val)) continue;
     if (key === 'tel' || /^tel\d*$/.test(key)) continue;
-    counters[key] = val;
+
+    const isConnectedBy = /^connected_by_/.test(key);
+    const finalKey = isConnectedBy && currentCategory ? `${currentCategory}_${key}` : key;
+    counters[finalKey] = val;
   }
   return counters;
 }
@@ -165,33 +180,40 @@ function extractTelBlocks(text: string, datingStart: number): Array<{ num: numbe
   return blocks;
 }
 
-function parseTelBlock(
-  num: number,
-  body: string,
-  header: BulkReportHeader
-): LeadEventDraft | null {
+interface SlotPartial {
+  num: number;
+  customerPhone: string | null;
+  name: string | null;
+  province: string | null;
+  reasonCode: ReasonCode | null;
+  reasonFreeText: string | null;
+  sourceFragments: string[];
+  warnings: string[];
+}
+
+function parseTelBlockPartial(num: number, body: string): SlotPartial {
   const warnings: string[] = [];
   const lines = body.split('\n');
   const firstLine = lines[0] || '';
 
-  const phoneMatch = firstLine.match(/=\s*([\d+\-\s()]+)/);
-  const rawPhone = phoneMatch ? phoneMatch[1].trim() : '';
-  if (!isPhoneCandidate(rawPhone)) {
-    return null;
-  }
-
   let customerPhone: string | null = null;
-  try {
-    customerPhone = toInternationalPhone(cleanPhoneDigits(rawPhone));
-  } catch {
-    warnings.push('Phone normalization failed');
+  const phoneMatch = firstLine.match(/=\s*([\d+\-\s()]+)/);
+  if (phoneMatch) {
+    const rawPhone = phoneMatch[1].trim();
+    if (isPhoneCandidate(rawPhone)) {
+      try {
+        customerPhone = toInternationalPhone(cleanPhoneDigits(rawPhone));
+      } catch {
+        warnings.push('Phone normalization failed');
+      }
+    }
   }
 
-  let customerName: string | null = null;
+  let name: string | null = null;
   const nameMatch = body.match(/\bName\s*=\s*([^\n]+)/i);
   if (nameMatch) {
     const v = nameMatch[1].trim();
-    if (v) customerName = v;
+    if (v) name = v;
   }
 
   let province: string | null = null;
@@ -219,24 +241,58 @@ function parseTelBlock(
     }
   }
 
-  const noteParts: string[] = [];
-  if (province) noteParts.push(`Province: ${province}`);
-  if (reasonFreeText) noteParts.push(reasonFreeText);
-  const note = noteParts.length ? noteParts.join('; ') : null;
-
   return {
-    slot: `Tel${num}`,
+    num,
+    customerPhone,
+    name,
+    province,
+    reasonCode,
+    reasonFreeText,
+    sourceFragments: [body.trim()],
+    warnings
+  };
+}
+
+function mergeSlotPartials(partials: SlotPartial[]): Map<number, SlotPartial> {
+  const merged = new Map<number, SlotPartial>();
+  for (const p of partials) {
+    const existing = merged.get(p.num);
+    if (!existing) {
+      merged.set(p.num, { ...p, sourceFragments: [...p.sourceFragments], warnings: [...p.warnings] });
+      continue;
+    }
+    if (!existing.customerPhone && p.customerPhone) existing.customerPhone = p.customerPhone;
+    if (!existing.name && p.name) existing.name = p.name;
+    if (!existing.province && p.province) existing.province = p.province;
+    if (!existing.reasonCode && p.reasonCode) {
+      existing.reasonCode = p.reasonCode;
+      existing.reasonFreeText = p.reasonFreeText;
+    }
+    existing.sourceFragments.push(...p.sourceFragments);
+    existing.warnings.push(...p.warnings);
+  }
+  return merged;
+}
+
+function slotPartialToDraft(p: SlotPartial, header: BulkReportHeader): LeadEventDraft | null {
+  if (!p.customerPhone) return null;
+  const noteParts: string[] = [];
+  if (p.province) noteParts.push(`Province: ${p.province}`);
+  if (p.reasonFreeText) noteParts.push(p.reasonFreeText);
+  const note = noteParts.length ? noteParts.join('; ') : null;
+  return {
+    slot: `Tel${p.num}`,
     date: header.date,
     follower: header.follower,
     page: header.page,
-    customer_name: customerName,
-    customer_phone: customerPhone,
-    reason_code: reasonCode,
+    customer_name: p.name,
+    customer_phone: p.customerPhone,
+    reason_code: p.reasonCode,
     note,
     promise_date: null,
-    source_fragment: body.trim().slice(0, 500),
-    warnings,
-    include: customerPhone !== null
+    source_fragment: p.sourceFragments.filter(Boolean).join('\n\n').slice(0, 500),
+    warnings: p.warnings,
+    include: true
   };
 }
 
@@ -344,27 +400,23 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   const header: BulkReportHeader = { date: headerDate, follower, page };
 
   const bounds = findSectionBounds(normalized);
-  const headerSection = normalized.slice(0, bounds.telStart);
-  const counters = extractCounters(headerSection);
+  const counters = extractCounters(normalized.slice(0, bounds.datingStart));
 
   const telBlocks = extractTelBlocks(normalized, bounds.datingStart);
-  const seenNums = new Set<number>();
+  const partials = telBlocks.map(b => parseTelBlockPartial(b.num, b.body));
+  const merged = mergeSlotPartials(partials);
   const drafts: LeadEventDraft[] = [];
   let emptySlots = 0;
   const totalTelSlotsExpected = 10;
 
-  for (const block of telBlocks) {
-    if (seenNums.has(block.num)) continue;
-    seenNums.add(block.num);
-    const draft = parseTelBlock(block.num, block.body, header);
-    if (draft) {
-      drafts.push(draft);
-    } else {
-      emptySlots++;
-    }
+  const slotNums = Array.from(merged.keys()).sort((a, b) => a - b);
+  for (const num of slotNums) {
+    const draft = slotPartialToDraft(merged.get(num)!, header);
+    if (draft) drafts.push(draft);
+    else emptySlots++;
   }
   for (let n = 1; n <= totalTelSlotsExpected; n++) {
-    if (!seenNums.has(n)) emptySlots++;
+    if (!merged.has(n)) emptySlots++;
   }
 
   const datingEntries = parseDatingSection(normalized, bounds.datingStart);
