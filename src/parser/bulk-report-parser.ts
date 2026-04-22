@@ -225,7 +225,11 @@ function parseTelBlockPartial(num: number, body: string): SlotPartial {
 
   let reasonCode: ReasonCode | null = null;
   let reasonFreeText: string | null = null;
-  const reasonLetterRegex = /^\s*([a-jA-J])\s*[\.\)]?\s*(.*?)\s*=\s*(.*)$/gm;
+  // Every whitespace run inside the pattern is restricted to [ \t]+ so that a
+  // line ending in `a.ថ្លៃពេក=` (empty value) doesn't let `\s*` swallow the
+  // newline and steal the next line's content as the value — which would flip
+  // `b.ទីតាំងមិនត្រូវ=1` into reason A instead of B.
+  const reasonLetterRegex = /^[ \t]*([a-jA-J])[ \t]*[\.\)]?[ \t]*(.*?)[ \t]*=[ \t]*(.*)$/gm;
   let rm: RegExpExecArray | null;
   while ((rm = reasonLetterRegex.exec(body)) !== null) {
     const letter = rm[1].toLowerCase();

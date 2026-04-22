@@ -139,6 +139,30 @@ check('theary: no bare connected_by',   r5.summary.counters.connected_by_message
 check('theary: header messege=5',       r5.summary.counters.messege === 5,                             JSON.stringify(r5.summary.counters));
 check('theary: header night=2',         r5.summary.counters.night === 2,                               JSON.stringify(r5.summary.counters));
 
+// === Fixture 7: reason regex must not cross newlines ===
+// Tel2 below has `a.=` (empty) then `b.=1`. The previous regex used `\s*=\s*`
+// which swallowed the newline after `=` and captured the next line, flipping
+// the reason to A. Expected reason for Tel2 is B.
+const crossline = `#របាយការណ៍ថ្ងៃទី22/4/26
+Theary
+🚩Page test
+Tel1=012345678
+   Name=Sok Dara
+   Pv=PP
+   a.ថ្លៃពេក=1
+   j.ផ្សេងៗ=
+Tel2=012365478
+   Name=kasing
+   Pv=KD
+   a.ថ្លៃពេក=
+   b.ទីតាំងមិនត្រូវ=1
+   c ខ្ញុំមិនមែនអ្នកសំរេច=
+   j.ផ្សេងៗ=
+`;
+const r7 = parseBulkReport(crossline);
+check('crossline: Tel1 reason A', r7.drafts.find(d => d.slot === 'Tel1')?.reason_code === 'A', JSON.stringify(r7.drafts));
+check('crossline: Tel2 reason B', r7.drafts.find(d => d.slot === 'Tel2')?.reason_code === 'B', JSON.stringify(r7.drafts));
+
 // === Fixture 6: Jim regression — same filled fixture should still produce Tel1/Tel3 with reasons ===
 const r6 = parseBulkReport(filled);
 check('jim-regress: Tel1 draft',        r6.drafts.some(d => d.slot === 'Tel1' && d.customer_phone === '+85570597666'), JSON.stringify(r6.drafts.map(d => d.slot)));
