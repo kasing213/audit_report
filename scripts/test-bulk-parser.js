@@ -163,6 +163,36 @@ const r7 = parseBulkReport(crossline);
 check('crossline: Tel1 reason A', r7.drafts.find(d => d.slot === 'Tel1')?.reason_code === 'A', JSON.stringify(r7.drafts));
 check('crossline: Tel2 reason B', r7.drafts.find(d => d.slot === 'Tel2')?.reason_code === 'B', JSON.stringify(r7.drafts));
 
+// === Fixture 8: two Dating entries with the same phone must not collide ===
+// Entry 1 merges with Tel1 (sets promise_date = 22/4). Entry 2 (same phone,
+// different day 23/4) must become its own dating-N draft rather than
+// overwriting Tel1's date — otherwise the first visit is silently lost.
+const twoDating = `#របាយការណ៍ថ្ងៃទី22/4/26
+Theary
+🚩Page test
+Tel1=012345678
+   Name=Sok Dara
+   Pv=PP
+   a.ថ្លៃពេក=1
+
+🥰10 .Dating visit (សន្យាមកមើល)
+   1/លេខទូរស័ព្ =012345678
+      a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= 2pm 22/4/26
+   2/លេខទូរស័ព្ទ=012345678
+      a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= 3pm 23/4/2026
+`;
+const r8 = parseBulkReport(twoDating);
+check('two-dating: exactly 2 drafts', r8.drafts.length === 2, JSON.stringify(r8.drafts.map(d => ({ slot: d.slot, promise: d.promise_date }))));
+check('two-dating: Tel1 keeps 22/4 date',
+  r8.drafts.find(d => d.slot === 'Tel1')?.promise_date === '2026-04-22',
+  JSON.stringify(r8.drafts.find(d => d.slot === 'Tel1')));
+check('two-dating: dating-N draft gets 23/4 date',
+  r8.drafts.find(d => d.slot.startsWith('dating-'))?.promise_date === '2026-04-23',
+  JSON.stringify(r8.drafts.find(d => d.slot.startsWith('dating-'))));
+check('two-dating: dating-N inherits name from Tel1',
+  r8.drafts.find(d => d.slot.startsWith('dating-'))?.customer_name === 'Sok Dara',
+  JSON.stringify(r8.drafts.find(d => d.slot.startsWith('dating-'))));
+
 // === Fixture 6: Jim regression — same filled fixture should still produce Tel1/Tel3 with reasons ===
 const r6 = parseBulkReport(filled);
 check('jim-regress: Tel1 draft',        r6.drafts.some(d => d.slot === 'Tel1' && d.customer_phone === '+85570597666'), JSON.stringify(r6.drafts.map(d => d.slot)));

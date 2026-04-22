@@ -427,24 +427,31 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   let datingIdx = 0;
   for (const entry of datingEntries) {
     datingIdx++;
-    const existing = entry.phone ? drafts.find(d => d.customer_phone === entry.phone) : null;
     const noteAdditions: string[] = [];
     if (entry.appointmentTime) noteAdditions.push(`Appointment time: ${entry.appointmentTime}`);
     if (entry.firstContactBucket) noteAdditions.push(`First-contact: ${entry.firstContactBucket}`);
     const datingNote = noteAdditions.join('; ');
 
-    if (existing) {
-      if (entry.appointmentDate) existing.promise_date = entry.appointmentDate;
+    // A Dating entry binds to an existing Tel draft only if that draft has no
+    // promise_date yet. A second Dating entry for the same phone represents a
+    // distinct visit (different day/time) and must NOT overwrite the first —
+    // emit it as its own `dating-N` draft so both appointments survive.
+    const siblings = entry.phone ? drafts.filter(d => d.customer_phone === entry.phone) : [];
+    const target = siblings.find(d => !d.promise_date) || null;
+
+    if (target) {
+      if (entry.appointmentDate) target.promise_date = entry.appointmentDate;
       if (datingNote) {
-        existing.note = existing.note ? `${existing.note}; ${datingNote}` : datingNote;
+        target.note = target.note ? `${target.note}; ${datingNote}` : datingNote;
       }
     } else if (entry.phone) {
+      const sibling = siblings[0];
       drafts.push({
         slot: `dating-${datingIdx}`,
         date: header.date,
         follower: header.follower,
         page: header.page,
-        customer_name: null,
+        customer_name: sibling?.customer_name ?? null,
         customer_phone: entry.phone,
         reason_code: null,
         note: datingNote || null,
