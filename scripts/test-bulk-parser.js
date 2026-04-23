@@ -202,5 +202,72 @@ check('jim-regress: Tel1 reason A',     r6.drafts.find(d => d.slot === 'Tel1')?.
 check('jim-regress: Tel3 reason B',     r6.drafts.find(d => d.slot === 'Tel3')?.reason_code === 'B',   '');
 check('jim-regress: Tel1 promise date', r6.drafts.find(d => d.slot === 'Tel1')?.promise_date === '2026-04-22', '');
 
+// === Fixture 9: B.Connected-by fence inside Tel1 body must not bleed into Tel1's reason ===
+// The /help template places B.ប្រភពទំនាក់ទំនង with a-f grid between Tel1's j line and Tel2=.
+// Parser bounds Tel1's body as [Tel1=, Tel2=), so the grid sits inside Tel1's body.
+// With fence truncation: Tel1's real reason `a.ថ្លៃពេក=1` wins, and counters.messenger=3 still extracts.
+const fenceFilled = `#របាយការណ៍ថ្ងៃទី22/4/26
+Theary
+🚩Page test
+A.Follow (Boots Page)
+   1.Messege=5
+Tel1=012345678
+   Name=Sok Dara
+   Pv=PP
+   a.ថ្លៃពេក=1
+   b.ទីតាំងមិនត្រូវ=
+   j.ផ្សេងៗ=
+# ── បំពេញមួយដងក្នុងមួយថ្ងៃ ──
+B.ប្រភពទំនាក់ទំនង (Connected by)
+   a.Messenger=3
+   b.Comment=0
+   c.Call in=0
+   d.Group=0
+   e.Telegram=0
+   f.Other=0
+Tel2=
+   Name=
+   Pv=
+`;
+const r9 = parseBulkReport(fenceFilled);
+check('fence: Tel1 reason A (from a.ថ្លៃពេក=1)',
+  r9.drafts.find(d => d.slot === 'Tel1')?.reason_code === 'A',
+  JSON.stringify(r9.drafts));
+check('fence: counters.messenger=3 still extracted',
+  r9.summary.counters.messenger === 3,
+  JSON.stringify(r9.summary.counters));
+
+// === Fixture 10: empty Tel1 a-j + non-zero B.Messenger must NOT mis-tag Tel1 as reason A ===
+// Before the fence fix, a.Messenger=5 inside Tel1's body would match the reason regex and
+// lock in reasonCode=A (ថ្លៃពេក) — silently wrong. After fence: reason stays null, and the
+// Messenger count still lands in root counters.
+const fenceEmptyReason = `#របាយការណ៍ថ្ងៃទី22/4/26
+Theary
+🚩Page test
+Tel1=012345678
+   Name=Sok Dara
+   Pv=PP
+   a.ថ្លៃពេក=
+   b.ទីតាំងមិនត្រូវ=
+   j.ផ្សេងៗ=
+B.ប្រភពទំនាក់ទំនង (Connected by)
+   a.Messenger=5
+   b.Comment=0
+   c.Call in=0
+   d.Group=0
+   e.Telegram=0
+   f.Other=0
+Tel2=
+   Name=
+   Pv=
+`;
+const r10 = parseBulkReport(fenceEmptyReason);
+check('fence: empty Tel1 a-j → reason_code null (NOT A from a.Messenger=5)',
+  r10.drafts.find(d => d.slot === 'Tel1')?.reason_code === null,
+  JSON.stringify(r10.drafts));
+check('fence: counters.messenger=5 extracted even when Tel1 reason empty',
+  r10.summary.counters.messenger === 5,
+  JSON.stringify(r10.summary.counters));
+
 console.log(failures === 0 ? `\nALL GOOD` : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

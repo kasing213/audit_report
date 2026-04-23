@@ -196,6 +196,16 @@ function parseTelBlockPartial(num: number, body: string): SlotPartial {
   const lines = body.split('\n');
   const firstLine = lines[0] || '';
 
+  // Fence: the /help template places `B.ប្រភពទំនាក់ទំនង (Connected by)` with its
+  // a-f grid between Tel1's `j.ផ្សេងៗ=` line and `Tel2=`, which means the grid
+  // sits inside Tel1's body per extractTelBlocks' bounds. Truncate the
+  // extraction region at that line so `a.Messenger=5` can't be misread as
+  // Tel1's reason A when Tel1's real a-j are all empty. The full body is
+  // still preserved in sourceFragments for display.
+  const fenceRegex = /^[ \t]*[A-Z][.\s)\]]+[^\n]*Connected by[^\n]*$/mi;
+  const fenceMatch = fenceRegex.exec(body);
+  const scanBody = fenceMatch ? body.slice(0, fenceMatch.index) : body;
+
   let customerPhone: string | null = null;
   const phoneMatch = firstLine.match(/=\s*([\d+\-\s()]+)/);
   if (phoneMatch) {
@@ -210,14 +220,14 @@ function parseTelBlockPartial(num: number, body: string): SlotPartial {
   }
 
   let name: string | null = null;
-  const nameMatch = body.match(/\bName\s*=\s*([^\n]+)/i);
+  const nameMatch = scanBody.match(/\bName\s*=\s*([^\n]+)/i);
   if (nameMatch) {
     const v = nameMatch[1].trim();
     if (v) name = v;
   }
 
   let province: string | null = null;
-  const pvMatch = body.match(/\bPv\s*=\s*([^\n]+)/i);
+  const pvMatch = scanBody.match(/\bPv\s*=\s*([^\n]+)/i);
   if (pvMatch) {
     const v = pvMatch[1].trim();
     if (v) province = v;
@@ -231,7 +241,7 @@ function parseTelBlockPartial(num: number, body: string): SlotPartial {
   // `b.ទីតាំងមិនត្រូវ=1` into reason A instead of B.
   const reasonLetterRegex = /^[ \t]*([a-jA-J])[ \t]*[\.\)]?[ \t]*(.*?)[ \t]*=[ \t]*(.*)$/gm;
   let rm: RegExpExecArray | null;
-  while ((rm = reasonLetterRegex.exec(body)) !== null) {
+  while ((rm = reasonLetterRegex.exec(scanBody)) !== null) {
     const letter = rm[1].toLowerCase();
     const value = rm[3].trim();
     if (!value || value === '0') continue;
