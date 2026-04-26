@@ -9,6 +9,12 @@ const DEFAULT_DAILY_DRAFT_BUDGET = 30;
 
 type SendMessage = (chatId: string, text: string, extra?: any) => Promise<void>;
 
+let registeredScheduler: OutreachScheduler | null = null;
+
+export function getRegisteredOutreachScheduler(): OutreachScheduler | null {
+  return registeredScheduler;
+}
+
 export class OutreachScheduler {
   private sendMessageCallback?: SendMessage;
   private draftsToday = 0;
@@ -18,7 +24,14 @@ export class OutreachScheduler {
     this.sendMessageCallback = callback;
   }
 
+  /** Force a scan tick now (used by /scheduler/run-once for testing). */
+  public async triggerNow(): Promise<void> {
+    await this.runScan();
+  }
+
   public startScheduler(): void {
+    registeredScheduler = this;
+
     if (process.env.OUTREACH_AUTO_SCAN !== 'true') {
       Logger.warn('Outreach auto-scan disabled (set OUTREACH_AUTO_SCAN=true to enable)');
       return;

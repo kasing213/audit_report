@@ -3,6 +3,7 @@ import { authMiddleware, getSessionUser } from './auth-middleware';
 import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { generateBatch } from '../outreach/outreach-agent';
+import { getRegisteredOutreachScheduler } from '../scheduler/outreach-scheduler';
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
 import { Logger } from '../utils/logger';
@@ -75,6 +76,25 @@ router.get('/worker-status', async (_req: Request, res: Response) => {
     });
   } catch (err) {
     Logger.error('outreach worker-status failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/scheduler/run-once — fire the daily scan synchronously
+// for testing. Same code path the cron tick uses (rolls the draft-budget counter
+// and posts the audit-chat summary), so it exercises the end-to-end flow without
+// waiting for 9 AM.
+router.post('/scheduler/run-once', async (_req: Request, res: Response) => {
+  const sched = getRegisteredOutreachScheduler();
+  if (!sched) {
+    res.status(503).json({ error: 'scheduler not registered yet' });
+    return;
+  }
+  try {
+    await sched.triggerNow();
+    res.json({ ok: true });
+  } catch (err) {
+    Logger.error('outreach scheduler run-once failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
