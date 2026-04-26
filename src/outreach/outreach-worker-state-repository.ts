@@ -33,7 +33,7 @@ function utcDayKey(now = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
-let indexesReady = false;
+let singletonInitialized = false;
 
 export class OutreachWorkerStateRepository {
   private col: Collection<WorkerStateDocument>;
@@ -41,9 +41,22 @@ export class OutreachWorkerStateRepository {
   constructor() {
     const db = DatabaseConnection.getInstance().getDb();
     this.col = db.collection<WorkerStateDocument>(COLLECTION);
-    if (!indexesReady) {
-      indexesReady = true;
-    }
+  }
+
+  /**
+   * Ensure the singleton document exists, so subsequent updates can use plain
+   * $set without an upsert. MongoDB rejects $set + $setOnInsert when fields
+   * overlap, which is awkward to satisfy when callers update arbitrary subsets;
+   * one-shot init avoids that entirely.
+   */
+  private async ensureSingleton(): Promise<void> {
+    if (singletonInitialized) return;
+    await this.col.updateOne(
+      { _id: SINGLETON_ID },
+      { $setOnInsert: { ...DEFAULT_STATE } },
+      { upsert: true }
+    );
+    singletonInitialized = true;
   }
 
   async getStatus(): Promise<WorkerStateDocument> {
@@ -53,10 +66,10 @@ export class OutreachWorkerStateRepository {
   }
 
   async setPaused(paused: boolean): Promise<void> {
+    await this.ensureSingleton();
     await this.col.updateOne(
       { _id: SINGLETON_ID },
-      { $set: { paused, updated_at: new Date() }, $setOnInsert: { ...DEFAULT_STATE, paused } },
-      { upsert: true }
+      { $set: { paused, updated_at: new Date() } }
     );
   }
 
@@ -65,6 +78,7 @@ export class OutreachWorkerStateRepository {
     sent_today: number;
     last_error: string | null;
   }): Promise<void> {
+    await this.ensureSingleton();
     const now = new Date();
     await this.col.updateOne(
       { _id: SINGLETON_ID },
@@ -76,22 +90,15 @@ export class OutreachWorkerStateRepository {
           last_error: input.last_error,
           updated_at: now,
         },
-        $setOnInsert: {
-          _id: SINGLETON_ID,
-          paused: false,
-          claims_today: 0,
-          claims_today_day: null,
-        },
-      },
-      { upsert: true }
+      }
     );
   }
 
   async setLastError(message: string): Promise<void> {
+    await this.ensureSingleton();
     await this.col.updateOne(
       { _id: SINGLETON_ID },
-      { $set: { last_error: message, updated_at: new Date() }, $setOnInsert: { ...DEFAULT_STATE, last_error: message } },
-      { upsert: true }
+      { $set: { last_error: message, updated_at: new Date() } }
     );
   }
 
@@ -100,12 +107,12 @@ export class OutreachWorkerStateRepository {
    * Returns the post-increment count, or null if cap would be exceeded.
    */
   async tryReserveClaim(dailyCap: number): Promise<number | null> {
+    await this.ensureSingleton();
     const today = utcDayKey();
     // Reset the counter when the day rolls.
     await this.col.updateOne(
       { _id: SINGLETON_ID, claims_today_day: { $ne: today } },
-      { $set: { claims_today: 0, claims_today_day: today, updated_at: new Date() }, $setOnInsert: { ...DEFAULT_STATE, claims_today_day: today } },
-      { upsert: true }
+      { $set: { claims_today: 0, claims_today_day: today, updated_at: new Date() } }
     );
 
     const result = await this.col.findOneAndUpdate(
