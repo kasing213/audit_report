@@ -434,13 +434,14 @@ export class TelegrafBotService {
   }
 
   public async start(): Promise<void> {
-    try {
-      await this.bot.launch();
-      Logger.info('Telegraf bot started successfully');
-    } catch (error) {
-      Logger.error('Failed to start bot', error as Error);
-      throw error;
-    }
+    // Telegraf's bot.launch() resolves only when the bot stops. Awaiting it
+    // would block main() and prevent every cron scheduler (daily reports,
+    // promise reminders, outreach scan) from ever being registered. Fire it
+    // off in the background and surface launch errors via the catch handler.
+    this.bot.launch().catch((error) => {
+      Logger.error('Bot polling crashed', error as Error);
+    });
+    Logger.info('Telegraf bot started successfully');
   }
 
   public async sendPhoto(chatId: string, buffer: Buffer, filename: string): Promise<void> {
