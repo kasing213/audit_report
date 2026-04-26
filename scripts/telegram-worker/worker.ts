@@ -4,11 +4,12 @@
  * Polls the CRM for approved proposals, opens each customer's Telegram Web chat
  * using the sales account's saved storage state, types the message, clicks Send,
  * and reports back. Respects DAILY_CAP + per-send random delay. Halts cleanly
- * when the session is gone or PAUSE=true.
+ * when the session is gone or the server-side pause flag is set.
  */
 
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
+import * as os from 'os';
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
 
 dotenv.config();
@@ -21,7 +22,12 @@ const DAILY_CAP = intEnv('DAILY_CAP', 15);
 const MIN_DELAY_MS = intEnv('MIN_DELAY_SEC', 60) * 1000;
 const MAX_DELAY_MS = intEnv('MAX_DELAY_SEC', 180) * 1000;
 const POLL_INTERVAL_MS = 60_000;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+const WORKER_ID = process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
 const CLAIM_URL = `${BASE_URL}/crm/api/outreach/claim`;
+const STATUS_URL = `${BASE_URL}/crm/api/outreach/worker-status`;
+const HEARTBEAT_URL = `${BASE_URL}/crm/api/outreach/worker-heartbeat`;
+const ALERT_URL = `${BASE_URL}/crm/api/outreach/worker-alert`;
 const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-sent`;
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
 
@@ -36,10 +42,6 @@ function intEnv(name: string, fallback: number): number {
   if (!v) return fallback;
   const n = parseInt(v, 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
-}
-
-function isPaused(): boolean {
-  return (process.env.PAUSE || '').toLowerCase() === 'true';
 }
 
 function randomDelay(): number {
@@ -59,35 +61,95 @@ interface ProposalClaim {
   follower: string | null;
 }
 
+interface ClaimResponse {
+  proposal: ProposalClaim | null;
+  paused?: boolean;
+  daily_cap_reached?: boolean;
+}
+
+interface StatusResponse {
+  paused: boolean;
+  daily_cap?: number;
+}
+
+// ---- Shared state with the heartbeat thread ----
+const workerState = {
+  sentToday: 0,
+  lastError: null as string | null,
+  paused: false,
+};
+
 // ---- API helpers ----
-async function claim(): Promise<ProposalClaim | null> {
-  const resp = await fetch(CLAIM_URL, {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${WORKER_TOKEN}` },
+async function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
+  return fetch(url, {
+    ...init,
+    headers: {
+      'Authorization': `Bearer ${WORKER_TOKEN}`,
+      ...(init.headers || {}),
+    },
   });
+}
+
+async function claim(): Promise<ClaimResponse | null> {
+  const resp = await authedFetch(CLAIM_URL, { method: 'POST' });
   if (!resp.ok) {
     console.error(`claim ${resp.status}: ${await resp.text()}`);
     return null;
   }
-  const data = await resp.json() as { proposal: ProposalClaim | null };
-  return data.proposal;
+  return (await resp.json()) as ClaimResponse;
+}
+
+async function fetchStatus(): Promise<StatusResponse | null> {
+  try {
+    const resp = await authedFetch(STATUS_URL, { method: 'GET' });
+    if (!resp.ok) return null;
+    return (await resp.json()) as StatusResponse;
+  } catch {
+    return null;
+  }
+}
+
+async function postHeartbeat(): Promise<void> {
+  try {
+    const resp = await authedFetch(HEARTBEAT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        worker_id: WORKER_ID,
+        sent_today: workerState.sentToday,
+        last_error: workerState.lastError,
+      }),
+    });
+    if (resp.ok) {
+      const data = await resp.json() as { paused?: boolean };
+      if (typeof data.paused === 'boolean') workerState.paused = data.paused;
+    }
+  } catch (err) {
+    console.error('heartbeat err', err);
+  }
+}
+
+async function postAlert(kind: string, reason: string): Promise<void> {
+  try {
+    await authedFetch(ALERT_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kind, reason, worker_id: WORKER_ID }),
+    });
+  } catch (err) {
+    console.error('alert err', err);
+  }
 }
 
 async function markSent(id: string): Promise<void> {
-  const resp = await fetch(MARK_SENT_URL(id), {
-    method: 'POST',
-    headers: { 'Authorization': `Bearer ${WORKER_TOKEN}` },
-  });
+  const resp = await authedFetch(MARK_SENT_URL(id), { method: 'POST' });
   if (!resp.ok) console.error(`mark-sent ${resp.status}: ${await resp.text()}`);
 }
 
 async function markFailed(id: string, reason: string): Promise<void> {
-  const resp = await fetch(MARK_FAILED_URL(id), {
+  const resp = await authedFetch(MARK_FAILED_URL(id), {
     method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${WORKER_TOKEN}`,
-      'Content-Type': 'application/json',
-    },
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ reason }),
   });
   if (!resp.ok) console.error(`mark-failed ${resp.status}: ${await resp.text()}`);
@@ -163,20 +225,26 @@ async function sendViaTelegramWeb(
 async function main(): Promise<void> {
   if (!fs.existsSync(STORAGE_STATE)) {
     console.error(`Storage state missing at ${STORAGE_STATE}. Run \`npm run login\` first.`);
+    await postAlert('session-expired', `Storage state missing at ${STORAGE_STATE}`);
     process.exit(1);
   }
 
-  console.log(`Worker online. Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s.`);
+  console.log(`Worker online. Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s, id=${WORKER_ID}.`);
 
   const browser: Browser = await chromium.launch({ headless: true });
   const context: BrowserContext = await browser.newContext({ storageState: STORAGE_STATE });
   const page = await context.newPage();
 
-  let sentToday = 0;
   let sentDay = todayKey();
+
+  const heartbeatTimer = setInterval(() => {
+    postHeartbeat().catch(() => undefined);
+  }, HEARTBEAT_INTERVAL_MS);
+  await postHeartbeat();
 
   const stop = async (reason: string, code = 0) => {
     console.log(`Stopping: ${reason}`);
+    clearInterval(heartbeatTimer);
     await browser.close().catch(() => undefined);
     process.exit(code);
   };
@@ -187,20 +255,33 @@ async function main(): Promise<void> {
   while (true) {
     // Roll daily counter at UTC midnight.
     const today = todayKey();
-    if (today !== sentDay) { sentDay = today; sentToday = 0; }
+    if (today !== sentDay) { sentDay = today; workerState.sentToday = 0; }
 
-    if (isPaused()) { console.log('PAUSE=true, idle.'); await sleep(POLL_INTERVAL_MS); continue; }
-    if (sentToday >= DAILY_CAP) {
-      console.log(`Daily cap ${DAILY_CAP} reached. Waiting.`);
+    // Refresh paused flag each iteration (server controls it now).
+    const status = await fetchStatus();
+    if (status) workerState.paused = status.paused;
+
+    if (workerState.paused) {
+      console.log('Paused (server flag), idle.');
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
+    if (workerState.sentToday >= DAILY_CAP) {
+      console.log(`Local daily cap ${DAILY_CAP} reached. Waiting.`);
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
 
-    let proposal: ProposalClaim | null = null;
-    try { proposal = await claim(); } catch (e) { console.error('claim err', e); }
+    let claimResp: ClaimResponse | null = null;
+    try { claimResp = await claim(); } catch (e) { console.error('claim err', e); }
 
-    if (!proposal) { await sleep(POLL_INTERVAL_MS); continue; }
+    if (!claimResp || !claimResp.proposal) {
+      if (claimResp?.daily_cap_reached) console.log('Server daily cap reached.');
+      await sleep(POLL_INTERVAL_MS);
+      continue;
+    }
 
+    const proposal = claimResp.proposal;
     console.log(`→ sending to ${proposal.customer_name || '?'} ${proposal.customer_phone}`);
     let result;
     try {
@@ -211,12 +292,15 @@ async function main(): Promise<void> {
 
     if (result.ok) {
       await markSent(proposal._id);
-      sentToday++;
-      console.log(`  ✓ sent (${sentToday}/${DAILY_CAP} today)`);
+      workerState.sentToday++;
+      workerState.lastError = null;
+      console.log(`  ✓ sent (${workerState.sentToday}/${DAILY_CAP} today)`);
     } else {
       await markFailed(proposal._id, result.reason);
+      workerState.lastError = result.reason;
       console.log(`  ✗ failed: ${result.reason}`);
       if (/session|log ?in|unauthorized|sign ?in/i.test(result.reason)) {
+        await postAlert('session-expired', result.reason);
         await stop('Telegram Web session invalid. Re-run `npm run login`.', 2);
       }
     }
@@ -233,5 +317,6 @@ function sleep(ms: number): Promise<void> {
 
 main().catch(async (err) => {
   console.error('worker crash:', err);
+  try { await postAlert('worker-fatal', (err as Error).message || 'unknown'); } catch {}
   process.exit(1);
 });

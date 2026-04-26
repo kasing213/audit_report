@@ -48,6 +48,19 @@ function isValidSession(cookie: string, secret: string): boolean {
 }
 
 /**
+ * Returns true if the given token matches DASHBOARD_TOKEN, or matches the
+ * optional WORKER_TOKEN if it has been configured. The latter lets us hand the
+ * worker process a credential that does NOT also unlock the operator UI.
+ */
+function isValidBearer(token: string): boolean {
+  const dashboard = process.env.DASHBOARD_TOKEN;
+  if (dashboard && token === dashboard) return true;
+  const worker = process.env.WORKER_TOKEN;
+  if (worker && token === worker) return true;
+  return false;
+}
+
+/**
  * Extract the signed-in username from a request's session cookie.
  * Returns 'worker' for Bearer-token requests, null if unauthenticated.
  */
@@ -73,7 +86,7 @@ export function getSessionUser(req: Request): string | null {
   const authHeader = req.headers.authorization;
   if (authHeader) {
     const parts = authHeader.split(' ');
-    if (parts.length === 2 && parts[0] === 'Bearer' && parts[1] === secret) {
+    if (parts.length === 2 && parts[0] === 'Bearer' && isValidBearer(parts[1])) {
       return 'worker';
     }
   }
@@ -116,7 +129,7 @@ export function authMiddleware(req: Request, res: Response, next: NextFunction):
   const authHeader = req.headers.authorization;
   if (authHeader) {
     const parts = authHeader.split(' ');
-    if (parts.length === 2 && parts[0] === 'Bearer' && parts[1] === token) {
+    if (parts.length === 2 && parts[0] === 'Bearer' && isValidBearer(parts[1])) {
       next();
       return;
     }

@@ -5,6 +5,7 @@ import { Logger } from '../utils/logger';
 import { toInternationalPhone } from '../utils/phone-utils';
 import { draftMessage, reviewMessage } from './openai-drafter';
 import { OutreachRepository, OutreachProposalDocument } from './outreach-repository';
+import { canAutoApprove, isAutoApproveEnabled } from './auto-approve-gate';
 
 const DEFAULT_STALE_DAYS = 45;
 const DEFAULT_BATCH_LIMIT = 10;
@@ -109,6 +110,10 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
     }
 
     if (review.approve) {
+      const autoApprove = isAutoApproveEnabled() ? canAutoApprove(draft, customer, review) : { ok: false, reason: 'auto-approve disabled' };
+      Logger.info(`outreach.autoApprove[${intlPhone}]: ${autoApprove.ok ? 'PASS' : 'HOLD'} — ${autoApprove.reason}`);
+
+      const isAuto = autoApprove.ok;
       toInsert.push({
         generation_id: generationId,
         customer_phone: intlPhone,
@@ -118,17 +123,21 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
         follower: customer.follower,
         message: draft.message,
         reasoning: draft.reasoning,
-        status: 'pending',
+        status: isAuto ? 'approved' : 'pending',
         skipped_reason: null,
         failed_reason: null,
         created_at: now,
-        approved_at: null,
-        approved_by: null,
+        approved_at: isAuto ? now : null,
+        approved_by: isAuto ? 'auto' : null,
         sent_at: null,
         lease_expires_at: null,
         model: draft.model,
       });
-      details.push({ phone: intlPhone, outcome: 'created' });
+      if (isAuto) {
+        details.push({ phone: intlPhone, outcome: 'created', reason: 'auto-approved' });
+      } else {
+        details.push({ phone: intlPhone, outcome: 'created' });
+      }
     } else {
       toInsert.push({
         generation_id: generationId,

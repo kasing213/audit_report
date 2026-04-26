@@ -3,7 +3,9 @@ import { ApiServer } from './api/server';
 import { DailyScheduler } from './scheduler/daily-scheduler';
 import { MonthlyScheduler } from './scheduler/monthly-scheduler';
 import { PromiseScheduler } from './scheduler/promise-scheduler';
+import { OutreachScheduler } from './scheduler/outreach-scheduler';
 import { AdScannerScheduler } from './ad-scanner/ad-scanner-scheduler';
+import { setOutreachAlertSender } from './outreach/outreach-alerts';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
 import { GroupConfigManager } from './utils/group-config';
@@ -83,6 +85,20 @@ async function main(): Promise<void> {
     });
     promiseScheduler.startScheduler();
     Logger.info('- Promise Reminders: 8:00 AM daily');
+
+    // Outreach alerts: register the bot sender so failed sends/lease-cap/worker
+    // alerts can reach the audit chat. Always wired; the alert helper itself
+    // bails if AUDIT_CHAT_ID isn't set.
+    setOutreachAlertSender(async (chatId: string, text: string, extra?: any) => {
+      await telegramBot.sendMessage(chatId, text, extra);
+    });
+
+    // Outreach daily scan scheduler (off by default — gated on OUTREACH_AUTO_SCAN=true)
+    const outreachScheduler = new OutreachScheduler();
+    outreachScheduler.setNotifyCallback(async (chatId: string, text: string, extra?: any) => {
+      await telegramBot.sendMessage(chatId, text, extra);
+    });
+    outreachScheduler.startScheduler();
 
     // Setup ad report PDF scanner
     const adReportChatId = process.env.AD_REPORT_CHAT_ID;

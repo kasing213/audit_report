@@ -22,8 +22,11 @@ export interface OutreachProposalDocument {
   approved_by: string | null;
   sent_at: Date | null;
   lease_expires_at: Date | null;
+  claim_attempts?: number;
   model: string;
 }
+
+const MAX_LEASE_ATTEMPTS = 3;
 
 const COLLECTION = 'outreach_proposals';
 const RECENT_PROPOSAL_WINDOW_DAYS = 14;
@@ -111,15 +114,44 @@ export class OutreachRepository {
     }
   }
 
-  async claimNextApproved(leaseMs: number): Promise<OutreachProposalDocument | null> {
+  async claimNextApproved(
+    leaseMs: number,
+    onLeaseFailedFinal?: (proposal: OutreachProposalDocument) => Promise<void>
+  ): Promise<OutreachProposalDocument | null> {
     const now = new Date();
     const leaseExpires = new Date(now.getTime() + leaseMs);
 
-    // First, release any expired in_flight leases.
-    await this.col.updateMany(
-      { status: 'in_flight', lease_expires_at: { $lt: now } },
-      { $set: { status: 'approved', lease_expires_at: null } }
-    );
+    // Reclaim expired in_flight leases. Increment claim_attempts; if the cap
+    // is hit, flip to `failed` so the same broken proposal doesn't loop forever.
+    const expiredCursor = this.col.find({ status: 'in_flight', lease_expires_at: { $lt: now } });
+    for await (const expired of expiredCursor) {
+      const attempts = (expired.claim_attempts || 0) + 1;
+      if (attempts >= MAX_LEASE_ATTEMPTS) {
+        await this.col.updateOne(
+          { _id: expired._id },
+          {
+            $set: {
+              status: 'failed',
+              failed_reason: 'lease expired without resolution (3rd attempt)',
+              lease_expires_at: null,
+              claim_attempts: attempts,
+            },
+          }
+        );
+        if (onLeaseFailedFinal) {
+          try { await onLeaseFailedFinal(expired); } catch (err) {
+            Logger.error('lease-expired hook failed', err as Error);
+          }
+        }
+      } else {
+        await this.col.updateOne(
+          { _id: expired._id },
+          {
+            $set: { status: 'approved', lease_expires_at: null, claim_attempts: attempts },
+          }
+        );
+      }
+    }
 
     const result = await this.col.findOneAndUpdate(
       { status: 'approved' },

@@ -137,9 +137,70 @@
     padding: 3rem 1rem;
     color: var(--text-muted);
   }
+  .worker-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-bottom: 0.75rem;
+    padding: 0.5rem 0.85rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    flex-wrap: wrap;
+  }
+  .worker-dot {
+    width: 0.65rem;
+    height: 0.65rem;
+    border-radius: 50%;
+    background: var(--text-muted);
+  }
+  .worker-dot.green { background: var(--green); }
+  .worker-dot.yellow { background: var(--yellow); }
+  .worker-dot.red { background: var(--red); }
+  .worker-bar .spacer { flex: 1 1 auto; }
+  .worker-bar .pause-btn {
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: var(--font-body);
+    cursor: pointer;
+    font-size: 0.78rem;
+  }
+  .worker-bar .pause-btn:hover { border-color: var(--accent); }
+  .pause-banner {
+    display: none;
+    background: var(--yellow-dim);
+    color: var(--yellow);
+    border: 1px solid var(--yellow);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.85rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.85rem;
+  }
+  .pause-banner.show { display: block; }
+  .proposal.focus-pulse {
+    animation: focus-pulse 2.5s ease-in-out;
+    border-color: var(--accent);
+  }
+  @keyframes focus-pulse {
+    0% { box-shadow: 0 0 0 0 var(--accent); }
+    50% { box-shadow: 0 0 0 6px var(--accent-dim); }
+    100% { box-shadow: 0 0 0 0 transparent; }
+  }
 </style>
 
 <div class="outreach-wrap">
+  <div class="pause-banner" id="pause-banner">⏸ Worker is paused. Approved proposals will queue until resumed.</div>
+  <div class="worker-bar" id="worker-bar">
+    <span class="worker-dot" id="worker-dot"></span>
+    <span id="worker-summary">Worker: checking…</span>
+    <span class="spacer"></span>
+    <button class="pause-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+  </div>
   <div class="outreach-top">
     <div class="status-tabs" id="status-tabs">
       <button class="status-tab active" data-status="pending">Pending <span class="count" data-count="pending">0</span></button>
@@ -166,6 +227,9 @@
   const API = '/crm/api/outreach';
   let currentStatus = 'pending';
   let pollTimer = null;
+  let workerStatusTimer = null;
+  let workerPaused = false;
+  const focusId = (new URL(window.location.href)).searchParams.get('focus');
 
   document.querySelectorAll('#status-tabs .status-tab').forEach(tab => {
     tab.addEventListener('click', () => {
@@ -232,6 +296,14 @@
     return '<span class="badge" style="color:' + color + ';border:1px solid ' + color + '55">' + p.status + '</span>';
   }
 
+  function maybeFocus() {
+    if (!focusId) return;
+    const el = document.getElementById('p-' + focusId);
+    if (!el) return;
+    el.classList.add('focus-pulse');
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  }
+
   function renderProposals(proposals) {
     const list = document.getElementById('list');
     if (proposals.length === 0) {
@@ -265,6 +337,7 @@
         '</div>'
       );
     }).join('');
+    setTimeout(maybeFocus, 50);
   }
 
   function toggleReason(id) {
@@ -351,6 +424,69 @@
     } catch { showToast('Delete failed', 'error'); }
   }
 
+  function fmtTimeAgo(iso) {
+    if (!iso) return 'never';
+    const t = new Date(iso).getTime();
+    if (!Number.isFinite(t)) return 'never';
+    const secs = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    if (secs < 60) return secs + 's ago';
+    if (secs < 3600) return Math.floor(secs / 60) + 'm ago';
+    if (secs < 86400) return Math.floor(secs / 3600) + 'h ago';
+    return Math.floor(secs / 86400) + 'd ago';
+  }
+
+  async function refreshWorkerStatus() {
+    try {
+      const resp = await fetch(API + '/worker-status', { credentials: 'same-origin' });
+      if (!resp.ok) return;
+      const data = await resp.json();
+      workerPaused = !!data.paused;
+
+      const dot = document.getElementById('worker-dot');
+      const summary = document.getElementById('worker-summary');
+      const banner = document.getElementById('pause-banner');
+      const btn = document.getElementById('pause-btn');
+
+      const heartbeatMs = data.last_heartbeat_at ? (Date.now() - new Date(data.last_heartbeat_at).getTime()) : Infinity;
+      let color = 'red';
+      if (heartbeatMs < 2 * 60_000) color = 'green';
+      else if (heartbeatMs < 5 * 60_000) color = 'yellow';
+      dot.classList.remove('green', 'yellow', 'red');
+      dot.classList.add(color);
+
+      const sentLine = (data.sent_today || 0) + '/' + (data.daily_cap || 15) + ' sent today';
+      const heartbeatLine = 'last heartbeat ' + fmtTimeAgo(data.last_heartbeat_at);
+      const workerLine = data.worker_id ? ('worker: ' + data.worker_id + ' · ') : '';
+      const errLine = data.last_error ? (' · last error: ' + data.last_error) : '';
+      summary.textContent = workerLine + heartbeatLine + ' · ' + sentLine + errLine;
+
+      banner.classList.toggle('show', workerPaused);
+      btn.textContent = workerPaused ? 'Resume' : 'Pause';
+    } catch {
+      // ignore — next tick
+    }
+  }
+
+  async function togglePause() {
+    try {
+      const resp = await fetch(API + '/pause', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ paused: !workerPaused }),
+      });
+      if (resp.ok) refreshWorkerStatus();
+      else showToast('Pause toggle failed', 'error');
+    } catch { showToast('Pause toggle failed', 'error'); }
+  }
+
+  function startWorkerStatusPoll() {
+    refreshWorkerStatus();
+    if (workerStatusTimer) clearInterval(workerStatusTimer);
+    workerStatusTimer = setInterval(refreshWorkerStatus, 10000);
+  }
+
+  startWorkerStatusPoll();
   loadList();
 </script>
 
