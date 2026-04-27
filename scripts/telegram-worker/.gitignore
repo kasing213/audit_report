@@ -2,3 +2,5 @@ node_modules/
 telegram-session.json
 .env
 *.log
+debug-fail-*.png
+debug-fail-*.html

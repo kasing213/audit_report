@@ -168,66 +168,113 @@ async function markFailed(id: string, reason: string): Promise<void> {
 }
 
 // ---- Telegram Web automation ----
+async function dumpDiagnostic(page: Page, label: string): Promise<{ screenshot: string; html: string }> {
+  const stamp = Date.now();
+  const screenshot = `./debug-fail-${stamp}.png`;
+  const html = `./debug-fail-${stamp}.html`;
+  try { await page.screenshot({ path: screenshot, fullPage: true }); } catch { /* ignore */ }
+  try {
+    const body = await page.content();
+    fs.writeFileSync(html, body);
+  } catch { /* ignore */ }
+  console.log(`  diagnostic ${label}: screenshot=${screenshot} html=${html} url=${page.url()}`);
+  return { screenshot, html };
+}
+
 async function sendViaTelegramWeb(
   page: Page,
   phone: string,
   message: string
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  const cleanPhone = phone.replace(/\s|[-()]/g, '');
+  // Strip non-digits — tg://resolve?phone= expects digits only.
+  const phoneDigits = phone.replace(/\D/g, '');
 
-  // Telegram Web's shortcut for opening a chat by phone number.
-  await page.goto(`https://web.telegram.org/a/#?phone=${encodeURIComponent(cleanPhone)}`, {
-    waitUntil: 'domcontentloaded',
-  });
+  // /a/ (TGCloud Z) supports the tgaddr hash for tg:// deeplinks. The phone
+  // resolver opens the user's chat if they are on Telegram. The plain
+  // `#?phone=…` form doesn't work in /a/ — that's /k/ syntax.
+  const tgaddr = encodeURIComponent(`tg://resolve?phone=${phoneDigits}`);
+  await page.goto(`https://web.telegram.org/a/#?tgaddr=${tgaddr}`, { waitUntil: 'domcontentloaded' });
 
-  // Wait for either the message input OR a "user not found" dialog.
+  // Telegram applies the hash route async after first paint. Wait for either
+  // the composer (chat opened) or a 'not on Telegram' style toast/dialog.
+  const composerSelectors = [
+    'div#editable-message-text',
+    'div.input-message-input[contenteditable="true"]',
+    'div[contenteditable="true"][data-placeholder]',
+    'div[contenteditable="true"][role="textbox"]',
+  ];
+  const composerSelector = composerSelectors.join(', ');
   try {
     await page.waitForSelector(
-      'div[contenteditable="true"][data-placeholder], .confirm-dialog, div:has-text("Phone number not found")',
-      { timeout: 15_000 }
+      `${composerSelector}, .confirm-dialog, div:has-text("Phone number not found"), div:has-text("not on Telegram")`,
+      { timeout: 30_000 }
     );
   } catch {
-    return { ok: false, reason: 'chat did not load within 15s' };
+    const d = await dumpDiagnostic(page, 'no-composer-after-tgaddr');
+    return { ok: false, reason: `chat did not load via tgaddr within 30s — screenshot=${d.screenshot} html=${d.html}` };
   }
 
-  const notFound = await page.locator('text=/Phone number.*not.*Telegram|не найден/i').first().count().catch(() => 0);
-  if (notFound > 0) return { ok: false, reason: 'phone number not on Telegram' };
+  // Did Telegram tell us this number isn't on Telegram?
+  const notFoundCount = await page.locator('text=/not on Telegram|Phone number.*not.*Telegram|не найден/i').first().count().catch(() => 0);
+  if (notFoundCount > 0) return { ok: false, reason: 'phone number not on Telegram' };
 
-  const messageBox = page.locator('div[contenteditable="true"][data-placeholder]').first();
-  const boxVisible = await messageBox.isVisible().catch(() => false);
-  if (!boxVisible) return { ok: false, reason: 'message input not visible' };
+  // Locate the visible composer (one of the selectors waited above must match).
+  let messageBox = null as ReturnType<Page['locator']> | null;
+  for (const sel of composerSelectors) {
+    const el = page.locator(sel).first();
+    if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
+      messageBox = el;
+      break;
+    }
+  }
+  if (!messageBox) {
+    const d = await dumpDiagnostic(page, 'no-composer-visible');
+    return { ok: false, reason: `composer never appeared — screenshot=${d.screenshot} html=${d.html}` };
+  }
 
+  // 5. Type the message.
   await messageBox.click();
-  // Type char-by-char for more human-like pacing and to ensure all Khmer codepoints land.
   await messageBox.type(message, { delay: 20 });
 
-  // Click the send (paper plane) button. aria-label varies across locales — try a few.
+  // 6. Click send. aria-labels and class names vary; try several.
   const sendCandidates = [
+    'button.Button.send.main-button',
     'button[aria-label="Send Message"]',
     'button[aria-label="Send"]',
-    'button.send-as-button',
-    'button:has-text("Send")',
     '.Button.send',
+    'button.send-as-button',
   ];
-  let clicked = false;
+  let clickedSend = false;
   for (const sel of sendCandidates) {
     const el = page.locator(sel).first();
     if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
       await el.click();
-      clicked = true;
+      clickedSend = true;
       break;
     }
   }
-  if (!clicked) {
-    // Fallback: Ctrl+Enter sends in some Telegram Web builds.
+  if (!clickedSend) {
     await page.keyboard.press('Control+Enter');
   }
 
-  // Confirm the message appears in the outgoing message list.
-  try {
-    await page.waitForSelector(`.message.own:has-text(${JSON.stringify(message.slice(0, 30))})`, { timeout: 10_000 });
-  } catch {
-    return { ok: false, reason: 'outgoing message did not appear in DOM' };
+  // 7. Confirm the outgoing message appeared. /a/ renders own messages with
+  // the .own class on .message containers; .Message classes vary.
+  const ownSelectors = [
+    `.message.own:has-text(${JSON.stringify(message.slice(0, 30))})`,
+    `.Message.own:has-text(${JSON.stringify(message.slice(0, 30))})`,
+    `[class*="own"]:has-text(${JSON.stringify(message.slice(0, 30))})`,
+  ];
+  let confirmed = false;
+  for (const sel of ownSelectors) {
+    try {
+      await page.waitForSelector(sel, { timeout: 4_000 });
+      confirmed = true;
+      break;
+    } catch { /* try next */ }
+  }
+  if (!confirmed) {
+    const d = await dumpDiagnostic(page, 'no-confirmation');
+    return { ok: false, reason: `outgoing message not confirmed — screenshot=${d.screenshot} html=${d.html}` };
   }
 
   return { ok: true };
