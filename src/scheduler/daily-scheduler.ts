@@ -75,6 +75,13 @@ export class DailyScheduler {
   }
 
   public startScheduler(): void {
+    const enableDailyReports = process.env.ENABLE_DAILY_REPORTS;
+    if (enableDailyReports && enableDailyReports.toLowerCase() === 'false') {
+      const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
+      Logger.info(`Daily report scheduler disabled via ENABLE_DAILY_REPORTS=false${groupInfo}`);
+      return;
+    }
+
     // Schedule daily report at 11:59 PM (23:59)
     cron.schedule('59 23 * * *', () => {
       const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
