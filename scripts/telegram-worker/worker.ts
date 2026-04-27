@@ -236,33 +236,70 @@ async function sendViaTelegramWeb(
   await messageBox.click();
   await messageBox.type(message, { delay: 20 });
 
-  // 6. Click send. aria-labels and class names vary; try several.
+  // Dump composer-state diagnostic so we can verify the send button is
+  // actually present and visible at the moment we click.
+  await dumpDiagnostic(page, 'pre-send');
+
+  // 6. Click send. /a/ renders the send button with a paper-plane icon and
+  // class .Button.send.main-button. We try a few permutations and log which
+  // selector matched so we can prune the list once it's stable.
   const sendCandidates = [
     'button.Button.send.main-button',
+    'button.Button.send',
     'button[aria-label="Send Message"]',
     'button[aria-label="Send"]',
-    '.Button.send',
-    'button.send-as-button',
+    '.send-as-button',
+    'button.send',
   ];
-  let clickedSend = false;
+  let clickedWith: string | null = null;
   for (const sel of sendCandidates) {
     const el = page.locator(sel).first();
     if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
       await el.click();
-      clickedSend = true;
+      clickedWith = sel;
       break;
     }
   }
-  if (!clickedSend) {
-    await page.keyboard.press('Control+Enter');
+  if (!clickedWith) {
+    // Fallback to keyboard. Telegram Web /a/ sends on Enter (no shift); we
+    // must focus the composer first or the keypress is dropped.
+    await messageBox.click();
+    await page.keyboard.press('Enter');
+    clickedWith = 'keyboard:Enter';
+  }
+  console.log(`  send via ${clickedWith}`);
+
+  // 7. Wait for the composer to clear — that's the only reliable signal that
+  // Telegram accepted the message. If the input still contains our text after
+  // 6 s the click didn't fire (e.g. send button was a no-op for some other
+  // reason), so dump diagnostic and fail rather than silently 'succeed'.
+  const composerCleared = await page
+    .waitForFunction(
+      (sel) => {
+        const el = document.querySelector(sel);
+        if (!el) return false;
+        const txt = (el.textContent || '').trim();
+        return txt.length === 0;
+      },
+      composerSelectors[0],
+      { timeout: 6_000 }
+    )
+    .then(() => true)
+    .catch(() => false);
+  if (!composerCleared) {
+    const d = await dumpDiagnostic(page, 'composer-not-cleared');
+    return { ok: false, reason: `send did not fire — composer still holds the draft (clicked=${clickedWith}) — screenshot=${d.screenshot} html=${d.html}` };
   }
 
-  // 7. Confirm the outgoing message appeared. /a/ renders own messages with
-  // the .own class on .message containers; .Message classes vary.
+  // 8. Confirm the outgoing bubble actually rendered. We require a strict
+  // outgoing-message class match — no broad [class*="own"] fallback (which
+  // false-positive'd against the composer wrapper in an earlier iteration).
+  const messageHead = message.slice(0, 30);
   const ownSelectors = [
-    `.message.own:has-text(${JSON.stringify(message.slice(0, 30))})`,
-    `.Message.own:has-text(${JSON.stringify(message.slice(0, 30))})`,
-    `[class*="own"]:has-text(${JSON.stringify(message.slice(0, 30))})`,
+    `.Message.own:has-text(${JSON.stringify(messageHead)})`,
+    `.message.own:has-text(${JSON.stringify(messageHead)})`,
+    `.bubble.is-out:has-text(${JSON.stringify(messageHead)})`,
+    `[data-is-own="true"]:has-text(${JSON.stringify(messageHead)})`,
   ];
   let confirmed = false;
   for (const sel of ownSelectors) {
@@ -273,8 +310,8 @@ async function sendViaTelegramWeb(
     } catch { /* try next */ }
   }
   if (!confirmed) {
-    const d = await dumpDiagnostic(page, 'no-confirmation');
-    return { ok: false, reason: `outgoing message not confirmed — screenshot=${d.screenshot} html=${d.html}` };
+    const d = await dumpDiagnostic(page, 'no-outgoing-bubble');
+    return { ok: false, reason: `outgoing bubble not visible — screenshot=${d.screenshot} html=${d.html}` };
   }
 
   return { ok: true };
