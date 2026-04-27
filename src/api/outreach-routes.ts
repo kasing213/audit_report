@@ -20,9 +20,9 @@ function dailyCap(): number {
 
 router.use(authMiddleware);
 
-function workerOnly(req: Request, res: Response, next: NextFunction): void {
-  if (getSessionUser(req) !== 'worker') {
-    res.status(403).json({ error: 'worker auth required' });
+function agentOnly(req: Request, res: Response, next: NextFunction): void {
+  if (getSessionUser(req) !== 'agent') {
+    res.status(403).json({ error: 'agent role required' });
     return;
   }
   next();
@@ -113,8 +113,8 @@ router.post('/pause', express.json(), async (req: Request, res: Response) => {
   }
 });
 
-// POST /crm/api/outreach/worker-heartbeat — worker only
-router.post('/worker-heartbeat', express.json(), workerOnly, async (req: Request, res: Response) => {
+// POST /crm/api/outreach/worker-heartbeat — agent only
+router.post('/worker-heartbeat', express.json(), agentOnly, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
     const workerId = typeof body.worker_id === 'string' ? body.worker_id : 'unknown';
@@ -130,8 +130,8 @@ router.post('/worker-heartbeat', express.json(), workerOnly, async (req: Request
   }
 });
 
-// POST /crm/api/outreach/worker-alert — worker only; fires a manager alert
-router.post('/worker-alert', express.json(), workerOnly, async (req: Request, res: Response) => {
+// POST /crm/api/outreach/worker-alert — agent only; fires a manager alert
+router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
     const kind = (body.kind as AlertKind) || 'worker-fatal';

@@ -16,7 +16,7 @@ dotenv.config();
 
 // ---- Config ----
 const BASE_URL = must('BASE_URL');
-const WORKER_TOKEN = must('WORKER_TOKEN');
+const AGENT_TOKEN = resolveAgentToken();
 const STORAGE_STATE = process.env.STORAGE_STATE || './telegram-session.json';
 const DAILY_CAP = intEnv('DAILY_CAP', 15);
 const MIN_DELAY_MS = intEnv('MIN_DELAY_SEC', 60) * 1000;
@@ -35,6 +35,18 @@ function must(name: string): string {
   const v = process.env[name];
   if (!v) { console.error(`${name} is required in .env`); process.exit(1); }
   return v;
+}
+
+function resolveAgentToken(): string {
+  const agent = process.env.AGENT_TOKEN;
+  if (agent) return agent;
+  const legacy = process.env.WORKER_TOKEN;
+  if (legacy) {
+    console.warn('WORKER_TOKEN is deprecated — rename to AGENT_TOKEN in .env.');
+    return legacy;
+  }
+  console.error('AGENT_TOKEN is required in .env');
+  process.exit(1);
 }
 
 function intEnv(name: string, fallback: number): number {
@@ -84,7 +96,7 @@ async function authedFetch(url: string, init: RequestInit = {}): Promise<Respons
   return fetch(url, {
     ...init,
     headers: {
-      'Authorization': `Bearer ${WORKER_TOKEN}`,
+      'Authorization': `Bearer ${AGENT_TOKEN}`,
       ...(init.headers || {}),
     },
   });
