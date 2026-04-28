@@ -10,7 +10,6 @@ import { ReportCommand } from './commands/report-command';
 import { SummaryCommand } from './commands/summary-command';
 import { TemperatureCommand } from './commands/temperature-command';
 import { ReclassifyCommand } from './commands/reclassify-command';
-import { SalesEntryFlow } from './flows/sales-entry-flow';
 import { BulkEntryFlow } from './flows/bulk-entry-flow';
 import { GroupConfigManager } from '../utils/group-config';
 import { isInlineExpired } from './actions/inline-edit-delete';
@@ -30,7 +29,6 @@ export class TelegrafBotService {
   private summaryCommand: SummaryCommand;
   private temperatureCommand: TemperatureCommand;
   private reclassifyCommand: ReclassifyCommand;
-  private salesEntryFlow: SalesEntryFlow;
   private bulkEntryFlow: BulkEntryFlow;
   private groupConfigManager: GroupConfigManager;
   private pendingReschedules: Map<number, { eventId: string; expiresAt: number }> = new Map();
@@ -53,7 +51,6 @@ export class TelegrafBotService {
     this.summaryCommand = new SummaryCommand();
     this.temperatureCommand = new TemperatureCommand(this.repository);
     this.reclassifyCommand = new ReclassifyCommand(this.repository);
-    this.salesEntryFlow = new SalesEntryFlow(this.repository);
     this.bulkEntryFlow = new BulkEntryFlow(this.repository);
     this.groupConfigManager = GroupConfigManager.getInstance();
     this.setupHandlers();
@@ -76,7 +73,7 @@ export class TelegrafBotService {
     this.bot.command('customers', async (ctx: Context) => {
       try {
         if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមបិទភ្ជាប់ទំរង់ Bulk ដើម្បីបញ្ចូលទិន្នន័យ');
           return;
         }
         await this.customersCommand.handleCommand(ctx);
@@ -90,7 +87,7 @@ export class TelegrafBotService {
     this.bot.command('crm', async (ctx: Context) => {
       try {
         if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមបិទភ្ជាប់ទំរង់ Bulk ដើម្បីបញ្ចូលទិន្នន័យ');
           return;
         }
         await this.crmCommand.handleCommand(ctx);
@@ -104,7 +101,7 @@ export class TelegrafBotService {
     this.bot.command('report', async (ctx: Context) => {
       try {
         if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមបិទភ្ជាប់ទំរង់ Bulk ដើម្បីបញ្ចូលទិន្នន័យ');
           return;
         }
         await this.reportCommand.handleCommand(ctx);
@@ -118,7 +115,7 @@ export class TelegrafBotService {
     this.bot.command('summary', async (ctx: Context) => {
       try {
         if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
-          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមប្រើ /add ដើម្បីបញ្ចូលទិន្នន័យ');
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ\nសូមបិទភ្ជាប់ទំរង់ Bulk ដើម្បីបញ្ចូលទិន្នន័យ');
           return;
         }
         await this.summaryCommand.handleCommand(ctx);
@@ -202,18 +199,13 @@ export class TelegrafBotService {
       }
     });
 
-    // /add command - only in sales group chats
+    // /add command was removed: bulk paste is the only data-entry path. Reply
+    // with a pointer so old muscle-memory still gets routed to the new flow.
     this.bot.command('add', async (ctx: Context) => {
       try {
-        const chatId = ctx.chat?.id || 0;
-        if (!this.groupConfigManager.isSalesGroupChat(chatId)) {
-          await ctx.reply('❌ /add អាចប្រើបានតែក្នុងក្រុម Sales ប៉ុណ្ណោះ');
-          return;
-        }
-        await this.salesEntryFlow.startAddFlow(ctx);
+        await ctx.reply('ℹ️ /add ត្រូវបានដកចេញ — សូមប្រើ /help យក​ទំរង់ Bulk រួចបិទភ្ជាប់ក្នុងក្រុមនេះ');
       } catch (error) {
         Logger.error('Error handling /add command', error as Error);
-        await ctx.reply('Failed to start data entry.');
       }
     });
 
@@ -393,15 +385,9 @@ export class TelegrafBotService {
           }
         }
 
-        // Sales entry flow
+        // Bulk daily-report paste — detect via header + Tel lines.
         if (ctx.message && 'text' in ctx.message) {
           const text = ctx.message.text;
-          if (userId && this.salesEntryFlow.isPending(userId)) {
-            const handled = await this.salesEntryFlow.handlePending(ctx, text);
-            if (handled) return;
-          }
-
-          // Bulk daily-report paste — detect via header + Tel lines.
           if (BulkEntryFlow.detectsBulkReport(text)) {
             const chatId = ctx.chat?.id || 0;
             if (
@@ -409,15 +395,6 @@ export class TelegrafBotService {
               this.groupConfigManager.isCommandAllowedInChat(chatId)
             ) {
               const handled = await this.bulkEntryFlow.tryBulkEntry(ctx, text);
-              if (handled) return;
-            }
-          }
-
-          // Handle /add with arrow format from code block copy-paste
-          if (text.includes('/add') && text.includes('\n')) {
-            const chatId = ctx.chat?.id || 0;
-            if (this.groupConfigManager.isSalesGroupChat(chatId)) {
-              const handled = await this.salesEntryFlow.tryArrowEntry(ctx);
               if (handled) return;
             }
           }

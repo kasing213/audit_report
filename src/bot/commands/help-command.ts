@@ -17,10 +17,7 @@ export class HelpCommand {
         const dateIso = getTodayDate();
         const dateShort = this.isoToDdMmYy(dateIso);
         await ctx.reply(this.buildSalesHelpMessage(), { parse_mode: 'Markdown' });
-        // Bulk template comes FIRST (primary workflow: end-of-day full report).
         await ctx.reply(this.buildBulkCopyTemplate(follower, dateShort));
-        // /add template SECOND (alternative: quick single-customer entry).
-        await ctx.reply(this.buildCopyTemplate(dateIso, follower));
       } else {
         await ctx.reply(this.buildManagementHelpMessage(), { parse_mode: 'Markdown' });
       }
@@ -115,18 +112,16 @@ export class HelpCommand {
     return [
       '📋 *មគ្គុទេសក៍បញ្ចូលទិន្នន័យការលក់*',
       '',
-      'បន្ទាប់ពីសារនេះ Bot នឹងផ្ញើទំរង់ ២ មកឲ្យ៖',
-      '  • *សារទី ១* — ទំរង់ Bulk (របាយការណ៍ប្រចាំថ្ងៃ)',
-      '  • *សារទី ២* — ទំរង់ /add (បញ្ចូលអតិថិជនម្តងមួយ)',
+      'បន្ទាប់ពីសារនេះ Bot នឹងផ្ញើទំរង់ Bulk មកឲ្យ៖',
       '',
       '━━━━━━━━━━━━━━━━━━━━━',
-      '🔸 *១. Bulk — របាយការណ៍ប្រចាំថ្ងៃ (មួយថ្ងៃ/មួយដង)*',
+      '🔸 *Bulk — របាយការណ៍ប្រចាំថ្ងៃ (មួយផ្លូវតែមួយ)*',
       '',
       `🧾 *Bulk paste:* \`${baseUrl}/data-entry/bulk\``,
       '',
-      '1️⃣ ចម្លង *សារទី ១* ខាងក្រោម',
+      '1️⃣ ចម្លងទំរង់ខាងក្រោម',
       '2️⃣ កែទិន្នន័យ Tel1..Tel10 ជំនួសឧទាហរណ៍ (លេខ ឈ្មោះ ខេត្ត មូលហេតុ a–j)',
-      '3️⃣ បើក link ខាងលើ → បិទភ្ជាប់ → ចុច *Parse Preview* → បញ្ជាក់ *Confirm Import*',
+      '3️⃣ បិទភ្ជាប់ត្រឡប់ក្នុងក្រុមនេះ ឬបើក link ខាងលើ → *Parse Preview* → *Confirm*',
       '',
       '💡 មូលហេតុ a–j៖ ដាក់ `=1` នៅបន្ទាត់ដែលត្រូវ (ឧ. `a.ថ្លៃពេក=1`)',
       '💡 Connected by៖ ដាក់ចំនួនក្នុងបន្ទាត់ a–f (ឧ. `a.Messenger=3`)',
@@ -134,38 +129,12 @@ export class HelpCommand {
       '✅ ឈ្មោះ follower និងកាលបរិច្ឆេទបំពេញស្វ័យប្រវត្តិ',
       '',
       '━━━━━━━━━━━━━━━━━━━━━',
-      '🔸 *២. /add — បញ្ចូលអតិថិជនម្តងមួយ (សំរាប់ករណីបន្ទាន់)*',
-      '',
-      'វាយ /add ក្នុងក្រុមនេះ ហើយ Bot សួរម្តងមួយជំហាន៖',
-      '📅 កាលបរិច្ឆេទ → 👤 ឈ្មោះ → 📞 ទូរស័ព្ទ → 📄 ប្រភព → 📨 មធ្យោបាយ',
-      '→ 🔤 មូលហេតុ A–J → 📝 ចំណាំ → 📅 ថ្ងៃសន្យា',
-      '',
-      'ឬ ចម្លង *សារទី ២* ខាងក្រោម រួចកែទិន្នន័យ រួចផ្ញើជាសារតែមួយ។',
-      '',
-      '━━━━━━━━━━━━━━━━━━━━━',
       '🔸 *កែ/លុប*',
       '',
       '✏️ */edit* — កែទិន្នន័យអតិថិជន (ស្វែងរកតាមលេខទូរស័ព្ទ)',
       '🗑️ */delete* — លុបទិន្នន័យអតិថិជន',
       '',
-      '⚠️ *ចំណាំ*៖ ទិន្នន័យ /add ផុតកំណត់ក្នុង ៥ នាទី បើមិនបំពេញ — Bulk មិនផុតកំណត់។'
-    ].join('\n');
-  }
-
-  private buildCopyTemplate(dateIso: string, _follower: string): string {
-    return [
-      '📋 សារទី ២ — ទំរង់ /add (អតិថិជនតែម្នាក់)',
-      'ចម្លង កែទិន្នន័យ រួចផ្ញើជាសារក្នុងក្រុមនេះ',
-      '',
-      '/add',
-      `→ ${dateIso}`,
-      '→ Sok Dara',
-      '→ 012345678',
-      '→ Facebook',
-      '→ Messenger',
-      '→ A',
-      '→ —',
-      '→ —'
+      `🌐 ឬកែដោយផ្ទាល់ក្នុង CRM Dashboard៖ \`${baseUrl}/crm\` → ប៊ូតុង *Edit*`
     ].join('\n');
   }
 
@@ -228,7 +197,7 @@ export class HelpCommand {
       '• កន្លែងសម្រាប់អ្នកគ្រប់គ្រង និង CRM',
       '',
       `🏢 *ក្រុម Sales* (${salesGroupCount} ក្រុម)`,
-      '• វាយ `/add` ឬបិទភ្ជាប់ទំរង់ Bulk ដើម្បីបញ្ចូលទិន្នន័យអតិថិជន',
+      '• បិទភ្ជាប់ទំរង់ Bulk ដើម្បីបញ្ចូលទិន្នន័យអតិថិជន',
       '• Follower កំណត់ស្វ័យប្រវត្តិតាមក្រុម',
       '• វាយ `/help` ក្នុងក្រុម Sales ដើម្បីមើលមគ្គុទេសក៍',
       `• ${salesGroupsLine}`,

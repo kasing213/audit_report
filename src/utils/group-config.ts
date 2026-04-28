@@ -13,10 +13,10 @@
  * │ Follower: Auto-set from SALES_GROUP_N_NAME                     │
  * │                                                                 │
  * │ Allowed commands:                                               │
- * │   /add    - Enter new customer data (interactive or arrow fmt)  │
+ * │   (paste)  - Bulk daily report → bot parses + previews          │
  * │   /edit   - Edit existing customer records                      │
  * │   /delete - Delete customer records                             │
- * │   /help   - Show sales guide + copy template                   │
+ * │   /help   - Show sales guide + bulk copy template              │
  * │                                                                 │
  * │ Active groups:                                                  │
  * │   1: SreySros  2: Bery     3: Theary  4: Seyi                  │

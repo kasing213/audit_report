@@ -30,28 +30,9 @@ function buildEventSummary(event: LeadEventDocument) {
   };
 }
 
-// GET /data-entry — serve the dashboard HTML
-router.get('/', async (req: Request, res: Response) => {
-  try {
-    const groupConfig = GroupConfigManager.getInstance();
-    const followers = groupConfig.getAllFollowerNames();
-
-    const html = await renderPage('data-entry', {
-      followers,
-      reasonCodes: REASON_CODES,
-      destinationOptions: DESTINATION_OPTIONS,
-      token: (req.query.token as string) || '',
-      followersJson: JSON.stringify(followers),
-      reasonsJson: JSON.stringify(REASON_CODES.map(r => r.code)),
-      destOptionsJson: JSON.stringify(DESTINATION_OPTIONS.map(d => d.label)),
-      activeNav: 'data-entry',
-    });
-
-    res.set('Content-Type', 'text/html').send(html);
-  } catch (error) {
-    Logger.error('Error serving Data Entry dashboard', error as Error);
-    res.status(500).json({ error: 'Failed to load dashboard', message: (error as Error).message });
-  }
+// GET /data-entry — solo entry form was removed; redirect to bulk-only entry surface.
+router.get('/', (_req: Request, res: Response) => {
+  res.redirect(302, '/data-entry/bulk');
 });
 
 // GET /data-entry/api/options — all form options in one call
@@ -103,72 +84,10 @@ router.get('/api/events', async (req: Request, res: Response) => {
   }
 });
 
-// POST /data-entry/api/events — create a new lead event
-router.post('/api/events', express.json(), async (req: Request, res: Response) => {
-  try {
-    const repository = getRepository();
-    const { date, customer_name, customer_phone, page, destination, follower, reason_code, note, promise_date } = req.body;
-
-    if (!customer_phone) {
-      res.status(400).json({ error: 'Customer phone is required' });
-      return;
-    }
-
-    const today = new Date().toISOString().slice(0, 10);
-    const eventDate = date || today;
-    if (!isValidDate(eventDate)) {
-      res.status(400).json({ error: 'Date must be in YYYY-MM-DD format' });
-      return;
-    }
-    const event: LeadEventDocument = {
-      date: eventDate,
-      customer: {
-        name: customer_name || null,
-        phone: customer_phone
-      },
-      page: page || null,
-      destination: destination || null,
-      follower: follower || null,
-      status_text: null,
-      reason_code: reason_code || null,
-      note: note || null,
-      promise_date: promise_date || null,
-      promise_status: promise_date ? 'pending' : null,
-      group_id: null,
-      source: {
-        telegram_msg_id: 'dashboard',
-        model: 'dashboard'
-      },
-      created_at: new Date()
-    };
-
-    const eventId = await repository.saveLeadEvent(event);
-
-    // Save change log
-    await repository.saveChangeLog({
-      timestamp: new Date(),
-      action: 'create',
-      event_id: eventId,
-      event_summary: buildEventSummary(event),
-      actor: 'dashboard'
-    });
-
-    // Audit log
-    await repository.logAudit({
-      timestamp: new Date(),
-      action: 'dashboard-create',
-      message_id: 0,
-      user_id: 0,
-      username: 'dashboard',
-      original_message: `Created event for ${customer_name || customer_phone}`,
-      parsed_result: { eventId }
-    });
-
-    res.json({ success: true, eventId });
-  } catch (error) {
-    Logger.error('Error creating event', error as Error);
-    res.status(500).json({ error: 'Failed to create event' });
-  }
+// POST /data-entry/api/events — create endpoint was removed alongside the solo
+// entry form. Use the bulk paste flow at /data-entry/bulk to add new events.
+router.post('/api/events', (_req: Request, res: Response) => {
+  res.status(410).json({ error: 'Solo create removed; use POST /data-entry/api/bulk/confirm.' });
 });
 
 // GET /data-entry/api/events/:id — get single event

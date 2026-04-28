@@ -74,7 +74,7 @@
   </table>
 </div>
 <style>
-  .del-btn {
+  .del-btn, .edit-btn {
     background: transparent;
     border: 1px solid var(--border);
     color: var(--text-muted);
@@ -86,13 +86,111 @@
     transition: all 0.15s;
   }
   .del-btn:hover { border-color: var(--red); color: var(--red); }
-  .m-card-del {
+  .edit-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .row-actions { display: inline-flex; gap: 0.35rem; }
+  .m-card-actions {
     display: inline-flex;
     align-items: center;
-    gap: 0.25rem;
+    gap: 0.4rem;
     margin-top: 0.5rem;
   }
+  .m-card-del { display: inline-flex; align-items: center; gap: 0.25rem; }
+
+  /* Edit modal */
+  .edit-modal-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    z-index: 1000;
+    overflow-y: auto;
+    padding: 1.5rem 1rem;
+  }
+  .edit-modal-backdrop.open { display: flex; }
+  .edit-modal {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 100%;
+    max-width: 560px;
+    padding: 1.1rem 1.1rem 1.4rem;
+    color: var(--text);
+    font-family: var(--font-body);
+  }
+  .edit-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 0.85rem;
+  }
+  .edit-modal-title { font-size: 1rem; font-weight: 600; }
+  .edit-modal-close {
+    background: transparent;
+    border: none;
+    color: var(--text-muted);
+    font-size: 1.2rem;
+    cursor: pointer;
+    line-height: 1;
+  }
+  .edit-modal-close:hover { color: var(--text); }
+  .edit-event-list { display: flex; flex-direction: column; gap: 0.4rem; }
+  .edit-event-row {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    border-radius: 7px;
+    padding: 0.55rem 0.7rem;
+    cursor: pointer;
+    transition: border-color 0.15s;
+    font-size: 0.82rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .edit-event-row:hover { border-color: var(--accent); }
+  .edit-event-row .ev-top { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
+  .edit-event-row .ev-date { font-family: var(--font-mono); color: var(--accent); }
+  .edit-event-row .ev-meta { color: var(--text-muted); font-size: 0.78rem; }
+  .edit-event-row .ev-note { color: var(--text); font-size: 0.78rem; }
+  .edit-form-row { display: flex; flex-direction: column; gap: 0.35rem; margin-bottom: 0.85rem; }
+  .edit-form-row label { font-size: 0.78rem; color: var(--text-muted); }
+  .edit-form-row select,
+  .edit-form-row input,
+  .edit-form-row textarea {
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    border-radius: 6px;
+    padding: 0.45rem 0.6rem;
+    font-family: var(--font-body);
+    font-size: 0.85rem;
+  }
+  .edit-form-row textarea { resize: vertical; min-height: 70px; }
+  .edit-form-actions { display: flex; gap: 0.5rem; justify-content: flex-end; margin-top: 0.4rem; }
+  .edit-back-btn {
+    background: transparent;
+    color: var(--text-muted);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 0.4rem 0.85rem;
+    cursor: pointer;
+    font-size: 0.8rem;
+  }
+  .edit-back-btn:hover { color: var(--text); border-color: var(--text-muted); }
+  .edit-modal-empty { color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem; }
 </style>
+
+<!-- Edit modal -->
+<div class="edit-modal-backdrop" id="edit-modal" role="dialog" aria-modal="true">
+  <div class="edit-modal">
+    <div class="edit-modal-header">
+      <span class="edit-modal-title" id="edit-modal-title">Edit customer</span>
+      <button class="edit-modal-close" onclick="closeEditModal()" aria-label="Close">×</button>
+    </div>
+    <div id="edit-modal-body"></div>
+  </div>
+</div>
 
 <!-- CARDS (mobile) -->
 <div class="mobile-cards" id="mobile-body"></div>
@@ -201,8 +299,12 @@
       const phoneCell = c.telegram_link
         ? '<a class="phone-link" href="' + c.telegram_link + '" target="_blank">' + telegramSvg() + ' ' + (c.phone_display || c.phone) + '</a>'
         : (c.phone || '—');
-      const delBtn = c.phone
-        ? '<button class="del-btn" onclick="deleteCustomer(\'' + encodeURIComponent(c.phone) + '\',\'' + (c.name || 'Unknown').replace(/'/g, "\\'") + '\')">Delete</button>'
+      const safeName = (c.name || 'Unknown').replace(/'/g, "\\'");
+      const actions = c.phone
+        ? '<div class="row-actions">' +
+            '<button class="edit-btn" onclick="openEditModal(\'' + encodeURIComponent(c.phone) + '\',\'' + safeName + '\')">Edit</button>' +
+            '<button class="del-btn" onclick="deleteCustomer(\'' + encodeURIComponent(c.phone) + '\',\'' + safeName + '\')">Delete</button>' +
+          '</div>'
         : '—';
       return '<tr>' +
         '<td>' + (i+1) + '</td>' +
@@ -215,7 +317,7 @@
         '<td>' + (c.current_reason_code ? '<span class="tag">' + c.current_reason_code + '</span>' : '—') + '</td>' +
         '<td><span class="note-text">' + (c.latest_note || c.history?.[c.history.length-1]?.note || '—') + '</span></td>' +
         '<td class="events-count">' + (c.total_events || 0) + '</td>' +
-        '<td>' + delBtn + '</td>' +
+        '<td>' + actions + '</td>' +
         '</tr>';
     }).join('');
 
@@ -223,8 +325,12 @@
       const phoneBtn = c.telegram_link
         ? '<a class="phone-link" href="' + c.telegram_link + '" target="_blank">' + telegramSvg() + ' Chat on Telegram: ' + (c.phone_display || c.phone) + '</a>'
         : '';
-      const delBtn = c.phone
-        ? '<button class="del-btn m-card-del" onclick="deleteCustomer(\'' + encodeURIComponent(c.phone) + '\',\'' + (c.name || 'Unknown').replace(/'/g, "\\'") + '\')">Delete</button>'
+      const safeName = (c.name || 'Unknown').replace(/'/g, "\\'");
+      const actions = c.phone
+        ? '<div class="m-card-actions">' +
+            '<button class="edit-btn" onclick="openEditModal(\'' + encodeURIComponent(c.phone) + '\',\'' + safeName + '\')">Edit</button>' +
+            '<button class="del-btn m-card-del" onclick="deleteCustomer(\'' + encodeURIComponent(c.phone) + '\',\'' + safeName + '\')">Delete</button>' +
+          '</div>'
         : '';
       return '<div class="m-card">' +
         '<div class="m-card-top"><span class="m-card-name">' + (c.name || 'Unknown') + '</span>' + staleTag(c.days_since_contact) + '</div>' +
@@ -236,7 +342,7 @@
           (c.current_reason_code ? '<span class="tag">' + c.current_reason_code + '</span>' : '') +
         '</div>' +
         phoneBtn +
-        delBtn +
+        actions +
         '</div>';
     }).join('');
   }
@@ -258,6 +364,171 @@
       }
     } catch (err) {
       showToast('Delete failed', 'error');
+    }
+  }
+
+  // ---- Edit modal ----
+  const REASON_CODES_LIST = {{{reasonCodesJson}}};
+  const editModal = document.getElementById('edit-modal');
+  const editBody = document.getElementById('edit-modal-body');
+  const editTitle = document.getElementById('edit-modal-title');
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function closeEditModal() {
+    editModal.classList.remove('open');
+    editBody.innerHTML = '';
+    document.body.style.overflow = '';
+  }
+
+  editModal.addEventListener('click', function(e) {
+    if (e.target === editModal) closeEditModal();
+  });
+  document.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && editModal.classList.contains('open')) closeEditModal();
+  });
+
+  let _eventsCache = [];
+  let editingEvent = null;
+
+  async function openEditModal(encodedPhone, name) {
+    editTitle.textContent = 'Edit — ' + name;
+    editBody.innerHTML = '<div class="edit-modal-empty">Loading events…</div>';
+    editModal.classList.add('open');
+    document.body.style.overflow = 'hidden';
+
+    const phone = decodeURIComponent(encodedPhone);
+    const today = new Date().toISOString().slice(0, 10);
+    const params = new URLSearchParams({
+      start: '2020-01-01',
+      end: today,
+      phone: phone,
+    });
+    try {
+      const resp = await fetch('/data-entry/api/events?' + params.toString(), { credentials: 'same-origin' });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      const events = (data.events || []).slice().sort(function(a, b) {
+        return (b.date || '').localeCompare(a.date || '');
+      });
+      _eventsCache = events;
+      renderEventList();
+    } catch (err) {
+      editBody.innerHTML = '<div class="edit-modal-empty">Failed to load events.</div>';
+    }
+  }
+
+  function renderEventList() {
+    if (!_eventsCache.length) {
+      editBody.innerHTML = '<div class="edit-modal-empty">No events for this customer.</div>';
+      return;
+    }
+    const rows = _eventsCache.map(function(e) {
+      const date = escapeHtml(e.date || '');
+      const reason = e.reason_code ? '<span class="tag">' + escapeHtml(e.reason_code) + '</span>' : '';
+      const page = escapeHtml(e.page || '');
+      const follower = escapeHtml(e.follower || '');
+      const note = escapeHtml((e.note || '').slice(0, 80));
+      const promise = e.promise_date ? '📅 ' + escapeHtml(e.promise_date) : '';
+      const id = escapeHtml(e._id);
+      return '<div class="edit-event-row" onclick="openEditForm(\'' + id + '\')">' +
+        '<div class="ev-top"><span class="ev-date">' + date + '</span>' + reason + (promise ? ' <span class="ev-meta">' + promise + '</span>' : '') + '</div>' +
+        (page || follower ? '<div class="ev-meta">' + [page, follower].filter(Boolean).join(' · ') + '</div>' : '') +
+        (note ? '<div class="ev-note">' + note + '</div>' : '') +
+        '</div>';
+    }).join('');
+    editBody.innerHTML = '<div class="edit-event-list">' + rows + '</div>';
+  }
+
+  async function openEditForm(eventId) {
+    editBody.innerHTML = '<div class="edit-modal-empty">Loading event…</div>';
+    try {
+      const resp = await fetch('/data-entry/api/events/' + encodeURIComponent(eventId), { credentials: 'same-origin' });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      if (!resp.ok) {
+        editBody.innerHTML = '<div class="edit-modal-empty">Failed to load event.</div>';
+        return;
+      }
+      const data = await resp.json();
+      editingEvent = data.event;
+      renderEditForm(editingEvent);
+    } catch (err) {
+      editBody.innerHTML = '<div class="edit-modal-empty">Failed to load event.</div>';
+    }
+  }
+
+  function renderEditForm(ev) {
+    const reason = ev.reason_code || '';
+    const note = ev.note || '';
+    const promiseDate = ev.promise_date || '';
+    const reasonOptions = ['<option value="">— None —</option>'].concat(
+      REASON_CODES_LIST.map(function(r) {
+        const sel = r.code === reason ? ' selected' : '';
+        return '<option value="' + escapeHtml(r.code) + '"' + sel + '>' + escapeHtml(r.code) + ' — ' + escapeHtml(r.label) + '</option>';
+      })
+    ).join('');
+    const customerName = (ev.customer && (ev.customer.name || ev.customer.phone)) || '';
+    editBody.innerHTML =
+      '<div class="edit-modal-empty" style="margin-bottom:0.6rem">Event ' + escapeHtml(ev.date || '') + ' · ' + escapeHtml(customerName) + '</div>' +
+      '<div class="edit-form-row">' +
+        '<label for="edit-reason">Reason code</label>' +
+        '<select id="edit-reason">' + reasonOptions + '</select>' +
+      '</div>' +
+      '<div class="edit-form-row">' +
+        '<label for="edit-note">Note</label>' +
+        '<textarea id="edit-note">' + escapeHtml(note) + '</textarea>' +
+      '</div>' +
+      '<div class="edit-form-row">' +
+        '<label for="edit-promise">Promise date</label>' +
+        '<input type="date" id="edit-promise" value="' + escapeHtml(promiseDate) + '">' +
+      '</div>' +
+      '<div class="edit-form-actions">' +
+        '<button class="edit-back-btn" onclick="renderEventList()">Back</button>' +
+        '<button class="btn btn-primary" onclick="submitEdit()">Save</button>' +
+      '</div>';
+  }
+
+  async function submitEdit() {
+    if (!editingEvent) return;
+    const reason = document.getElementById('edit-reason').value || null;
+    const note = document.getElementById('edit-note').value || null;
+    const promise = document.getElementById('edit-promise').value || null;
+
+    const payload = {};
+    if (reason !== (editingEvent.reason_code || null)) payload.reason_code = reason;
+    if (note !== (editingEvent.note || null)) payload.note = note;
+    if (promise !== (editingEvent.promise_date || null)) payload.promise_date = promise;
+
+    if (Object.keys(payload).length === 0) {
+      showToast('No changes', 'info');
+      return;
+    }
+
+    try {
+      const resp = await fetch('/data-entry/api/events/' + encodeURIComponent(editingEvent._id), {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      const data = await resp.json();
+      if (resp.ok && data.success) {
+        showToast('Saved (' + (data.changes || 0) + ' field' + (data.changes === 1 ? '' : 's') + ')', 'success');
+        closeEditModal();
+        loadCustomers();
+      } else {
+        showToast(data.error || 'Save failed', 'error');
+      }
+    } catch (err) {
+      showToast('Save failed', 'error');
     }
   }
 

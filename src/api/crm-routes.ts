@@ -23,6 +23,7 @@ router.get('/', async (_req: Request, res: Response) => {
     const html = await renderPage('crm/customers', {
       followers: groupConfig.getAllFollowerNames(),
       reasonCodes: REASON_CODES,
+      reasonCodesJson: JSON.stringify(REASON_CODES),
     });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
