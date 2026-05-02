@@ -24,15 +24,21 @@ function escapeMarkdown(s: string): string {
 }
 
 function formatInboundReply(ctx: ReplyContext): string {
+  const phoneDigits = ctx.phone.replace(/\D/g, '');
+  const tgLink = `https://t.me/+${phoneDigits}`;
+  const crmLink = `${buildBaseUrl()}/crm?phone=${encodeURIComponent(phoneDigits)}`;
   const lines: string[] = [];
   lines.push('📥 *New customer reply*');
   lines.push('');
-  lines.push(`From: ${escapeMarkdown(ctx.name || 'Unknown')} (${escapeMarkdown(ctx.phone)})`);
+  lines.push(`From: ${escapeMarkdown(ctx.name || 'Unknown')} \\(${escapeMarkdown(ctx.phone)}\\)`);
   lines.push(`Follower: ${ctx.follower ? escapeMarkdown(ctx.follower) : '—'}`);
   lines.push('');
   lines.push(escapeMarkdown(ctx.text));
   lines.push('');
-  lines.push(`${buildBaseUrl()}/crm?phone=${encodeURIComponent(ctx.phone)}`);
+  // Tap-to-reply: t.me/+phone deep-links straight into the chat on the
+  // same Telegram session (the worker's account). CRM link is a fallback
+  // for desktop where Telegram won't intercept the URL.
+  lines.push(`[Open chat](${tgLink}) · [Open in CRM](${crmLink})`);
   return lines.join('\n');
 }
 
