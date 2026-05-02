@@ -8,6 +8,9 @@ import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
 import { Logger } from '../utils/logger';
 import { notifyOutreachFailure, AlertKind } from '../outreach/outreach-alerts';
+import { notifyInboundReply } from '../outreach/inbound-alerts';
+import { InboundMessagesRepository } from '../database/inbound-messages-repository';
+import { ObjectId } from 'mongodb';
 
 const router = express.Router();
 const LEASE_MS = 5 * 60 * 1000; // 5 min
@@ -144,6 +147,82 @@ router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res
     res.json({ ok: true });
   } catch (err) {
     Logger.error('outreach worker-alert failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/report-inbound — agent only
+// Worker reports an inbound customer reply scraped from the user's Telegram inbox.
+// Idempotent on (phone, telegram_message_id). Alerts the audit-trail group on
+// first insert; deduped re-posts return { deduped: true } without alerting.
+router.post('/report-inbound', express.json(), agentOnly, async (req: Request, res: Response) => {
+  try {
+    const body = req.body || {};
+    const phoneRaw = typeof body.phone === 'string' ? body.phone : '';
+    const messageIdRaw = body.telegram_message_id;
+    const text = typeof body.text === 'string' ? body.text : '';
+    const receivedAtRaw = typeof body.received_at === 'string' ? body.received_at : null;
+
+    const phone = phoneRaw.replace(/\D/g, '');
+    if (!phone) {
+      res.status(400).json({ error: 'phone required (digits)' });
+      return;
+    }
+    if (typeof messageIdRaw !== 'number' || !Number.isFinite(messageIdRaw)) {
+      res.status(400).json({ error: 'telegram_message_id required (number)' });
+      return;
+    }
+    if (!text) {
+      res.status(400).json({ error: 'text required' });
+      return;
+    }
+
+    const receivedAt = receivedAtRaw ? new Date(receivedAtRaw) : new Date();
+    if (Number.isNaN(receivedAt.getTime())) {
+      res.status(400).json({ error: 'received_at invalid' });
+      return;
+    }
+
+    const customer = await new SalesCaseRepository().findLatestEventByPhone(phone);
+    const customerId = customer?._id ? new ObjectId(String(customer._id)) : null;
+    const customerName = customer?.customer?.name ?? null;
+    const follower = customer?.follower ?? null;
+
+    const repo = new InboundMessagesRepository();
+    const { inserted, doc } = await repo.upsertInboundMessage({
+      phone,
+      telegram_message_id: messageIdRaw,
+      text,
+      received_at: receivedAt,
+      customer_id: customerId,
+      customer_name: customerName,
+      follower,
+    });
+
+    if (!inserted) {
+      res.json({ ok: true, deduped: true });
+      return;
+    }
+
+    const chatId = process.env.AUDIT_CHAT_ID || process.env.SUMMARY_CHAT_ID;
+    if (!chatId) {
+      Logger.warn('report-inbound: AUDIT_CHAT_ID and SUMMARY_CHAT_ID both unset, dropping alert');
+      res.json({ ok: true, alert: 'dropped-no-chat' });
+      return;
+    }
+
+    const sent = await notifyInboundReply(chatId, {
+      name: customerName,
+      phone,
+      text,
+      follower,
+    });
+    if (sent && doc._id) {
+      await repo.markNotified(doc._id, chatId);
+    }
+    res.json({ ok: true, alert: sent ? 'sent' : 'failed' });
+  } catch (err) {
+    Logger.error('outreach report-inbound failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });

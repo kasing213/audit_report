@@ -168,6 +168,7 @@ const AGENT_ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: /^\/crm\/api\/outreach\/[A-Za-z0-9_-]+\/mark-failed$/ },
   { method: 'POST', pattern: /^\/crm\/api\/outreach\/worker-heartbeat$/ },
   { method: 'POST', pattern: /^\/crm\/api\/outreach\/worker-alert$/ },
+  { method: 'POST', pattern: /^\/crm\/api\/outreach\/report-inbound$/ },
   { method: 'GET',  pattern: /^\/crm\/api\/outreach\/worker-status$/ },
 ];
 

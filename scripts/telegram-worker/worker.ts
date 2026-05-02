@@ -11,6 +11,7 @@ import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as os from 'os';
 import { chromium, Browser, BrowserContext, Page } from 'playwright';
+import { runInboundPoller, Mutex } from './inbound-poll';
 
 dotenv.config();
 
@@ -23,6 +24,8 @@ const MIN_DELAY_MS = intEnv('MIN_DELAY_SEC', 60) * 1000;
 const MAX_DELAY_MS = intEnv('MAX_DELAY_SEC', 180) * 1000;
 const POLL_INTERVAL_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const INBOUND_POLL_MS = intEnv('INBOUND_POLL_SEC', 30) * 1000;
+const INBOUND_DISABLED = String(process.env.INBOUND_DISABLED || '').toLowerCase() === 'true';
 const WORKER_ID = process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
 const CLAIM_URL = `${BASE_URL}/crm/api/outreach/claim`;
 const STATUS_URL = `${BASE_URL}/crm/api/outreach/worker-status`;
@@ -192,7 +195,11 @@ async function sendViaTelegramWeb(
   // /a/ (TGCloud Z) supports the tgaddr hash for tg:// deeplinks. The phone
   // resolver opens the user's chat if they are on Telegram. The plain
   // `#?phone=…` form doesn't work in /a/ — that's /k/ syntax.
+  // Hop through about:blank so the next goto is a real page load — without
+  // it, hash-only navigation in the SPA skips Telegram's tgaddr handler and
+  // every send after the first one fails with "no composer".
   const tgaddr = encodeURIComponent(`tg://resolve?phone=${phoneDigits}`);
+  await page.goto('about:blank');
   await page.goto(`https://web.telegram.org/a/#?tgaddr=${tgaddr}`, { waitUntil: 'domcontentloaded' });
 
   // Telegram applies the hash route async after first paint. Wait for either
@@ -325,11 +332,27 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
-  console.log(`Worker online. Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s, id=${WORKER_ID}.`);
+  console.log(`Worker online. Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s, inbound=${INBOUND_DISABLED ? 'off' : `${INBOUND_POLL_MS / 1000}s`}, id=${WORKER_ID}.`);
 
   const browser: Browser = await chromium.launch({ headless: true });
   const context: BrowserContext = await browser.newContext({ storageState: STORAGE_STATE });
   const page = await context.newPage();
+  const sendMutex = new Mutex();
+
+  // Spawn the inbound-reply poller as a background loop on a second tab in
+  // the same context — shares the Telegram session, never decrements DAILY_CAP.
+  if (!INBOUND_DISABLED) {
+    const inboundPage = await context.newPage();
+    runInboundPoller(inboundPage, {
+      mutex: sendMutex,
+      baseUrl: BASE_URL,
+      agentToken: AGENT_TOKEN,
+      intervalMs: INBOUND_POLL_MS,
+      dumpDiagnostic,
+    }).catch((err) => {
+      console.error('[inbound] poller crashed:', err);
+    });
+  }
 
   let sentDay = todayKey();
 
@@ -381,7 +404,12 @@ async function main(): Promise<void> {
     console.log(`→ sending to ${proposal.customer_name || '?'} ${proposal.customer_phone}`);
     let result;
     try {
-      result = await sendViaTelegramWeb(page, proposal.customer_phone, proposal.message);
+      // Mutex with the inbound poller — they share the same browser context
+      // (and therefore the same Telegram session). Hold it for the whole send
+      // sequence so the poller can't click into another chat mid-typing.
+      result = await sendMutex.runExclusive(() =>
+        sendViaTelegramWeb(page, proposal.customer_phone, proposal.message)
+      );
     } catch (err) {
       result = { ok: false as const, reason: `exception: ${(err as Error).message}` };
     }

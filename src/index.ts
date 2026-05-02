@@ -6,6 +6,7 @@ import { PromiseScheduler } from './scheduler/promise-scheduler';
 import { OutreachScheduler } from './scheduler/outreach-scheduler';
 import { AdScannerScheduler } from './ad-scanner/ad-scanner-scheduler';
 import { setOutreachAlertSender } from './outreach/outreach-alerts';
+import { setInboundAlertSender } from './outreach/inbound-alerts';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
 import dotenv from 'dotenv';
@@ -68,6 +69,12 @@ async function main(): Promise<void> {
     // alerts can reach the audit chat. Always wired; the alert helper itself
     // bails if AUDIT_CHAT_ID isn't set.
     setOutreachAlertSender(async (chatId: string, text: string, extra?: any) => {
+      await telegramBot.sendMessage(chatId, text, extra);
+    });
+
+    // Inbound replies: same bot, same sendMessage, separate registration so the
+    // two alert channels can be tuned/throttled independently later.
+    setInboundAlertSender(async (chatId: string, text: string, extra?: any) => {
       await telegramBot.sendMessage(chatId, text, extra);
     });
 
