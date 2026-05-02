@@ -1,38 +1,51 @@
 /**
- * Outreach send-worker.
+ * Outreach worker (MTProto / gramjs).
  *
- * Polls the CRM for approved proposals, opens each customer's Telegram Web chat
- * using the sales account's saved storage state, types the message, clicks Send,
- * and reports back. Respects DAILY_CAP + per-send random delay. Halts cleanly
- * when the session is gone or the server-side pause flag is set.
+ * Runs as the user's Telegram account via a saved StringSession. Single
+ * unified path for both outbound sends (claim → ResolvePhone → sendMessage)
+ * and inbound replies (NewMessage event handler → POST /report-inbound).
+ * Replaces the previous Playwright-based worker and inbound poller. No
+ * headless browser, no DOM scraping.
+ *
+ * Bootstrap: `npm run login` once to produce telegram-string-session.txt.
+ * Run: `npm start`.
  */
 
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as os from 'os';
-import { chromium, Browser, BrowserContext, Page } from 'playwright';
-import { runInboundPoller, Mutex } from './inbound-poll';
+import bigInt from 'big-integer';
+import { TelegramClient, Api } from 'telegram';
+import { StringSession } from 'telegram/sessions';
+import { NewMessage, NewMessageEvent } from 'telegram/events';
 
 dotenv.config();
 
 // ---- Config ----
 const BASE_URL = must('BASE_URL');
 const AGENT_TOKEN = resolveAgentToken();
-const STORAGE_STATE = process.env.STORAGE_STATE || './telegram-session.json';
+const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0', 10);
+const API_HASH = process.env.TELEGRAM_API_HASH || '';
+const SESSION_PATH = process.env.STRING_SESSION_PATH || './telegram-string-session.txt';
 const DAILY_CAP = intEnv('DAILY_CAP', 15);
 const MIN_DELAY_MS = intEnv('MIN_DELAY_SEC', 60) * 1000;
 const MAX_DELAY_MS = intEnv('MAX_DELAY_SEC', 180) * 1000;
 const POLL_INTERVAL_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
-const INBOUND_POLL_MS = intEnv('INBOUND_POLL_SEC', 30) * 1000;
 const INBOUND_DISABLED = String(process.env.INBOUND_DISABLED || '').toLowerCase() === 'true';
 const WORKER_ID = process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
 const CLAIM_URL = `${BASE_URL}/crm/api/outreach/claim`;
 const STATUS_URL = `${BASE_URL}/crm/api/outreach/worker-status`;
 const HEARTBEAT_URL = `${BASE_URL}/crm/api/outreach/worker-heartbeat`;
 const ALERT_URL = `${BASE_URL}/crm/api/outreach/worker-alert`;
+const REPORT_INBOUND_URL = `${BASE_URL}/crm/api/outreach/report-inbound`;
 const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-sent`;
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
+
+if (!API_ID || !API_HASH) {
+  console.error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env. Get them from https://my.telegram.org/apps.');
+  process.exit(1);
+}
 
 function must(name: string): string {
   const v = process.env[name];
@@ -87,12 +100,16 @@ interface StatusResponse {
   daily_cap?: number;
 }
 
-// ---- Shared state with the heartbeat thread ----
+// ---- Shared state ----
 const workerState = {
   sentToday: 0,
   lastError: null as string | null,
   paused: false,
 };
+
+// userId → phone, populated during send so inbound events can recover the
+// customer's phone without a round-trip to Telegram for already-known peers.
+const peerPhoneByUserId = new Map<string, string>();
 
 // ---- API helpers ----
 async function authedFetch(url: string, init: RequestInit = {}): Promise<Response> {
@@ -170,189 +187,150 @@ async function markFailed(id: string, reason: string): Promise<void> {
   if (!resp.ok) console.error(`mark-failed ${resp.status}: ${await resp.text()}`);
 }
 
-// ---- Telegram Web automation ----
-async function dumpDiagnostic(page: Page, label: string): Promise<{ screenshot: string; html: string }> {
-  const stamp = Date.now();
-  const screenshot = `./debug-fail-${stamp}.png`;
-  const html = `./debug-fail-${stamp}.html`;
-  try { await page.screenshot({ path: screenshot, fullPage: true }); } catch { /* ignore */ }
+async function reportInbound(payload: {
+  phone: string;
+  telegram_message_id: number;
+  text: string;
+  received_at: string;
+}): Promise<void> {
   try {
-    const body = await page.content();
-    fs.writeFileSync(html, body);
-  } catch { /* ignore */ }
-  console.log(`  diagnostic ${label}: screenshot=${screenshot} html=${html} url=${page.url()}`);
-  return { screenshot, html };
+    const resp = await authedFetch(REPORT_INBOUND_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      console.error(`report-inbound ${resp.status}: ${await resp.text()}`);
+    }
+  } catch (err) {
+    console.error('report-inbound err', err);
+  }
 }
 
-async function sendViaTelegramWeb(
-  page: Page,
+// ---- Telegram (MTProto via gramjs) ----
+function isSessionExpiredError(err: Error): boolean {
+  const m = err.message || '';
+  return /AUTH_KEY_UNREGISTERED|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|AUTH_KEY_INVALID/i.test(m);
+}
+
+async function sendViaMTProto(
+  client: TelegramClient,
   phone: string,
   message: string
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
-  // Strip non-digits — tg://resolve?phone= expects digits only.
   const phoneDigits = phone.replace(/\D/g, '');
-
-  // /a/ (TGCloud Z) supports the tgaddr hash for tg:// deeplinks. The phone
-  // resolver opens the user's chat if they are on Telegram. The plain
-  // `#?phone=…` form doesn't work in /a/ — that's /k/ syntax.
-  // Hop through about:blank so the next goto is a real page load — without
-  // it, hash-only navigation in the SPA skips Telegram's tgaddr handler and
-  // every send after the first one fails with "no composer".
-  const tgaddr = encodeURIComponent(`tg://resolve?phone=${phoneDigits}`);
-  await page.goto('about:blank');
-  await page.goto(`https://web.telegram.org/a/#?tgaddr=${tgaddr}`, { waitUntil: 'domcontentloaded' });
-
-  // Telegram applies the hash route async after first paint. Wait for either
-  // the composer (chat opened) or a 'not on Telegram' style toast/dialog.
-  const composerSelectors = [
-    'div#editable-message-text',
-    'div.input-message-input[contenteditable="true"]',
-    'div[contenteditable="true"][data-placeholder]',
-    'div[contenteditable="true"][role="textbox"]',
-  ];
-  const composerSelector = composerSelectors.join(', ');
   try {
-    await page.waitForSelector(
-      `${composerSelector}, .confirm-dialog, div:has-text("Phone number not found"), div:has-text("not on Telegram")`,
-      { timeout: 30_000 }
-    );
-  } catch {
-    const d = await dumpDiagnostic(page, 'no-composer-after-tgaddr');
-    return { ok: false, reason: `chat did not load via tgaddr within 30s — screenshot=${d.screenshot} html=${d.html}` };
-  }
+    const peer = await client.getEntity(`+${phoneDigits}`);
+    await client.sendMessage(peer, { message });
 
-  // Did Telegram tell us this number isn't on Telegram?
-  const notFoundCount = await page.locator('text=/not on Telegram|Phone number.*not.*Telegram|не найден/i').first().count().catch(() => 0);
-  if (notFoundCount > 0) return { ok: false, reason: 'phone number not on Telegram' };
-
-  // Locate the visible composer (one of the selectors waited above must match).
-  let messageBox = null as ReturnType<Page['locator']> | null;
-  for (const sel of composerSelectors) {
-    const el = page.locator(sel).first();
-    if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-      messageBox = el;
-      break;
+    // Cache the userId → phone mapping so inbound events from this customer
+    // resolve back to phone without another network round-trip.
+    if (peer instanceof Api.User) {
+      peerPhoneByUserId.set(peer.id.toString(), phoneDigits);
     }
-  }
-  if (!messageBox) {
-    const d = await dumpDiagnostic(page, 'no-composer-visible');
-    return { ok: false, reason: `composer never appeared — screenshot=${d.screenshot} html=${d.html}` };
-  }
-
-  // 5. Type the message.
-  await messageBox.click();
-  await messageBox.type(message, { delay: 20 });
-
-  // Dump composer-state diagnostic so we can verify the send button is
-  // actually present and visible at the moment we click.
-  await dumpDiagnostic(page, 'pre-send');
-
-  // 6. Click send. /a/ renders the send button with a paper-plane icon and
-  // class .Button.send.main-button. We try a few permutations and log which
-  // selector matched so we can prune the list once it's stable.
-  const sendCandidates = [
-    'button.Button.send.main-button',
-    'button.Button.send',
-    'button[aria-label="Send Message"]',
-    'button[aria-label="Send"]',
-    '.send-as-button',
-    'button.send',
-  ];
-  let clickedWith: string | null = null;
-  for (const sel of sendCandidates) {
-    const el = page.locator(sel).first();
-    if (await el.count() > 0 && await el.isVisible().catch(() => false)) {
-      await el.click();
-      clickedWith = sel;
-      break;
+    return { ok: true };
+  } catch (err) {
+    const e = err as Error;
+    const msg = e.message || String(err);
+    if (/PHONE_NOT_OCCUPIED|USER_NOT_FOUND|PHONE_NUMBER_INVALID|PEER_ID_INVALID/i.test(msg)) {
+      return { ok: false, reason: 'phone number not on Telegram' };
     }
+    return { ok: false, reason: `mtproto exception: ${msg}` };
   }
-  if (!clickedWith) {
-    // Fallback to keyboard. Telegram Web /a/ sends on Enter (no shift); we
-    // must focus the composer first or the keypress is dropped.
-    await messageBox.click();
-    await page.keyboard.press('Enter');
-    clickedWith = 'keyboard:Enter';
-  }
-  console.log(`  send via ${clickedWith}`);
+}
 
-  // 7. Wait for the composer to clear — that's the only reliable signal that
-  // Telegram accepted the message. If the input still contains our text after
-  // 6 s the click didn't fire (e.g. send button was a no-op for some other
-  // reason), so dump diagnostic and fail rather than silently 'succeed'.
-  const composerCleared = await page
-    .waitForFunction(
-      (sel) => {
-        const el = document.querySelector(sel);
-        if (!el) return false;
-        const txt = (el.textContent || '').trim();
-        return txt.length === 0;
-      },
-      composerSelectors[0],
-      { timeout: 6_000 }
-    )
-    .then(() => true)
-    .catch(() => false);
-  if (!composerCleared) {
-    const d = await dumpDiagnostic(page, 'composer-not-cleared');
-    return { ok: false, reason: `send did not fire — composer still holds the draft (clicked=${clickedWith}) — screenshot=${d.screenshot} html=${d.html}` };
+async function resolvePhoneForIncoming(
+  client: TelegramClient,
+  userId: bigInt.BigInteger
+): Promise<string | null> {
+  const cached = peerPhoneByUserId.get(userId.toString());
+  if (cached) return cached;
+
+  try {
+    const entity = await client.getEntity(userId);
+    if (entity instanceof Api.User && entity.phone) {
+      const digits = entity.phone.replace(/\D/g, '');
+      peerPhoneByUserId.set(userId.toString(), digits);
+      return digits;
+    }
+  } catch (err) {
+    console.error('[inbound] getEntity failed for', userId.toString(), (err as Error).message);
+  }
+  return null;
+}
+
+function attachInboundHandler(client: TelegramClient): void {
+  if (INBOUND_DISABLED) {
+    console.log('Inbound listener disabled by INBOUND_DISABLED env.');
+    return;
   }
 
-  // 8. Confirm the outgoing bubble actually rendered. We require a strict
-  // outgoing-message class match — no broad [class*="own"] fallback (which
-  // false-positive'd against the composer wrapper in an earlier iteration).
-  const messageHead = message.slice(0, 30);
-  const ownSelectors = [
-    `.Message.own:has-text(${JSON.stringify(messageHead)})`,
-    `.message.own:has-text(${JSON.stringify(messageHead)})`,
-    `.bubble.is-out:has-text(${JSON.stringify(messageHead)})`,
-    `[data-is-own="true"]:has-text(${JSON.stringify(messageHead)})`,
-  ];
-  let confirmed = false;
-  for (const sel of ownSelectors) {
+  client.addEventHandler(async (event: NewMessageEvent) => {
     try {
-      await page.waitForSelector(sel, { timeout: 4_000 });
-      confirmed = true;
-      break;
-    } catch { /* try next */ }
-  }
-  if (!confirmed) {
-    const d = await dumpDiagnostic(page, 'no-outgoing-bubble');
-    return { ok: false, reason: `outgoing bubble not visible — screenshot=${d.screenshot} html=${d.html}` };
-  }
+      const message = event.message;
+      // Private chat only — peerId on a 1-on-1 is PeerUser. Group/channel
+      // messages have PeerChat / PeerChannel and we ignore them.
+      const peer = message.peerId;
+      if (!(peer instanceof Api.PeerUser)) return;
+      // Outbound messages are filtered by the NewMessage({ incoming: true })
+      // subscription, but double-check defensively.
+      if (message.out) return;
 
-  return { ok: true };
+      const text = message.message || '';
+      if (!text.trim()) return;
+
+      const phone = await resolvePhoneForIncoming(client, peer.userId);
+      if (!phone) {
+        console.log(`[inbound] no phone resolvable for user ${peer.userId.toString()}, skipping`);
+        return;
+      }
+
+      const messageId = typeof message.id === 'number' ? message.id : Number(message.id);
+      const dateSec = typeof message.date === 'number' ? message.date : 0;
+      const receivedAt = new Date((dateSec || Math.floor(Date.now() / 1000)) * 1000).toISOString();
+
+      console.log(`[inbound] reply from ${phone} msg=${messageId}: ${text.slice(0, 60)}…`);
+      await reportInbound({
+        phone,
+        telegram_message_id: messageId,
+        text,
+        received_at: receivedAt,
+      });
+    } catch (err) {
+      console.error('[inbound] handler err', (err as Error).message);
+    }
+  }, new NewMessage({ incoming: true }));
 }
 
 // ---- Main loop ----
 async function main(): Promise<void> {
-  if (!fs.existsSync(STORAGE_STATE)) {
-    console.error(`Storage state missing at ${STORAGE_STATE}. Run \`npm run login\` first.`);
-    await postAlert('session-expired', `Storage state missing at ${STORAGE_STATE}`);
+  if (!fs.existsSync(SESSION_PATH)) {
+    console.error(`String session missing at ${SESSION_PATH}. Run \`npm run login\` first.`);
+    await postAlert('session-expired', `String session missing at ${SESSION_PATH}`);
     process.exit(1);
   }
+  const sessionStr = fs.readFileSync(SESSION_PATH, 'utf8').trim();
 
-  console.log(`Worker online. Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s, inbound=${INBOUND_DISABLED ? 'off' : `${INBOUND_POLL_MS / 1000}s`}, id=${WORKER_ID}.`);
+  console.log(`Worker online. Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s, inbound=${INBOUND_DISABLED ? 'off' : 'realtime'}, id=${WORKER_ID}.`);
 
-  const browser: Browser = await chromium.launch({ headless: true });
-  const context: BrowserContext = await browser.newContext({ storageState: STORAGE_STATE });
-  const page = await context.newPage();
-  const sendMutex = new Mutex();
+  const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, {
+    connectionRetries: 5,
+  });
+  await client.connect();
 
-  // Spawn the inbound-reply poller as a background loop on a second tab in
-  // the same context — shares the Telegram session, never decrements DAILY_CAP.
-  if (!INBOUND_DISABLED) {
-    const inboundPage = await context.newPage();
-    runInboundPoller(inboundPage, {
-      mutex: sendMutex,
-      baseUrl: BASE_URL,
-      agentToken: AGENT_TOKEN,
-      intervalMs: INBOUND_POLL_MS,
-      dumpDiagnostic,
-    }).catch((err) => {
-      console.error('[inbound] poller crashed:', err);
-    });
+  // Verify the session is still valid before the loop starts.
+  try {
+    await client.getMe();
+  } catch (err) {
+    const e = err as Error;
+    console.error('session check failed:', e.message);
+    if (isSessionExpiredError(e)) {
+      await postAlert('session-expired', e.message);
+    }
+    process.exit(2);
   }
+
+  attachInboundHandler(client);
 
   let sentDay = todayKey();
 
@@ -364,7 +342,7 @@ async function main(): Promise<void> {
   const stop = async (reason: string, code = 0) => {
     console.log(`Stopping: ${reason}`);
     clearInterval(heartbeatTimer);
-    await browser.close().catch(() => undefined);
+    await client.disconnect().catch(() => undefined);
     process.exit(code);
   };
 
@@ -372,11 +350,9 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => stop('SIGTERM', 0));
 
   while (true) {
-    // Roll daily counter at UTC midnight.
     const today = todayKey();
     if (today !== sentDay) { sentDay = today; workerState.sentToday = 0; }
 
-    // Refresh paused flag each iteration (server controls it now).
     const status = await fetchStatus();
     if (status) workerState.paused = status.paused;
 
@@ -402,14 +378,9 @@ async function main(): Promise<void> {
 
     const proposal = claimResp.proposal;
     console.log(`→ sending to ${proposal.customer_name || '?'} ${proposal.customer_phone}`);
-    let result;
+    let result: { ok: true } | { ok: false; reason: string };
     try {
-      // Mutex with the inbound poller — they share the same browser context
-      // (and therefore the same Telegram session). Hold it for the whole send
-      // sequence so the poller can't click into another chat mid-typing.
-      result = await sendMutex.runExclusive(() =>
-        sendViaTelegramWeb(page, proposal.customer_phone, proposal.message)
-      );
+      result = await sendViaMTProto(client, proposal.customer_phone, proposal.message);
     } catch (err) {
       result = { ok: false as const, reason: `exception: ${(err as Error).message}` };
     }
@@ -423,9 +394,9 @@ async function main(): Promise<void> {
       await markFailed(proposal._id, result.reason);
       workerState.lastError = result.reason;
       console.log(`  ✗ failed: ${result.reason}`);
-      if (/session|log ?in|unauthorized|sign ?in/i.test(result.reason)) {
+      if (isSessionExpiredError(new Error(result.reason))) {
         await postAlert('session-expired', result.reason);
-        await stop('Telegram Web session invalid. Re-run `npm run login`.', 2);
+        await stop('Telegram session invalid. Re-run `npm run login`.', 2);
       }
     }
 

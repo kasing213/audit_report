@@ -1,5 +1,6 @@
 node_modules/
 telegram-session.json
+telegram-string-session.txt
 .env
 *.log
 debug-fail-*.png

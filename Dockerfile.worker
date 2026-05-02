@@ -1,30 +1,11 @@
-# Outreach Telegram send-worker.
-# Runs as a separate service alongside the API. Uses Playwright + headless
-# Chromium to drive web.telegram.org. Persistent storage at /data is required
-# so the Telegram session (telegram-session.json) survives redeploys.
+# Outreach Telegram worker (MTProto / gramjs).
+# Runs as a separate service alongside the API. Talks to Telegram's MTProto
+# servers directly via the user account session; no headless browser. Persistent
+# storage at /data is required so the StringSession blob survives redeploys.
 FROM node:20-slim
 
-# System deps for Playwright Chromium. Playwright will download its own browser
-# in the next step; these are the runtime libs Chromium needs.
+# Minimal CA certificates so HTTPS to BASE_URL and Telegram's DCs works.
 RUN apt-get update && apt-get install -y \
-    fonts-liberation \
-    fonts-noto-color-emoji \
-    fonts-noto-cjk \
-    libasound2 \
-    libatk-bridge2.0-0 \
-    libatk1.0-0 \
-    libcups2 \
-    libdbus-1-3 \
-    libdrm2 \
-    libgbm1 \
-    libgtk-3-0 \
-    libnspr4 \
-    libnss3 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxdamage1 \
-    libxrandr2 \
-    xdg-utils \
     ca-certificates \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
@@ -34,18 +15,14 @@ WORKDIR /app/scripts/telegram-worker
 COPY scripts/telegram-worker/package*.json ./
 RUN npm install --omit=optional && npm cache clean --force
 
-# Install Playwright's Chromium (matches the version pinned by the worker's
-# `playwright` dep). --with-deps already covered by apt-get above, but it's
-# idempotent and keeps the worker self-contained.
-RUN npx --yes playwright install chromium
-
 COPY scripts/telegram-worker/tsconfig.json ./
 COPY scripts/telegram-worker/worker.ts ./
-COPY scripts/telegram-worker/login.ts ./
+COPY scripts/telegram-worker/login-tg.ts ./
 
-# /data is where the Railway volume mounts. The worker reads STORAGE_STATE
-# from this path so the Telegram session survives redeploys.
+# /data is where the Railway volume mounts. The worker reads STRING_SESSION_PATH
+# from this path so the Telegram session survives redeploys. Bootstrap the
+# session locally with `npm run login` and copy the resulting file into /data.
 VOLUME ["/data"]
-ENV STORAGE_STATE=/data/telegram-session.json
+ENV STRING_SESSION_PATH=/data/telegram-string-session.txt
 
 CMD ["npx", "ts-node", "worker.ts"]

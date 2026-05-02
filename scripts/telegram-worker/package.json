@@ -2,15 +2,16 @@
   "name": "audit-sales-telegram-worker",
   "version": "1.0.0",
   "private": true,
-  "description": "Local Playwright worker that sends approved outreach proposals via Telegram Web.",
+  "description": "Local MTProto worker (gramjs) that sends approved outreach proposals and listens for inbound replies on the user's Telegram session.",
   "type": "commonjs",
   "scripts": {
-    "login": "ts-node login.ts",
+    "login": "ts-node login-tg.ts",
     "start": "ts-node worker.ts"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
-    "playwright": "^1.47.0"
+    "input": "^1.0.1",
+    "telegram": "^2.26.22"
   },
   "devDependencies": {
     "@types/node": "^20.10.5",
