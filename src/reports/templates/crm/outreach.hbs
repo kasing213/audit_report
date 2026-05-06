@@ -282,7 +282,7 @@
     <div class="generate-bar">
       <input type="number" id="gen-limit" value="10" min="1" max="50" style="width:70px" title="Max proposals to create">
       <button class="btn btn-ghost" onclick="openTestPrompt()">Test on me (kasing / Chan kasing)</button>
-      <button class="btn btn-primary" onclick="generateBatch()">Generate batch</button>
+      <button class="btn btn-primary" id="gen-batch-btn" onclick="generateBatch()">Generate batch</button>
       <button class="btn btn-ghost" style="color:var(--red);border-color:var(--red)" onclick="clearAll()">Clear all</button>
     </div>
   </div>
@@ -296,13 +296,14 @@
   const API = '/crm/api/outreach';
   const DEFAULT_IMAGE_URL = API + '/default-image';
   let hasDefaultImage = false;
+  let defaultImageBlobUrl = null;
 
   async function refreshDefaultImage() {
     const thumb = document.getElementById('default-image-thumb');
     const name = document.getElementById('default-image-name');
     const sub = document.getElementById('default-image-sub');
     const banner = document.getElementById('image-setup-banner');
-    const genBtn = document.querySelector('.generate-bar .btn-primary');
+    const genBtn = document.getElementById('gen-batch-btn');
 
     try {
       const resp = await fetch(DEFAULT_IMAGE_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
@@ -322,7 +323,9 @@
       hasDefaultImage = true;
       const blob = await resp.blob();
       thumb.classList.remove('empty');
-      thumb.src = URL.createObjectURL(blob);
+      if (defaultImageBlobUrl) URL.revokeObjectURL(defaultImageBlobUrl);
+      defaultImageBlobUrl = URL.createObjectURL(blob);
+      thumb.src = defaultImageBlobUrl;
       thumb.textContent = '';
       const filename = decodeURIComponent(resp.headers.get('x-filename') || 'image');
       const sizeKb = Math.round(blob.size / 1024);
