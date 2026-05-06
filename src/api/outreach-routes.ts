@@ -39,6 +39,11 @@ function agentOnly(req: Request, res: Response, next: NextFunction): void {
 // POST /crm/api/outreach/generate
 router.post('/generate', express.json(), async (req: Request, res: Response) => {
   try {
+    const hasDefault = await new OutreachImagesRepository().hasDefault();
+    if (!hasDefault) {
+      res.status(409).json({ error: 'No default brand image is set. Upload one before generating proposals.' });
+      return;
+    }
     const { limit, followerFilter, phones, staleDays } = req.body || {};
     const opts: Parameters<typeof generateBatch>[0] = {};
     if (typeof limit === 'number') opts.limit = limit;
