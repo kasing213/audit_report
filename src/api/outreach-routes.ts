@@ -515,4 +515,47 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
   }
 });
 
+// GET /crm/api/outreach/:id/effective-image  — worker-only
+// Returns the bytes the worker should send: custom if custom_image_id set, else default.
+router.get('/:id/effective-image', async (req: Request, res: Response) => {
+  try {
+    const proposalRepo = new OutreachRepository();
+    const proposal = await proposalRepo.getById(req.params.id);
+    if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
+
+    const imagesRepo = new OutreachImagesRepository();
+    let doc;
+    let resolvedKind: 'default' | 'proposal_custom';
+    if (proposal.custom_image_id) {
+      doc = await imagesRepo.getById(proposal.custom_image_id);
+      resolvedKind = 'proposal_custom';
+      if (!doc) {
+        // Custom is referenced but missing — fall back to default and log loudly.
+        Logger.warn(`effective-image: custom_image_id ${proposal.custom_image_id} missing for proposal ${req.params.id}, falling back to default`);
+        doc = await imagesRepo.getDefault();
+        resolvedKind = 'default';
+      }
+    } else {
+      doc = await imagesRepo.getDefault();
+      resolvedKind = 'default';
+    }
+
+    if (!doc) {
+      Logger.error(`effective-image: no image available for proposal ${req.params.id} (no custom, no default)`);
+      res.status(404).json({ error: 'no default image and no custom set' });
+      return;
+    }
+
+    Logger.info(`effective-image[${req.params.id}] resolved=${resolvedKind} filename=${doc.filename} size=${doc.size_bytes}`);
+    res.setHeader('Content-Type', doc.mime_type);
+    res.setHeader('X-Filename', encodeURIComponent(doc.filename));
+    res.setHeader('X-Image-Kind', resolvedKind);
+    res.setHeader('Content-Length', String(doc.size_bytes));
+    res.send(doc.data.buffer);
+  } catch (err) {
+    Logger.error('effective-image GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 export default router;
