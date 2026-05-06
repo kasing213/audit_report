@@ -598,7 +598,7 @@
           '</div>' +
           '<textarea class="proposal-message" id="m-' + p._id + '" ' + editable + '>' + esc(p.message) + '</textarea>' +
           '<div class="image-bar">' +
-            '<img class="thumb" id="img-' + p._id + '" src="' + esc(API + '/' + p._id + '/effective-image?cb=' + Date.now()) + '" onclick="openProposalLightbox(\'' + p._id + '\')" alt="image">' +
+            '<img class="thumb" id="img-' + p._id + '" src="' + esc(API + '/' + p._id + '/effective-image?v=' + (p.custom_image_id || 'default')) + '" onclick="openProposalLightbox(\'' + p._id + '\')" alt="image">' +
             '<span class="label ' + customClass + '" id="img-label-' + p._id + '">' + customLabel + '</span>' +
             '<input type="file" id="img-file-' + p._id + '" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadCustomImage(\'' + p._id + '\', event)">' +
             '<div class="actions">' +

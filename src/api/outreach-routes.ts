@@ -249,6 +249,7 @@ router.get('/default-image', async (_req: Request, res: Response) => {
     res.setHeader('Content-Type', doc.mime_type);
     res.setHeader('X-Filename', encodeURIComponent(doc.filename));
     res.setHeader('Content-Length', String(doc.size_bytes));
+    res.setHeader('Cache-Control', 'private, max-age=60');
     res.send(doc.data.buffer);
   } catch (err) {
     Logger.error('default-image GET failed', err as Error);
@@ -556,6 +557,7 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
     res.setHeader('X-Filename', encodeURIComponent(doc.filename));
     res.setHeader('X-Image-Kind', resolvedKind);
     res.setHeader('Content-Length', String(doc.size_bytes));
+    res.setHeader('Cache-Control', 'private, max-age=60');
     res.send(doc.data.buffer);
   } catch (err) {
     Logger.error('effective-image GET failed', err as Error);
