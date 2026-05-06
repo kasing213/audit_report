@@ -2,7 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { authMiddleware, getSessionUser } from './auth-middleware';
 import { OutreachRepository } from '../outreach/outreach-repository';
-import { OutreachImagesRepository } from '../outreach/outreach-images-repository';
+import { OutreachImagesRepository, OutreachImageDocument } from '../outreach/outreach-images-repository';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { getRegisteredOutreachScheduler } from '../scheduler/outreach-scheduler';
@@ -524,7 +524,7 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
 
     const imagesRepo = new OutreachImagesRepository();
-    let doc;
+    let doc: OutreachImageDocument | null = null;
     let resolvedKind: 'default' | 'proposal_custom';
     if (proposal.custom_image_id) {
       doc = await imagesRepo.getById(proposal.custom_image_id);
