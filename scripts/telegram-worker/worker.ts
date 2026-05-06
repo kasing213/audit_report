@@ -18,6 +18,7 @@ import bigInt from 'big-integer';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
+import { CustomFile } from 'telegram/client/uploads';
 
 dotenv.config();
 
@@ -41,6 +42,7 @@ const ALERT_URL = `${BASE_URL}/crm/api/outreach/worker-alert`;
 const REPORT_INBOUND_URL = `${BASE_URL}/crm/api/outreach/report-inbound`;
 const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-sent`;
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
+const EFFECTIVE_IMAGE_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-image`;
 
 if (!API_ID || !API_HASH) {
   console.error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env. Get them from https://my.telegram.org/apps.');
@@ -187,6 +189,25 @@ async function markFailed(id: string, reason: string): Promise<void> {
   if (!resp.ok) console.error(`mark-failed ${resp.status}: ${await resp.text()}`);
 }
 
+async function fetchEffectiveImage(proposalId: string): Promise<{ buffer: Buffer; filename: string; kind: string } | null> {
+  try {
+    const resp = await authedFetch(EFFECTIVE_IMAGE_URL(proposalId));
+    if (!resp.ok) {
+      console.error(`effective-image ${resp.status}: ${await resp.text().catch(() => '')}`);
+      return null;
+    }
+    const arr = await resp.arrayBuffer();
+    const buffer = Buffer.from(arr);
+    const rawFilename = resp.headers.get('x-filename') || 'brand.jpg';
+    const filename = (() => { try { return decodeURIComponent(rawFilename); } catch { return rawFilename; } })();
+    const kind = resp.headers.get('x-image-kind') || 'unknown';
+    return { buffer, filename, kind };
+  } catch (err) {
+    console.error('effective-image fetch err', err);
+    return null;
+  }
+}
+
 async function reportInbound(payload: {
   phone: string;
   telegram_message_id: number;
@@ -215,16 +236,38 @@ function isSessionExpiredError(err: Error): boolean {
 
 async function sendViaMTProto(
   client: TelegramClient,
+  proposalId: string,
   phone: string,
   message: string
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const phoneDigits = phone.replace(/\D/g, '');
+
+  // Fetch the image first; mandatory per spec.
+  const img = await fetchEffectiveImage(proposalId);
+  if (!img) {
+    return { ok: false, reason: 'image fetch failed (no default or worker auth issue)' };
+  }
+  console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
+
   try {
     const peer = await client.getEntity(`+${phoneDigits}`);
-    await client.sendMessage(peer, { message });
+    const file = new CustomFile(img.filename, img.buffer.length, '', img.buffer);
 
-    // Cache the userId → phone mapping so inbound events from this customer
-    // resolve back to phone without another network round-trip.
+    const captionMode = message.length <= 1024;
+    if (captionMode) {
+      console.log(`  send mode: caption (msg=${message.length}B <= 1024)`);
+      await client.sendFile(peer, { file, caption: message });
+    } else {
+      console.log(`  send mode: two_bubble (msg=${message.length}B > 1024)`);
+      await client.sendFile(peer, { file });
+      try {
+        await client.sendMessage(peer, { message });
+      } catch (err) {
+        const e = err as Error;
+        return { ok: false, reason: `image sent, text failed: ${e.message || String(err)}` };
+      }
+    }
+
     if (peer instanceof Api.User) {
       peerPhoneByUserId.set(peer.id.toString(), phoneDigits);
     }
@@ -380,7 +423,7 @@ async function main(): Promise<void> {
     console.log(`→ sending to ${proposal.customer_name || '?'} ${proposal.customer_phone}`);
     let result: { ok: true } | { ok: false; reason: string };
     try {
-      result = await sendViaMTProto(client, proposal.customer_phone, proposal.message);
+      result = await sendViaMTProto(client, proposal._id, proposal.customer_phone, proposal.message);
     } catch (err) {
       result = { ok: false as const, reason: `exception: ${(err as Error).message}` };
     }
