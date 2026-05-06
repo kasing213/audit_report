@@ -17,6 +17,7 @@ export interface OutreachProposalDocument {
   status: OutreachStatus;
   skipped_reason: string | null;
   failed_reason: string | null;
+  custom_image_id: ObjectId | null;
   created_at: Date;
   approved_at: Date | null;
   approved_by: string | null;
@@ -225,5 +226,32 @@ export class OutreachRepository {
     };
     for (const row of rows) base[row._id] = row.count;
     return base;
+  }
+
+  async setCustomImage(id: string, imageId: ObjectId): Promise<boolean> {
+    try {
+      const result = await this.col.updateOne(
+        { _id: new ObjectId(id), status: { $in: ['pending', 'approved'] } },
+        { $set: { custom_image_id: imageId } }
+      );
+      return result.matchedCount > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  async clearCustomImage(id: string): Promise<{ ok: boolean; previous: ObjectId | null }> {
+    try {
+      const existing = await this.col.findOne({ _id: new ObjectId(id) });
+      if (!existing) return { ok: false, previous: null };
+      const previous = existing.custom_image_id ?? null;
+      const result = await this.col.updateOne(
+        { _id: new ObjectId(id), status: { $in: ['pending', 'approved'] } },
+        { $set: { custom_image_id: null } }
+      );
+      return { ok: result.matchedCount > 0, previous };
+    } catch {
+      return { ok: false, previous: null };
+    }
   }
 }
