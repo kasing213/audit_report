@@ -300,6 +300,79 @@ router.post('/:id/skip', express.json(), async (req: Request, res: Response) => 
   }
 });
 
+// POST /crm/api/outreach/:id/image  — multipart upload; sets custom_image_id
+router.post('/:id/image', imageUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
+    if (!ALLOWED_IMAGE_MIME.includes(req.file.mimetype)) {
+      res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use JPEG, PNG, or WebP` });
+      return;
+    }
+
+    const proposalRepo = new OutreachRepository();
+    const proposal = await proposalRepo.getById(req.params.id);
+    if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
+    if (proposal.status !== 'pending' && proposal.status !== 'approved') {
+      res.status(409).json({ error: `cannot edit image when status is ${proposal.status}` });
+      return;
+    }
+
+    const imagesRepo = new OutreachImagesRepository();
+    const uploadedBy = getSessionUser(req) || 'unknown';
+
+    // Insert the new custom image first, then attach it. If a previous custom
+    // existed, delete it after the swap to avoid orphaning the in-use image.
+    const newId = await imagesRepo.insertCustom({
+      filename: req.file.originalname,
+      mime_type: req.file.mimetype,
+      buffer: req.file.buffer,
+      uploaded_by: uploadedBy,
+    });
+    const previousId = proposal.custom_image_id;
+    const setOk = await proposalRepo.setCustomImage(req.params.id, newId);
+    if (!setOk) {
+      // race: status flipped between getById and setCustomImage; clean up
+      await imagesRepo.deleteCustom(newId);
+      res.status(409).json({ error: 'proposal status changed during upload' });
+      return;
+    }
+    if (previousId) {
+      await imagesRepo.deleteCustom(previousId);
+    }
+
+    Logger.info(`outreach custom image set on proposal=${req.params.id} by ${uploadedBy}: ${req.file.originalname} (${req.file.size}B, ${req.file.mimetype})`);
+    res.json({ ok: true, image_id: newId.toString(), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
+  } catch (err) {
+    Logger.error('proposal image POST failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// DELETE /crm/api/outreach/:id/image  — removes custom, reverts to default
+router.delete('/:id/image', async (req: Request, res: Response) => {
+  try {
+    const proposalRepo = new OutreachRepository();
+    const proposal = await proposalRepo.getById(req.params.id);
+    if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
+    if (proposal.status !== 'pending' && proposal.status !== 'approved') {
+      res.status(409).json({ error: `cannot edit image when status is ${proposal.status}` });
+      return;
+    }
+
+    const { ok, previous } = await proposalRepo.clearCustomImage(req.params.id);
+    if (!ok) { res.status(409).json({ error: 'could not clear (status changed)' }); return; }
+    if (previous) {
+      await new OutreachImagesRepository().deleteCustom(previous);
+    }
+
+    Logger.info(`outreach custom image cleared on proposal=${req.params.id} by ${getSessionUser(req) || 'unknown'} (prev=${previous?.toString() || 'none'})`);
+    res.json({ ok: true });
+  } catch (err) {
+    Logger.error('proposal image DELETE failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // PATCH /crm/api/outreach/:id
 router.patch('/:id', express.json(), async (req: Request, res: Response) => {
   try {
