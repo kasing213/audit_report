@@ -245,6 +245,7 @@ async function sendViaMTProto(
   // Fetch the image first; mandatory per spec.
   const img = await fetchEffectiveImage(proposalId);
   if (!img) {
+    await postAlert('image-missing', `effective-image fetch failed for proposal ${proposalId}`);
     return { ok: false, reason: 'image fetch failed (no default or worker auth issue)' };
   }
   console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
