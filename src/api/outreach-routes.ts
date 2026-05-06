@@ -302,6 +302,8 @@ router.post('/:id/skip', express.json(), async (req: Request, res: Response) => 
 
 // POST /crm/api/outreach/:id/image  — multipart upload; sets custom_image_id
 router.post('/:id/image', imageUpload.single('file'), async (req: Request, res: Response) => {
+  const imagesRepo = new OutreachImagesRepository();
+  let newId: ObjectId | undefined;
   try {
     if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
     if (!ALLOWED_IMAGE_MIME.includes(req.file.mimetype)) {
@@ -317,12 +319,11 @@ router.post('/:id/image', imageUpload.single('file'), async (req: Request, res: 
       return;
     }
 
-    const imagesRepo = new OutreachImagesRepository();
     const uploadedBy = getSessionUser(req) || 'unknown';
 
     // Insert the new custom image first, then attach it. If a previous custom
     // existed, delete it after the swap to avoid orphaning the in-use image.
-    const newId = await imagesRepo.insertCustom({
+    newId = await imagesRepo.insertCustom({
       filename: req.file.originalname,
       mime_type: req.file.mimetype,
       buffer: req.file.buffer,
@@ -333,6 +334,7 @@ router.post('/:id/image', imageUpload.single('file'), async (req: Request, res: 
     if (!setOk) {
       // race: status flipped between getById and setCustomImage; clean up
       await imagesRepo.deleteCustom(newId);
+      newId = undefined; // already cleaned up; don't double-delete in catch
       res.status(409).json({ error: 'proposal status changed during upload' });
       return;
     }
@@ -343,6 +345,10 @@ router.post('/:id/image', imageUpload.single('file'), async (req: Request, res: 
     Logger.info(`outreach custom image set on proposal=${req.params.id} by ${uploadedBy}: ${req.file.originalname} (${req.file.size}B, ${req.file.mimetype})`);
     res.json({ ok: true, image_id: newId.toString(), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
+    // If we inserted an image but failed to attach it, clean it up to avoid an orphan.
+    if (newId) {
+      await imagesRepo.deleteCustom(newId).catch(() => {});
+    }
     Logger.error('proposal image POST failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
