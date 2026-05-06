@@ -191,9 +191,78 @@
     50% { box-shadow: 0 0 0 6px var(--accent-dim); }
     100% { box-shadow: 0 0 0 0 transparent; }
   }
+  .default-image-card {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 0.85rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 0.75rem;
+    flex-wrap: wrap;
+  }
+  .default-image-thumb {
+    width: 80px;
+    height: 80px;
+    border-radius: 6px;
+    object-fit: cover;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .default-image-thumb.empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-muted);
+    font-size: 0.8rem;
+    font-family: var(--font-mono);
+  }
+  .default-image-meta { display: flex; flex-direction: column; gap: 0.15rem; flex: 1 1 200px; min-width: 0; }
+  .default-image-meta .name { font-size: 0.92rem; color: var(--text); }
+  .default-image-meta .sub { font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); }
+  .default-image-actions { display: flex; gap: 0.5rem; }
+  .image-setup-banner {
+    background: var(--red);
+    color: var(--bg);
+    border-radius: var(--radius);
+    padding: 0.6rem 0.85rem;
+    margin-bottom: 0.75rem;
+    font-size: 0.85rem;
+    font-weight: 500;
+  }
+  .image-setup-banner.hidden { display: none; }
+  .lightbox-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+    cursor: zoom-out;
+  }
+  .lightbox-backdrop.show { display: flex; }
+  .lightbox-backdrop img { max-width: 92vw; max-height: 92vh; }
 </style>
 
 <div class="outreach-wrap">
+  <div class="image-setup-banner hidden" id="image-setup-banner">⚠ Upload a default brand image below to enable outreach.</div>
+  <div class="default-image-card">
+    <img class="default-image-thumb" id="default-image-thumb" alt="Default brand image" onclick="openLightbox()">
+    <div class="default-image-meta">
+      <div class="name" id="default-image-name">Loading…</div>
+      <div class="sub" id="default-image-sub"></div>
+    </div>
+    <div class="default-image-actions">
+      <input type="file" id="default-image-file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadDefaultImage(event)">
+      <button class="btn btn-primary" onclick="document.getElementById('default-image-file').click()">Replace image</button>
+    </div>
+  </div>
+  <div class="lightbox-backdrop" id="lightbox" onclick="closeLightbox()">
+    <img id="lightbox-img" alt="Full size">
+  </div>
   <div class="pause-banner" id="pause-banner">⏸ Worker is paused. Approved proposals will queue until resumed.</div>
   <div class="worker-bar" id="worker-bar">
     <span class="worker-dot" id="worker-dot"></span>
@@ -225,6 +294,76 @@
 
 <script>
   const API = '/crm/api/outreach';
+  const DEFAULT_IMAGE_URL = API + '/default-image';
+  let hasDefaultImage = false;
+
+  async function refreshDefaultImage() {
+    const thumb = document.getElementById('default-image-thumb');
+    const name = document.getElementById('default-image-name');
+    const sub = document.getElementById('default-image-sub');
+    const banner = document.getElementById('image-setup-banner');
+    const genBtn = document.querySelector('.generate-bar .btn-primary');
+
+    try {
+      const resp = await fetch(DEFAULT_IMAGE_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
+      if (resp.status === 404) {
+        hasDefaultImage = false;
+        thumb.removeAttribute('src');
+        thumb.classList.add('empty');
+        thumb.alt = '(none)';
+        thumb.textContent = '(none)';
+        name.textContent = 'No default image set';
+        sub.textContent = 'Upload one to enable outreach';
+        banner.classList.remove('hidden');
+        if (genBtn) genBtn.disabled = true;
+        return;
+      }
+      if (!resp.ok) throw new Error('GET default-image ' + resp.status);
+      hasDefaultImage = true;
+      const blob = await resp.blob();
+      thumb.classList.remove('empty');
+      thumb.src = URL.createObjectURL(blob);
+      thumb.textContent = '';
+      const filename = decodeURIComponent(resp.headers.get('x-filename') || 'image');
+      const sizeKb = Math.round(blob.size / 1024);
+      name.textContent = filename;
+      sub.textContent = blob.type + ' · ' + sizeKb + ' KB';
+      banner.classList.add('hidden');
+      if (genBtn) genBtn.disabled = false;
+    } catch (err) {
+      console.error('refreshDefaultImage', err);
+    }
+  }
+
+  async function uploadDefaultImage(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    showToast('Uploading…', 'success');
+    try {
+      const resp = await fetch(DEFAULT_IMAGE_URL, { method: 'POST', credentials: 'same-origin', body: fd });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) { showToast('Default image updated', 'success'); refreshDefaultImage(); }
+      else { showToast(data.error || ('Upload failed: ' + resp.status), 'error'); }
+    } catch (err) {
+      showToast('Upload failed', 'error');
+    } finally {
+      ev.target.value = '';
+    }
+  }
+
+  function openLightbox() {
+    if (!hasDefaultImage) return;
+    const lb = document.getElementById('lightbox');
+    const img = document.getElementById('lightbox-img');
+    img.src = document.getElementById('default-image-thumb').src;
+    lb.classList.add('show');
+  }
+  function closeLightbox() {
+    document.getElementById('lightbox').classList.remove('show');
+  }
+
   let currentStatus = 'pending';
   let pollTimer = null;
   let workerStatusTimer = null;
@@ -486,6 +625,7 @@
     workerStatusTimer = setInterval(refreshWorkerStatus, 10000);
   }
 
+  refreshDefaultImage();
   startWorkerStatusPoll();
   loadList();
 </script>
