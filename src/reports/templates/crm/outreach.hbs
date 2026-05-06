@@ -245,6 +245,51 @@
   }
   .lightbox-backdrop.show { display: flex; }
   .lightbox-backdrop img { max-width: 92vw; max-height: 92vh; }
+  .image-bar {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    margin-top: 0.5rem;
+    padding: 0.4rem 0.5rem;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+  }
+  .image-bar .thumb {
+    width: 40px;
+    height: 40px;
+    border-radius: 4px;
+    object-fit: cover;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    cursor: pointer;
+    flex: 0 0 auto;
+  }
+  .image-bar .label { color: var(--text-muted); flex: 1 1 auto; min-width: 80px; }
+  .image-bar .label.custom { color: var(--accent); }
+  .image-bar .actions { display: flex; gap: 0.4rem; }
+  .image-bar .icon-btn {
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text);
+    border-radius: 4px;
+    padding: 0.2rem 0.55rem;
+    cursor: pointer;
+    font-family: var(--font-body);
+    font-size: 0.78rem;
+  }
+  .image-bar .icon-btn:hover { border-color: var(--accent); }
+  .image-bar .icon-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+  .image-bar .counter {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    flex: 0 0 auto;
+  }
+  .image-bar .counter.green { color: var(--green); }
+  .image-bar .counter.yellow { color: var(--yellow); }
+  .image-bar .counter.red { color: var(--red); }
 </style>
 
 <div class="outreach-wrap">
@@ -412,6 +457,84 @@
 
   function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({ '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c])); }
 
+  function counterClass(len) {
+    if (len > 4096) return 'red';
+    if (len > 1024) return 'yellow';
+    return 'green';
+  }
+  function updateCounter(id) {
+    const ta = document.getElementById('m-' + id);
+    const counter = document.getElementById('counter-' + id);
+    if (!ta || !counter) return;
+    const len = ta.value.length;
+    counter.textContent = len + ' / 1024';
+    counter.classList.remove('green', 'yellow', 'red');
+    counter.classList.add(counterClass(len));
+    counter.title = len > 1024 && len <= 4096
+      ? 'Will send as image then separate text — over caption limit.'
+      : (len > 4096 ? 'Too long for Telegram — shorten before approving.' : '');
+
+    // Disable Save and Approve when over 4096
+    const card = document.getElementById('p-' + id);
+    if (!card) return;
+    const buttons = card.querySelectorAll('.proposal-actions .btn-primary');
+    buttons.forEach((b) => { b.disabled = len > 4096; });
+  }
+
+  async function uploadCustomImage(id, ev) {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    showToast('Uploading…', 'success');
+    try {
+      const resp = await fetch(API + '/' + id + '/image', { method: 'POST', credentials: 'same-origin', body: fd });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        showToast('Custom image attached', 'success');
+        const thumb = document.getElementById('img-' + id);
+        const label = document.getElementById('img-label-' + id);
+        const clearBtn = document.getElementById('img-clear-' + id);
+        if (thumb) thumb.src = API + '/' + id + '/effective-image?cb=' + Date.now();
+        if (label) { label.textContent = 'Custom image'; label.classList.add('custom'); }
+        if (clearBtn) clearBtn.disabled = false;
+      } else {
+        showToast(data.error || ('Upload failed: ' + resp.status), 'error');
+      }
+    } catch (err) {
+      showToast('Upload failed', 'error');
+    } finally {
+      ev.target.value = '';
+    }
+  }
+
+  async function clearCustomImage(id) {
+    try {
+      const resp = await fetch(API + '/' + id + '/image', { method: 'DELETE', credentials: 'same-origin' });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) {
+        showToast('Reverted to default', 'success');
+        const thumb = document.getElementById('img-' + id);
+        const label = document.getElementById('img-label-' + id);
+        const clearBtn = document.getElementById('img-clear-' + id);
+        if (thumb) thumb.src = API + '/' + id + '/effective-image?cb=' + Date.now();
+        if (label) { label.textContent = 'Default image'; label.classList.remove('custom'); }
+        if (clearBtn) clearBtn.disabled = true;
+      } else {
+        showToast(data.error || ('Revert failed: ' + resp.status), 'error');
+      }
+    } catch (err) {
+      showToast('Revert failed', 'error');
+    }
+  }
+
+  function openProposalLightbox(id) {
+    const lb = document.getElementById('lightbox');
+    const img = document.getElementById('lightbox-img');
+    img.src = API + '/' + id + '/effective-image?cb=' + Date.now();
+    lb.classList.add('show');
+  }
+
   function actionsHtml(p) {
     if (p.status === 'pending') {
       return (
@@ -457,6 +580,10 @@
       const reasonBadge = p.reason_code ? '<span class="badge badge-reason">' + esc(p.reason_code) + '</span>' : '';
       const phoneLink = '<a href="https://t.me/' + encodeURIComponent(p.customer_phone) + '" target="_blank" class="proposal-phone">' + esc(p.customer_phone) + '</a>';
       const editable = p.status === 'pending' ? '' : 'readonly';
+      const customClass = p.custom_image_id ? 'custom' : '';
+      const customLabel = p.custom_image_id ? 'Custom image' : 'Default image';
+      const customDisabled = p.custom_image_id ? '' : 'disabled';
+      const imageBarReadonly = p.status === 'pending' ? '' : 'disabled';
       const statusTail = p.status === 'skipped' && p.skipped_reason ? '<span>· ' + esc(p.skipped_reason) + '</span>' : '';
       const failedTail = p.status === 'failed' && p.failed_reason ? '<span>· ' + esc(p.failed_reason) + '</span>' : '';
       const approvedTail = p.approved_by ? '<span>· approved by ' + esc(p.approved_by) + '</span>' : '';
@@ -470,6 +597,16 @@
             '<div>' + statusBadge(p) + '</div>' +
           '</div>' +
           '<textarea class="proposal-message" id="m-' + p._id + '" ' + editable + '>' + esc(p.message) + '</textarea>' +
+          '<div class="image-bar">' +
+            '<img class="thumb" id="img-' + p._id + '" src="' + esc(API + '/' + p._id + '/effective-image?cb=' + Date.now()) + '" onclick="openProposalLightbox(\'' + p._id + '\')" alt="image">' +
+            '<span class="label ' + customClass + '" id="img-label-' + p._id + '">' + customLabel + '</span>' +
+            '<input type="file" id="img-file-' + p._id + '" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadCustomImage(\'' + p._id + '\', event)">' +
+            '<div class="actions">' +
+              '<button class="icon-btn" onclick="document.getElementById(\'img-file-' + p._id + '\').click()" ' + imageBarReadonly + '>📎 Replace</button>' +
+              '<button class="icon-btn" onclick="clearCustomImage(\'' + p._id + '\')" ' + customDisabled + ' ' + imageBarReadonly + ' id="img-clear-' + p._id + '">↺ Use default</button>' +
+            '</div>' +
+            '<span class="counter" id="counter-' + p._id + '">0 / 1024</span>' +
+          '</div>' +
           '<div class="proposal-actions">' + actionsHtml(p) + '</div>' +
           '<div class="proposal-footer">' +
             '<button class="reasoning-toggle" onclick="toggleReason(\'' + p._id + '\')">Show reasoning</button>' +
@@ -479,6 +616,13 @@
         '</div>'
       );
     }).join('');
+    proposals.forEach((p) => {
+      const ta = document.getElementById('m-' + p._id);
+      if (ta) {
+        ta.addEventListener('input', () => updateCounter(p._id));
+        updateCounter(p._id);
+      }
+    });
     setTimeout(maybeFocus, 50);
   }
 
