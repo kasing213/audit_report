@@ -21,6 +21,19 @@ const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
 
+function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
+  if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
+    res.status(413).json({ error: `File exceeds ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB limit` });
+    return;
+  }
+  if (err) {
+    Logger.error('image upload middleware error', err);
+    res.status(400).json({ error: err.message || 'upload error' });
+    return;
+  }
+  next();
+}
+
 function dailyCap(): number {
   const parsed = Number(process.env.DAILY_CAP);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_CAP;
@@ -258,7 +271,7 @@ router.get('/default-image', async (_req: Request, res: Response) => {
 });
 
 // POST /crm/api/outreach/default-image  — multipart upload, replaces default
-router.post('/default-image', imageUpload.single('file'), async (req: Request, res: Response) => {
+router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandler, async (req: Request, res: Response) => {
   try {
     if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
     if (!ALLOWED_IMAGE_MIME.includes(req.file.mimetype)) {
@@ -307,7 +320,7 @@ router.post('/:id/skip', express.json(), async (req: Request, res: Response) => 
 });
 
 // POST /crm/api/outreach/:id/image  — multipart upload; sets custom_image_id
-router.post('/:id/image', imageUpload.single('file'), async (req: Request, res: Response) => {
+router.post('/:id/image', imageUpload.single('file'), imageUploadErrorHandler, async (req: Request, res: Response) => {
   const imagesRepo = new OutreachImagesRepository();
   let newId: ObjectId | undefined;
   try {
