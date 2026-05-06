@@ -1,6 +1,8 @@
 import express, { Request, Response, NextFunction } from 'express';
+import multer from 'multer';
 import { authMiddleware, getSessionUser } from './auth-middleware';
 import { OutreachRepository } from '../outreach/outreach-repository';
+import { OutreachImagesRepository } from '../outreach/outreach-images-repository';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { getRegisteredOutreachScheduler } from '../scheduler/outreach-scheduler';
@@ -15,6 +17,9 @@ import { ObjectId } from 'mongodb';
 const router = express.Router();
 const LEASE_MS = 5 * 60 * 1000; // 5 min
 const DEFAULT_DAILY_CAP = 15;
+const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
+const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
 
 function dailyCap(): number {
   const parsed = Number(process.env.DAILY_CAP);
@@ -223,6 +228,48 @@ router.post('/report-inbound', express.json(), agentOnly, async (req: Request, r
     res.json({ ok: true, alert: sent ? 'sent' : 'failed' });
   } catch (err) {
     Logger.error('outreach report-inbound failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-image  — returns binary
+router.get('/default-image', async (_req: Request, res: Response) => {
+  try {
+    const repo = new OutreachImagesRepository();
+    const doc = await repo.getDefault();
+    if (!doc) {
+      res.status(404).json({ error: 'No default image set' });
+      return;
+    }
+    res.setHeader('Content-Type', doc.mime_type);
+    res.setHeader('X-Filename', encodeURIComponent(doc.filename));
+    res.setHeader('Content-Length', String(doc.size_bytes));
+    res.send(doc.data.buffer);
+  } catch (err) {
+    Logger.error('default-image GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/default-image  — multipart upload, replaces default
+router.post('/default-image', imageUpload.single('file'), async (req: Request, res: Response) => {
+  try {
+    if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
+    if (!ALLOWED_IMAGE_MIME.includes(req.file.mimetype)) {
+      res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use JPEG, PNG, or WebP` });
+      return;
+    }
+    const uploadedBy = getSessionUser(req) || 'unknown';
+    await new OutreachImagesRepository().setDefault({
+      filename: req.file.originalname,
+      mime_type: req.file.mimetype,
+      buffer: req.file.buffer,
+      uploaded_by: uploadedBy,
+    });
+    Logger.info(`outreach default image replaced by ${uploadedBy}: ${req.file.originalname} (${req.file.size}B, ${req.file.mimetype})`);
+    res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
+  } catch (err) {
+    Logger.error('default-image POST failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
