@@ -131,6 +131,12 @@ router.get('/api/customers', async (req: Request, res: Response) => {
         : null
     }));
 
+    const samplePhones = enriched.slice(0, 5).map(c => c.phone);
+    const hasMarker = enriched.some(c => c.phone === '+85570597666' || c.phone === '+85586226225');
+    Logger.info(
+      `[crm-customers] filter=${filter} follower=${followerParam ?? 'all'} temp=${temperatureFilter ?? 'all'} returned=${enriched.length} sample=${JSON.stringify(samplePhones)} hasMarker=${hasMarker}`
+    );
+
     res.json({ customers: enriched, total: enriched.length });
   } catch (error) {
     Logger.error('Error fetching CRM customers', error as Error);
