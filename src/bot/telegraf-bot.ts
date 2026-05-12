@@ -296,16 +296,20 @@ export class TelegrafBotService {
 
     // Bulk-report callbacks
     this.bot.action(/^bulk_confirm:(.+)$/, async (ctx) => {
+      const token = (ctx as any).match?.[1];
+      Logger.info(`[bulk-confirm] action fired token=${token} user=${ctx.from?.id} chat=${ctx.chat?.id}`);
       try {
-        await this.bulkEntryFlow.handleConfirm(ctx, (ctx as any).match[1]);
+        await this.bulkEntryFlow.handleConfirm(ctx, token);
       } catch (error) {
         Logger.error('Error handling bulk_confirm', error as Error);
         await ctx.answerCbQuery('❌ មានបញ្ហា');
       }
     });
     this.bot.action(/^bulk_cancel:(.+)$/, async (ctx) => {
+      const token = (ctx as any).match?.[1];
+      Logger.info(`[bulk-confirm] cancel fired token=${token} user=${ctx.from?.id} chat=${ctx.chat?.id}`);
       try {
-        await this.bulkEntryFlow.handleCancel(ctx, (ctx as any).match[1]);
+        await this.bulkEntryFlow.handleCancel(ctx, token);
       } catch (error) {
         Logger.error('Error handling bulk_cancel', error as Error);
         await ctx.answerCbQuery('❌ មានបញ្ហា');

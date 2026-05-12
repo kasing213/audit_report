@@ -72,6 +72,7 @@ export class BulkEntryFlow {
       expiresAt: Date.now() + TTL_MS,
     });
     this.gcExpired();
+    Logger.info(`[bulk-confirm] preview created token=${token} user=${userId} chat=${chatId} drafts=${parsed.drafts.length} counters=${Object.keys(parsed.summary.counters).length} pendingSize=${this.pending.size}`);
 
     const previewText = this.buildPreview(parsed);
     const keyboard = Markup.inlineKeyboard([
@@ -90,26 +91,34 @@ export class BulkEntryFlow {
   }
 
   async handleConfirm(ctx: Context, token: string): Promise<void> {
+    const userIdForLog = ctx.from?.id ?? 'unknown';
+    Logger.info(`[bulk-confirm] tap received token=${token} user=${userIdForLog} pendingSize=${this.pending.size}`);
     const pending = this.pending.get(token);
     if (!pending) {
+      Logger.warn(`[bulk-confirm] token=${token} NOT in pending map — replying expired`);
       await ctx.answerCbQuery('⌛ ផុតកំណត់ ឬ មិនមាន / expired');
       return;
     }
     if (Date.now() > pending.expiresAt) {
+      Logger.warn(`[bulk-confirm] token=${token} expired (ageMs=${Date.now() - pending.expiresAt + TTL_MS})`);
       this.pending.delete(token);
       await ctx.answerCbQuery('⌛ ផុតកំណត់ / expired');
       return;
     }
     if (ctx.from?.id !== pending.userId) {
+      Logger.warn(`[bulk-confirm] token=${token} wrong user tapper=${userIdForLog} poster=${pending.userId}`);
       await ctx.answerCbQuery('តែអ្នកបង្កើតប៉ុណ្ណោះ / only the poster can confirm');
       return;
     }
 
     this.pending.delete(token);
+    Logger.info(`[bulk-confirm] token=${token} drafts=${pending.parsed.drafts.length} counters=${Object.keys(pending.parsed.summary.counters).length} header=${JSON.stringify(pending.parsed.header)}`);
 
     try {
       const { events, skipped } = this.buildEvents(pending.parsed);
+      Logger.info(`[bulk-confirm] buildEvents → events=${events.length} skipped=${skipped} firstPhone=${events[0]?.customer?.phone ?? 'n/a'}`);
       const eventIds = events.length ? await this.repository.saveLeadEvents(events) : [];
+      Logger.info(`[bulk-confirm] saveLeadEvents returned ${eventIds.length} ids: ${eventIds.join(',')}`);
 
       let summaryId: string | null = null;
       if (Object.keys(pending.parsed.summary.counters).length > 0) {
@@ -123,6 +132,7 @@ export class BulkEntryFlow {
           created_at: new Date(),
         };
         summaryId = await this.repository.saveDailySummary(summaryDoc);
+        Logger.info(`[bulk-confirm] saveDailySummary id=${summaryId}`);
       }
 
       for (let i = 0; i < events.length; i++) {
@@ -160,13 +170,14 @@ export class BulkEntryFlow {
       });
 
       const summaryLine = summaryId ? ' + daily summary' : '';
+      Logger.info(`[bulk-confirm] token=${token} SUCCESS events=${events.length} summary=${summaryId ?? 'none'} skipped=${skipped}`);
       await ctx.answerCbQuery(`✅ បញ្ជាក់បាន / confirmed`);
       await ctx.reply(
         `✅ បានរក្សាទុក ${events.length} លេខ${summaryLine}` +
           (skipped ? ` (រំលង ${skipped})` : ''),
       );
     } catch (err) {
-      Logger.error('bulk confirm failed', err as Error);
+      Logger.error(`[bulk-confirm] token=${token} FAILED`, err as Error);
       await ctx.answerCbQuery('❌ មានបញ្ហា / error');
       await ctx.reply('❌ មានបញ្ហាពេលរក្សាទុក។ សូមសាកម្តងទៀត។');
     }
