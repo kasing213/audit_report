@@ -72,6 +72,10 @@ export class JpgReportGenerator {
       const page = await browser.newPage();
       await page.setContent(html, { waitUntil: 'networkidle0' });
 
+      // Ensure Khmer (and any other) webfonts are fully loaded before capture,
+      // otherwise a slow font load can race the screenshot and render tofu boxes.
+      await page.evaluateHandle('document.fonts.ready');
+
       await page.setViewport({
         width: 1200,
         height: 800,
