@@ -154,6 +154,20 @@ Once deployed, you can access:
 - If you see Chromium errors, check Railway logs
 - Ensure sufficient memory allocation in Railway settings
 
+### Khmer Text Renders as Boxes (□) in the Daily Report JPG
+The daily report JPG is rasterized server-side by headless Chromium. Chromium can
+only draw Khmer (Unicode block U+1780–U+17FF) if a Khmer font is installed **in the
+image** — the host/browser fonts are irrelevant. If the report shows `□` boxes for
+customer names, pages, or reason labels (the data itself is fine):
+- The `Dockerfile` must install a Khmer font. We use **`fonts-noto-core`** (ships
+  Noto Sans Khmer); `fonts-khmeros` also works.
+- `src/reports/templates/daily-report.hbs` lists `'Noto Sans Khmer'` first in
+  `font-family` so rendering does not depend on Chromium's implicit fallback.
+- `src/reports/jpg-report.ts` awaits `document.fonts.ready` before the screenshot.
+- Verify inside the running container: `fc-list | grep -i khmer` should list a Noto
+  Sans Khmer face. (Fixed 2026-05-25; the original image only had `fonts-liberation`,
+  which is Latin-only.)
+
 ## Scaling
 Railway automatically handles:
 - Automatic restarts on failure
