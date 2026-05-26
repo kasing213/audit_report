@@ -4,10 +4,10 @@
  * The bot operates across three types of Telegram groups:
  *
  * ┌─────────────────────────────────────────────────────────────────┐
- * │ SALES GROUPS (up to 8)                                         │
+ * │ SALES GROUPS                                                   │
  * │                                                                 │
  * │ Env vars: SALES_GROUP_N_CHAT_ID + SALES_GROUP_N_NAME           │
- * │ (N = 1..8)                                                     │
+ * │ (N = 1..20; slots may be non-contiguous)                      │
  * │                                                                 │
  * │ Purpose: Sales staff enter customer data here                   │
  * │ Follower: Auto-set from SALES_GROUP_N_NAME                     │
@@ -20,7 +20,7 @@
  * │                                                                 │
  * │ Active groups:                                                  │
  * │   1: SreySros  2: Bery     3: Theary  4: Seyi                  │
- * │   5: Pheaktra  6: Borey   7: Pisey                             │
+ * │   5: Pheaktra  6: Borey   7: Pisey    11: JR                   │
  * ├─────────────────────────────────────────────────────────────────┤
  * │ SUMMARY GROUP (1)                                               │
  * │                                                                 │
@@ -73,55 +73,25 @@ export class GroupConfigManager {
     return GroupConfigManager.instance;
   }
 
-  private loadConfigs(): void {
-    const groups = [
-      {
-        groupId: 'group_1',
-        chatId: process.env.SALES_GROUP_1_CHAT_ID || '',
-        name: process.env.SALES_GROUP_1_NAME || 'Group1'
-      },
-      {
-        groupId: 'group_2',
-        chatId: process.env.SALES_GROUP_2_CHAT_ID || '',
-        name: process.env.SALES_GROUP_2_NAME || 'Group2'
-      },
-      {
-        groupId: 'group_3',
-        chatId: process.env.SALES_GROUP_3_CHAT_ID || '',
-        name: process.env.SALES_GROUP_3_NAME || 'Group3'
-      },
-      {
-        groupId: 'group_4',
-        chatId: process.env.SALES_GROUP_4_CHAT_ID || '',
-        name: process.env.SALES_GROUP_4_NAME || 'Group4'
-      },
-      {
-        groupId: 'group_5',
-        chatId: process.env.SALES_GROUP_5_CHAT_ID || '',
-        name: process.env.SALES_GROUP_5_NAME || 'Group5'
-      },
-      {
-        groupId: 'group_6',
-        chatId: process.env.SALES_GROUP_6_CHAT_ID || '',
-        name: process.env.SALES_GROUP_6_NAME || 'Group6'
-      },
-      {
-        groupId: 'group_7',
-        chatId: process.env.SALES_GROUP_7_CHAT_ID || '',
-        name: process.env.SALES_GROUP_7_NAME || 'Group7'
-      },
-      {
-        groupId: 'group_8',
-        chatId: process.env.SALES_GROUP_8_CHAT_ID || '',
-        name: process.env.SALES_GROUP_8_NAME || 'Group8'
-      }
-    ];
+  // Max SALES_GROUP_N slot to scan for. Bumped from 8 to cover the
+  // non-contiguous numbering used in .env (e.g. JR is SALES_GROUP_11).
+  private static readonly MAX_GROUP_SLOTS = 20;
 
-    for (const group of groups) {
-      if (group.chatId) {
-        this.groupConfigs.set(group.groupId, group);
-        this.chatIdToGroupId.set(group.chatId, group.groupId);
+  private loadConfigs(): void {
+    for (let n = 1; n <= GroupConfigManager.MAX_GROUP_SLOTS; n++) {
+      const chatId = process.env[`SALES_GROUP_${n}_CHAT_ID`] || '';
+      if (!chatId) {
+        continue;
       }
+
+      const group: GroupConfig = {
+        groupId: `group_${n}`,
+        chatId,
+        name: process.env[`SALES_GROUP_${n}_NAME`] || `Group${n}`
+      };
+
+      this.groupConfigs.set(group.groupId, group);
+      this.chatIdToGroupId.set(group.chatId, group.groupId);
     }
   }
 
