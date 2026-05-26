@@ -82,19 +82,20 @@ export class DailyScheduler {
       return;
     }
 
-    // Schedule daily report at 11:59 PM (23:59)
-    cron.schedule('59 23 * * *', () => {
+    // Schedule daily report at 10:00 AM Cambodia time, reporting yesterday's cases
+    const reportTimezone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
+    cron.schedule('0 10 * * *', () => {
       const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
       Logger.info(`Daily report scheduled task triggered${groupInfo}`);
       this.generateAndSendDailyReport();
     }, {
       scheduled: true,
-      timezone: process.env.TIMEZONE || 'Asia/Kuala_Lumpur'
+      timezone: reportTimezone
     });
 
     const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
-    Logger.info(`Daily report scheduler started - will send reports at 11:59 PM daily${groupInfo}`);
-    Logger.info(`Timezone: ${process.env.TIMEZONE || 'Asia/Kuala_Lumpur'}`);
+    Logger.info(`Daily report scheduler started - will send yesterday's report at 10:00 AM daily${groupInfo}`);
+    Logger.info(`Timezone: ${reportTimezone}`);
     const chatInfo = this.groupId
       ? `Target ${this.groupName || this.groupId} chat ID: ${this.telegramChatId}`
       : `Target audit chat ID: ${this.telegramChatId}`;
