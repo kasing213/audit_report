@@ -18,6 +18,7 @@ export class HelpCommand {
         const dateShort = this.isoToDdMmYy(dateIso);
         await ctx.reply(this.buildSalesHelpMessage(), { parse_mode: 'Markdown' });
         await ctx.reply(this.buildBulkCopyTemplate(follower, dateShort));
+        await ctx.reply(this.buildCustomerPotentialTemplate(dateShort));
       } else {
         await ctx.reply(this.buildManagementHelpMessage(), { parse_mode: 'Markdown' });
       }
@@ -107,12 +108,87 @@ export class HelpCommand {
     ].join('\n');
   }
 
+  private buildCustomerPotentialTemplate(date: string): string {
+    // Customer Potential = same template as Close-sell, only the header words differ.
+    // Swap "💯Customer Potential" → "💯Close sell" and "B/Customer Potential" → "B/Close sell"
+    // to file as Close-sell instead.
+    return [
+      '📋 សារទី ២ — ទំរង់ Customer Potential (ការចាប់ភ្ញៀវលើកដំបូង)',
+      'ប្រើពេលចាប់ភ្ញៀវលើកដំបូង មុនការមកមើលគំរោង',
+      'ទំរង់ដូចគ្នានឹង Close sell — ផ្លាស់ប្តូរតែបឋមកថា ៖',
+      '   💯Customer Potential ↔ 💯Close sell',
+      '   B/Customer Potential ↔ B/Close sell',
+      '',
+      '💯Customer Potential',
+      `#របាយការណ៍ថ្ងៃទី${date}`,
+      '(ធ្វើប្រចាំថ្ងៃបន្ទាប់មុនម៉ោង10ព្រឹក ទោះចំថ្ងៃសំរាកក៏ដោយ)',
+      '',
+      '🚩page ឈ្មោះផេករបស់អ្នក',
+      'B/Customer Potential',
+      '1.Date visited',
+      '   1/ចង់បានដីឡូត៍លេខ=',
+      '   2/ចង់បានផ្ទះលេខ=',
+      '   3/ចង់បានផ្សេងៗ=',
+      '   4/លេខទូរស័ព្ទ =',
+      '       a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង=',
+      '       b.ថ្ងៃ.ខែ.ឆ្នាំទាក់ទងដំបូងខាងក្រោម/',
+      '          1/1-3day=',
+      '          2/4-7day=',
+      '          3/8-15day=',
+      '          4/16-31day=',
+      '          5/1-3month=',
+      '          6/3-6month=',
+      '          7/6-12month=',
+      '          8/Over12month=',
+      '2.លទ្ឋផលការបិទលក់ខាងក្រោម',
+      '   1/ចំនួនកក់=',
+      '   2/មិនទាន់កក់=',
+      '   3/ផ្សេងៗ=',
+      '   ទីតាំងដូចខាងក្រោម',
+      '   1/រាយឈ្មោះអ្នកដឹកនាំមើលគំរោង=',
+      '       a.=',
+      '       b.=',
+      '       c.=',
+      '       d.=',
+      '       e.Other=',
+      '   2/ឈ្មោះអ្នកបិទលក់=',
+      '   3/ភ្ញៀវមកពី=',
+      '   4/បញ្ហាភ្ញៀវដូចខាងក្រោម',
+      '      a.ថ្លៃពេក=',
+      '      b.ទីតាំងមិនត្រូវ=',
+      '      d គ្មានចំណាប់អារម្មណ៍=',
+      '      e.ត្រូវការកម្ចីច្រើន=',
+      '      f.ជំពាក់គេច្រើន=',
+      '      g.ខូចCBC=',
+      '      h.ដីរឺផ្ទះតូចពេក=',
+      '      I.ផ្សេងៗ=',
+      '4.ស្ថានភាពហិរញ្ញវត្ថុ=',
+      '  1/មានលុយក្នងដៃ=',
+      '    a ការវាយតំលៃលទ្ឋភាពភ្ញៀខាងក្រោម',
+      '       ១.ល្អ=',
+      '       ២.មធ្យម=',
+      '       ៣.ខ្សោយ=',
+      '  2/លទ្ឋភាពចំណូលក្នុង១ខែ=',
+      '  3/អ្នករកសុី=',
+      '  4/អ្នកធ្វើការ=',
+      '  5/សមាជិកគ្រួសារ=',
+      '  6/ចំនួនអ្នករកចំណូលក្នុងគ្រួសារ=',
+      '  7/អត្តចរិតខាងក្រោម',
+      '     a.ល្អ=',
+      '     b.មធ្យម=',
+      '     c.អន់=',
+      '5.បរិយាយផ្សេងៗ='
+    ].join('\n');
+  }
+
   private buildSalesHelpMessage(): string {
     const baseUrl = (process.env.DASHBOARD_BASE_URL || '<BASE_URL>').replace(/\/$/, '');
     return [
       '📋 *មគ្គុទេសក៍បញ្ចូលទិន្នន័យការលក់*',
       '',
-      'បន្ទាប់ពីសារនេះ Bot នឹងផ្ញើទំរង់ Bulk មកឲ្យ៖',
+      'បន្ទាប់ពីសារនេះ Bot នឹងផ្ញើទំរង់ ២ មកឲ្យ៖',
+      '  ១. ទំរង់ Bulk — របាយការណ៍ប្រចាំថ្ងៃ',
+      '  ២. ទំរង់ Customer Potential — ការចាប់ភ្ញៀវលើកដំបូង (ឬ Close sell ដោយផ្លាស់ប្តូរបឋមកថា)',
       '',
       '━━━━━━━━━━━━━━━━━━━━━',
       '🔸 *Bulk — របាយការណ៍ប្រចាំថ្ងៃ (មួយផ្លូវតែមួយ)*',
