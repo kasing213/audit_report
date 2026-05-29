@@ -72,6 +72,26 @@ function isPhoneCandidate(raw: string): boolean {
   return true;
 }
 
+/**
+ * Normalize a phone field that may contain one or more slash-separated phones
+ * (e.g. "0123/0987"). Returns slash-joined normalized phones, or null when
+ * none of the candidates are valid.
+ */
+function normalizePhoneSegment(raw: string): string | null {
+  const parts = raw.split('/').map(s => s.trim()).filter(Boolean);
+  const out: string[] = [];
+  for (const p of parts) {
+    if (!isPhoneCandidate(p)) continue;
+    try {
+      const n = toInternationalPhone(cleanPhoneDigits(p));
+      if (n) out.push(n);
+    } catch {
+      // skip un-normalizable
+    }
+  }
+  return out.length ? out.join('/') : null;
+}
+
 function extractDate(lines: string[], warnings: string[]): string {
   for (const line of lines) {
     if (/ថ្ងៃទី|របាយការណ៍|Date|date/.test(line)) {
@@ -207,15 +227,13 @@ function parseTelBlockPartial(num: number, body: string): SlotPartial {
   const scanBody = fenceMatch ? body.slice(0, fenceMatch.index) : body;
 
   let customerPhone: string | null = null;
-  const phoneMatch = firstLine.match(/=\s*([\d+\-\s()]+)/);
+  const phoneMatch = firstLine.match(/=\s*([\d+\-\s()\/]+)/);
   if (phoneMatch) {
     const rawPhone = phoneMatch[1].trim();
-    if (isPhoneCandidate(rawPhone)) {
-      try {
-        customerPhone = toInternationalPhone(cleanPhoneDigits(rawPhone));
-      } catch {
-        warnings.push('Phone normalization failed');
-      }
+    try {
+      customerPhone = normalizePhoneSegment(rawPhone);
+    } catch {
+      warnings.push('Phone normalization failed');
     }
   }
 
@@ -343,12 +361,9 @@ function parseDatingSection(
     const body = section.slice(starts[i], endIdx);
     const firstLine = body.split('\n')[0] || '';
 
-    const phoneMatch = firstLine.match(/=\s*([\d+\-\s()]+)/);
+    const phoneMatch = firstLine.match(/=\s*([\d+\-\s()\/]+)/);
     const rawPhone = phoneMatch ? phoneMatch[1].trim() : '';
-    let phone: string | null = null;
-    if (isPhoneCandidate(rawPhone)) {
-      phone = toInternationalPhone(cleanPhoneDigits(rawPhone));
-    }
+    const phone: string | null = rawPhone ? normalizePhoneSegment(rawPhone) : null;
 
     let appointmentTime: string | null = null;
     let appointmentDate: string | null = null;

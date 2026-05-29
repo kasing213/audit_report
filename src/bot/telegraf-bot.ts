@@ -11,6 +11,7 @@ import { SummaryCommand } from './commands/summary-command';
 import { TemperatureCommand } from './commands/temperature-command';
 import { ReclassifyCommand } from './commands/reclassify-command';
 import { BulkEntryFlow } from './flows/bulk-entry-flow';
+import { CloseSellEntryFlow } from './flows/close-sell-entry-flow';
 import { GroupConfigManager } from '../utils/group-config';
 import { isInlineExpired } from './actions/inline-edit-delete';
 import dotenv from 'dotenv';
@@ -30,6 +31,7 @@ export class TelegrafBotService {
   private temperatureCommand: TemperatureCommand;
   private reclassifyCommand: ReclassifyCommand;
   private bulkEntryFlow: BulkEntryFlow;
+  private closeSellEntryFlow: CloseSellEntryFlow;
   private groupConfigManager: GroupConfigManager;
   private pendingReschedules: Map<number, { eventId: string; expiresAt: number }> = new Map();
 
@@ -52,6 +54,7 @@ export class TelegrafBotService {
     this.temperatureCommand = new TemperatureCommand(this.repository);
     this.reclassifyCommand = new ReclassifyCommand(this.repository);
     this.bulkEntryFlow = new BulkEntryFlow(this.repository);
+    this.closeSellEntryFlow = new CloseSellEntryFlow(this.repository);
     this.groupConfigManager = GroupConfigManager.getInstance();
     this.setupHandlers();
   }
@@ -316,6 +319,28 @@ export class TelegrafBotService {
       }
     });
 
+    // Close-sell / Customer Potential callbacks
+    this.bot.action(/^closesell_confirm:(.+)$/, async (ctx) => {
+      const token = (ctx as any).match?.[1];
+      Logger.info(`[closesell] confirm fired token=${token} user=${ctx.from?.id} chat=${ctx.chat?.id}`);
+      try {
+        await this.closeSellEntryFlow.handleConfirm(ctx, token);
+      } catch (error) {
+        Logger.error('Error handling closesell_confirm', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+    this.bot.action(/^closesell_cancel:(.+)$/, async (ctx) => {
+      const token = (ctx as any).match?.[1];
+      Logger.info(`[closesell] cancel fired token=${token} user=${ctx.from?.id} chat=${ctx.chat?.id}`);
+      try {
+        await this.closeSellEntryFlow.handleCancel(ctx, token);
+      } catch (error) {
+        Logger.error('Error handling closesell_cancel', error as Error);
+        await ctx.answerCbQuery('❌ មានបញ្ហា');
+      }
+    });
+
     // Text handler
     this.bot.on('text', async (ctx: Context) => {
       try {
@@ -386,6 +411,23 @@ export class TelegrafBotService {
             if (handled) return;
           } else {
             this.deleteCommand.clearPending(userId);
+          }
+        }
+
+        // Close-sell / Customer Potential paste — detect via 💯 header + §1/§2.
+        // Checked before Bulk because Close-sell template can contain the
+        // word "Tel" elsewhere and we want strict routing on its dedicated header.
+        if (ctx.message && 'text' in ctx.message) {
+          const text = ctx.message.text;
+          if (CloseSellEntryFlow.detectsCloseSellReport(text)) {
+            const chatId = ctx.chat?.id || 0;
+            if (
+              this.groupConfigManager.isSalesGroupChat(chatId) ||
+              this.groupConfigManager.isCommandAllowedInChat(chatId)
+            ) {
+              const handled = await this.closeSellEntryFlow.tryCloseSellEntry(ctx, text);
+              if (handled) return;
+            }
           }
         }
 

@@ -105,6 +105,31 @@ export class SalesCaseRepository {
       .toArray();
   }
 
+  /**
+   * Look up prior events that match any of the given phone numbers.
+   * Handles both exact match and legacy slash-joined storage (e.g. an old
+   * record saved as "0123/0987" matches when querying "0123").
+   * Caller is expected to pass already-normalized phones.
+   */
+  async findEventsByPhones(phones: string[], limit: number = 20): Promise<LeadEventDocument[]> {
+    const cleaned = phones.map(p => (p ?? '').trim()).filter(Boolean);
+    if (cleaned.length === 0) return [];
+
+    const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const or: Array<Record<string, unknown>> = [];
+    for (const p of cleaned) {
+      or.push({ 'customer.phone': p });
+      // Substring match for legacy slash-joined records. Anchored to digit
+      // boundaries so "0123" doesn't accidentally match "01234".
+      or.push({ 'customer.phone': { $regex: `(^|/)${escapeRegex(p)}(/|$)` } });
+    }
+    return await this.leadsEventsCollection
+      .find({ $or: or, deleted: { $ne: true } })
+      .sort({ date: -1, created_at: -1 })
+      .limit(limit)
+      .toArray();
+  }
+
   async updateLeadEvent(eventId: string, updates: Partial<LeadEventDocument>): Promise<boolean> {
     const result = await this.leadsEventsCollection.updateOne(
       { _id: new ObjectId(eventId) as any },
