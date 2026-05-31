@@ -1,5 +1,6 @@
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument, CustomerCase } from '../database/models';
+import { getZonedDayRangeUtc } from '../utils/time';
 
 export class ReportDataService {
   private repository: SalesCaseRepository;
@@ -22,6 +23,35 @@ export class ReportDataService {
       return await collection.find(query).toArray();
     } catch (error) {
       console.error('Error fetching daily lead events:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Lead events by the day they were *entered* (created_at), windowed to the
+   * full calendar day `entryDate` in `timezone`. This is what the daily group
+   * report uses: staff log a day's cases over the following days, so "yesterday's
+   * report" means "everything logged yesterday" — never empty at send time.
+   */
+  public async getLeadEventsByEntryDay(entryDate: string, groupId?: string, timezone?: string): Promise<LeadEventDocument[]> {
+    try {
+      const range = getZonedDayRangeUtc(entryDate, timezone);
+      if (!range) return [];
+
+      const db = this.repository['db'];
+      const collection = db.getDb().collection<LeadEventDocument>('leads_events');
+
+      const query: any = {
+        created_at: { $gte: range.start, $lt: range.end },
+        deleted: { $ne: true }
+      };
+      if (groupId) {
+        query.group_id = groupId;
+      }
+
+      return await collection.find(query).sort({ created_at: 1 }).toArray();
+    } catch (error) {
+      console.error('Error fetching lead events by entry day:', error);
       return [];
     }
   }

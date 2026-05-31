@@ -24,6 +24,32 @@ export function getDateNDaysAgo(daysAgo: number, timezoneEnv?: string): string {
   }
 }
 
+/**
+ * Returns the UTC instant range [start, end) that corresponds to the full
+ * calendar day `dateStr` (YYYY-MM-DD) in the given timezone. Used to query
+ * records by when they were *entered* (created_at) within a local day.
+ *
+ * e.g. getZonedDayRangeUtc('2026-05-28', 'Asia/Phnom_Penh') ->
+ *   { start: 2026-05-27T17:00Z, end: 2026-05-28T17:00Z }
+ */
+export function getZonedDayRangeUtc(dateStr: string, timezoneEnv?: string): { start: Date; end: Date } | null {
+  const timeZone = timezoneEnv || process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+    return null;
+  }
+
+  const start = toZonedDateTime(dateStr, '00:00', timeZone);
+  if (!start) return null;
+
+  // Next calendar day (handles month/year rollover via Date.UTC arithmetic).
+  const [year, month, day] = dateStr.split('-').map(Number);
+  const nextDayStr = new Date(Date.UTC(year, month - 1, day + 1)).toISOString().split('T')[0];
+  const end = toZonedDateTime(nextDayStr, '00:00', timeZone);
+  if (!end) return null;
+
+  return { start, end };
+}
+
 export function toZonedDateTime(dateStr: string, timeStr: string = '00:00', timezoneEnv?: string): Date | null {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
     return null;

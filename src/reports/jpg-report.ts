@@ -27,11 +27,13 @@ export class JpgReportGenerator {
   }
 
   private setupHandlebarsHelpers(): void {
+    const displayTimezone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
     handlebars.registerHelper('formatTime', (date: Date) => {
       if (!date) return 'N/A';
       return new Date(date).toLocaleTimeString('en-US', {
         hour: '2-digit',
-        minute: '2-digit'
+        minute: '2-digit',
+        timeZone: displayTimezone
       });
     });
 
@@ -40,12 +42,13 @@ export class JpgReportGenerator {
     });
   }
 
-  private async generateHtml(leadEvents: LeadEventDocument[], date: string): Promise<string> {
+  private async generateHtml(leadEvents: LeadEventDocument[], date: string, byEntryDay = false): Promise<string> {
     this.setupHandlebarsHelpers();
     const template = await this.loadTemplate();
 
     const templateData = {
       date,
+      byEntryDay,
       totalCases: leadEvents.length,
       leadEvents,
       generatedAt: new Date().toLocaleString()
@@ -54,15 +57,21 @@ export class JpgReportGenerator {
     return template(templateData);
   }
 
-  public async generateDailyReport(date: string, groupId?: string): Promise<Buffer> {
+  public async generateDailyReport(
+    date: string,
+    groupId?: string,
+    opts?: { byEntryDay?: boolean; timezone?: string }
+  ): Promise<Buffer> {
     try {
       const logMessage = groupId
-        ? `Generating daily JPG report for ${date} (group: ${groupId})`
-        : `Generating daily JPG report for ${date}`;
+        ? `Generating daily JPG report for ${date} (group: ${groupId}${opts?.byEntryDay ? ', by entry day' : ''})`
+        : `Generating daily JPG report for ${date}${opts?.byEntryDay ? ' (by entry day)' : ''}`;
       Logger.info(logMessage);
 
-      const leadEvents = await this.dataService.getDailyLeadEvents(date, groupId);
-      const html = await this.generateHtml(leadEvents, date);
+      const leadEvents = opts?.byEntryDay
+        ? await this.dataService.getLeadEventsByEntryDay(date, groupId, opts.timezone)
+        : await this.dataService.getDailyLeadEvents(date, groupId);
+      const html = await this.generateHtml(leadEvents, date, opts?.byEntryDay ?? false);
 
       const browser = await puppeteer.launch({
         headless: true,

@@ -2,6 +2,7 @@ import * as cron from 'node-cron';
 import { JpgReportGenerator } from '../reports/jpg-report';
 import { Logger } from '../utils/logger';
 import { ReportDataService } from '../reports/data-service';
+import { getDateNDaysAgo, getTodayDate } from '../utils/time';
 
 export class DailyScheduler {
   private jpgGenerator: JpgReportGenerator;
@@ -31,30 +32,32 @@ export class DailyScheduler {
 
   private async generateAndSendDailyReport(): Promise<void> {
     try {
-      // Get yesterday's date (since we're running at end of day)
-      const yesterday = new Date();
-      yesterday.setDate(yesterday.getDate() - 1);
-      const dateString = yesterday.toISOString().split('T')[0]; // YYYY-MM-DD format
+      // Report covers everything ENTERED during yesterday's calendar day in
+      // report-timezone (Cambodia). Staff log a day's cases over the following
+      // days, so keying on entry day (created_at) — not the case's own date —
+      // means the 10 AM report is complete and never empty at send time.
+      const reportTimezone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
+      const dateString = getDateNDaysAgo(1, reportTimezone); // yesterday in Cambodia time
 
       const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
-      Logger.info(`Generating scheduled daily report for ${dateString}${groupInfo}`);
+      Logger.info(`Generating scheduled daily report for entries on ${dateString}${groupInfo}`);
 
-      // Check if there are any sales reports from yesterday for this group
-      const leadEvents = await this.dataService.getDailyLeadEvents(dateString, this.groupId);
+      // Check if there are any sales entries made yesterday for this group
+      const leadEvents = await this.dataService.getLeadEventsByEntryDay(dateString, this.groupId, reportTimezone);
 
       if (leadEvents.length === 0) {
         const noReportMsg = this.groupId
-          ? `No sales report from yesterday (${dateString}) for ${this.groupName || this.groupId}`
-          : `No sales report from yesterday (${dateString})`;
+          ? `No sales entries made yesterday (${dateString}) for ${this.groupName || this.groupId}`
+          : `No sales entries made yesterday (${dateString})`;
         Logger.warn(noReportMsg);
       } else {
         const foundMsg = this.groupId
-          ? `Found ${leadEvents.length} sales case(s) for ${dateString} in ${this.groupName || this.groupId}`
-          : `Found ${leadEvents.length} sales case(s) for ${dateString}`;
+          ? `Found ${leadEvents.length} sales entry(ies) on ${dateString} in ${this.groupName || this.groupId}`
+          : `Found ${leadEvents.length} sales entry(ies) on ${dateString}`;
         Logger.info(foundMsg);
       }
 
-      const reportBuffer = await this.jpgGenerator.generateDailyReport(dateString, this.groupId);
+      const reportBuffer = await this.jpgGenerator.generateDailyReport(dateString, this.groupId, { byEntryDay: true, timezone: reportTimezone });
       const filename = this.groupId
         ? `daily-report-${dateString}-${this.groupId}.jpg`
         : `daily-report-${dateString}.jpg`;
@@ -103,13 +106,14 @@ export class DailyScheduler {
   }
 
   public async sendManualReport(date?: string): Promise<void> {
-    const targetDate = date || new Date().toISOString().split('T')[0];
+    const reportTimezone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
+    const targetDate = date || getTodayDate(reportTimezone);
 
     const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
-    Logger.info(`Generating manual daily report for ${targetDate}${groupInfo}`);
+    Logger.info(`Generating manual daily report for entries on ${targetDate}${groupInfo}`);
 
     try {
-      const reportBuffer = await this.jpgGenerator.generateDailyReport(targetDate, this.groupId);
+      const reportBuffer = await this.jpgGenerator.generateDailyReport(targetDate, this.groupId, { byEntryDay: true, timezone: reportTimezone });
       const filename = this.groupId
         ? `daily-report-${targetDate}-${this.groupId}.jpg`
         : `daily-report-${targetDate}.jpg`;
