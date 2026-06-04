@@ -44,6 +44,9 @@ interface FailureContext {
   reason?: string;
   worker_id?: string;
   details?: string;
+  // Override the destination chat. Defaults to AUDIT_CHAT_ID. The heartbeat
+  // watchdog uses this to DM the operator directly instead of the audit group.
+  chatId?: string;
 }
 
 function formatProposalAlert(
@@ -111,7 +114,7 @@ export async function notifyOutreachFailure(
     return;
   }
 
-  const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
+  const chatId = ctx.chatId || process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
   if (!chatId) {
     Logger.warn('outreach-alerts: AUDIT_CHAT_ID not set, dropping alert');
     return;

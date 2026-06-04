@@ -4,6 +4,7 @@ import { DailyScheduler } from './scheduler/daily-scheduler';
 import { MonthlyScheduler } from './scheduler/monthly-scheduler';
 import { PromiseScheduler } from './scheduler/promise-scheduler';
 import { OutreachScheduler } from './scheduler/outreach-scheduler';
+import { HeartbeatWatchdogScheduler } from './scheduler/heartbeat-watchdog-scheduler';
 import { AdScannerScheduler } from './ad-scanner/ad-scanner-scheduler';
 import { setOutreachAlertSender } from './outreach/outreach-alerts';
 import { setInboundAlertSender } from './outreach/inbound-alerts';
@@ -84,6 +85,12 @@ async function main(): Promise<void> {
       await telegramBot.sendMessage(chatId, text, extra);
     });
     outreachScheduler.startScheduler();
+
+    // Heartbeat watchdog: DM the operator when the laptop worker goes silent
+    // during work hours (off by default — gated on HEARTBEAT_WATCHDOG_ENABLED=true).
+    // Reuses the alert sender registered above.
+    const heartbeatWatchdog = new HeartbeatWatchdogScheduler();
+    heartbeatWatchdog.startScheduler();
 
     // Setup ad report PDF scanner
     const adReportChatId = process.env.AD_REPORT_CHAT_ID;
