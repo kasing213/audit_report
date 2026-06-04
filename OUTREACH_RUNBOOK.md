@@ -23,6 +23,50 @@ bulk Telegram report
                    → worker poll claims → sendMessage → mark-sent
 ```
 
+## Worker process management (pm2)
+
+The laptop worker runs under **pm2** (`scripts/telegram-worker/ecosystem.config.js`,
+app name `outreach-worker`). pm2 restarts it on crash and bounces it nightly at
+**10pm laptop-local** (`cron_restart: '0 22 * * *'`).
+
+| Command | What it does |
+|---|---|
+| `pm2 list` | Is `outreach-worker` `online`? `↺` column = restart count. |
+| `pm2 logs outreach-worker` | Tail worker output (heartbeats, sends, errors). |
+| `pm2 restart outreach-worker` | Manual bounce. |
+| `pm2 stop outreach-worker` | Stop (stays registered; won't auto-restart). |
+| `pm2 start scripts/telegram-worker/ecosystem.config.js` | (Re)start from the ecosystem file. |
+| `pm2 save` | Persist the process list so it survives a daemon restart. |
+| `pm2 resurrect` | Restore the saved process list (used at boot). |
+
+**Boot persistence:** pm2's native `pm2 startup` fails on Windows
+(`Init system not found`). Use [pm2-installer](https://github.com/jessety/pm2-installer)
+to register pm2 as a Windows Service, then `pm2 save` in the service's
+`PM2_HOME` context. After a reboot, confirm `pm2 list` shows the worker online
+without a manual start.
+
+If you change `ecosystem.config.js`, run `pm2 restart outreach-worker --update-env`
+(or `pm2 delete` + `pm2 start` for structural changes) and `pm2 save` again.
+
+## Server-side offline watchdog
+
+`HeartbeatWatchdogScheduler` (`src/scheduler/heartbeat-watchdog-scheduler.ts`)
+runs on Railway and DMs the operator a `worker-offline` alert when the heartbeat
+goes stale — the safety net for when pm2/the laptop itself is down (a laptop-side
+check can't detect its own death). Reuses `notifyOutreachFailure` + its 30-min
+per-kind throttle, so at most one ping per half hour.
+
+| Env var | Default | Effect |
+|---|---|---|
+| `HEARTBEAT_WATCHDOG_ENABLED` | unset (off) | Must be `true` to register the watchdog cron |
+| `WORKER_ALERT_CHAT_ID` | falls back to `AUDIT_CHAT_ID` | DM target (operator's numeric Telegram id; DM the bot once first) |
+| `HEARTBEAT_STALE_MINUTES` | `15` | Heartbeat age that counts as "offline" |
+| `HEARTBEAT_WATCHDOG_CRON` | `*/5 9-21 * * *` | Tick cadence + work-hours window (the `9-21` range never ticks overnight, so a sleeping laptop never false-alarms) |
+| `TIMEZONE` | `Asia/Kuala_Lumpur` | Timezone the watchdog cron runs in |
+
+To test: during the day, `pm2 stop outreach-worker`, wait > `HEARTBEAT_STALE_MINUTES`,
+expect one DM; `pm2 start outreach-worker` to clear.
+
 ## Collection names (easy to confuse)
 
 | Collection | Holds | Used by |
@@ -48,7 +92,7 @@ Read the `outreach_worker_state` singleton at the top of the output:
 
 | Field | Healthy value | If wrong → |
 |---|---|---|
-| `heartbeat_age_minutes` | 0–5 | Worker is dead (closed laptop, crashed, expired session). Restart on laptop. |
+| `heartbeat_age_minutes` | 0–5 | Worker is dead (closed laptop, crashed, expired session). `pm2 restart outreach-worker` on the laptop (see Worker process management). |
 | `worker_id` | `HOSTNAME-PID` of the machine you expect | Wrong host is running the worker. Stop the other one. |
 | `paused` | `false` | Someone hit Pause on `/crm/outreach`. Click Resume. |
 | `last_error` | `null` | Read it — names the failing layer. |

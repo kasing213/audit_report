@@ -61,6 +61,9 @@ file like a password — it grants full access to your Telegram account.
 npm run start
 ```
 
+For an unattended laptop, run it under **pm2** instead so it auto-restarts on
+crash and bounces nightly. See "Run under pm2" below.
+
 The worker:
 
 - polls `/crm/api/outreach/claim` every 60 s for approved proposals,
@@ -70,6 +73,28 @@ The worker:
 - posts a heartbeat to `/crm/api/outreach/worker-heartbeat` every 30 s (the
   dashboard shows liveness based on this),
 - reads the server-side pause flag every iteration.
+
+## Run under pm2 (laptop, recommended)
+
+`ecosystem.config.js` defines the worker as a pm2 app (`outreach-worker`). pm2
+auto-restarts it on crash and bounces it nightly at 10pm (laptop-local time)
+via `cron_restart: '0 22 * * *'`.
+
+```bash
+pm2 start scripts/telegram-worker/ecosystem.config.js
+pm2 save        # persist the process list for resurrect
+pm2 logs outreach-worker
+```
+
+**Boot persistence on Windows:** pm2's native `pm2 startup` does NOT work on
+Windows (`Init system not found`). To make the worker come back after a reboot,
+install pm2 as a Windows Service with
+[pm2-installer](https://github.com/jessety/pm2-installer) (admin PowerShell:
+`npm run configure` → `configure-policy` → `setup`), then re-run
+`pm2 start ecosystem.config.js && pm2 save` in the service's `PM2_HOME` context.
+
+A stale heartbeat is caught by the server-side watchdog (see Alerts), so even if
+pm2 itself is down you still get notified during work hours.
 
 ## Run on Railway (production)
 
@@ -110,8 +135,12 @@ The worker posts manager alerts to the audit Telegram chat in these cases:
 - Telegram session is invalid (auth key revoked / unregistered) →
   `session-expired` alert, worker exits 2, Railway restarts the container.
 - Worker process crashes → `worker-fatal` alert.
-- (Server-side) Worker heartbeat older than 5 min while at least one approved
-  proposal is queued → `worker-offline` alert (planned).
+- (Server-side) Worker heartbeat stale beyond `HEARTBEAT_STALE_MINUTES`
+  (default 15) during work hours → `worker-offline` alert. Fired by
+  `HeartbeatWatchdogScheduler` on Railway, gated on
+  `HEARTBEAT_WATCHDOG_ENABLED=true`, delivered to `WORKER_ALERT_CHAT_ID`
+  (operator DM). The watchdog cron (`*/5 9-21 * * *`) deliberately never ticks
+  overnight so a sleeping laptop doesn't false-alarm.
 
 Customer replies land in the audit-trail group as `📥 New customer reply`
 posts (separate from failure alerts). One Telegram session, two alert
