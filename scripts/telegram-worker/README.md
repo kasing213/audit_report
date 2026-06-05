@@ -87,11 +87,15 @@ pm2 logs outreach-worker
 ```
 
 **Boot persistence on Windows:** pm2's native `pm2 startup` does NOT work on
-Windows (`Init system not found`). To make the worker come back after a reboot,
-install pm2 as a Windows Service with
-[pm2-installer](https://github.com/jessety/pm2-installer) (admin PowerShell:
-`npm run configure` → `configure-policy` → `setup`), then re-run
-`pm2 start ecosystem.config.js && pm2 save` in the service's `PM2_HOME` context.
+Windows (`Init system not found`). Use a **logon Scheduled Task** that runs
+`pm2 resurrect` as the user (the worker returns shortly after you log in). Full
+setup + the verification steps are in `OUTREACH_RUNBOOK.md` → "Boot persistence".
+
+> ⚠️ Do NOT run pm2 as a Windows Service (pm2-installer) alongside this — pm2 on
+> Windows shares one global pipe `\\.\pipe\rpc.sock` that isn't namespaced by
+> `PM2_HOME`, so a LocalService pm2 service blocks the user-level pm2 with
+> `connect EPERM` and the worker never resurrects. See the runbook for the
+> disable-and-recover steps.
 
 A stale heartbeat is caught by the server-side watchdog (see Alerts), so even if
 pm2 itself is down you still get notified during work hours.

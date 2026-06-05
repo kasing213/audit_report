@@ -39,14 +39,41 @@ app name `outreach-worker`). pm2 restarts it on crash and bounces it nightly at
 | `pm2 save` | Persist the process list so it survives a daemon restart. |
 | `pm2 resurrect` | Restore the saved process list (used at boot). |
 
-**Boot persistence:** pm2's native `pm2 startup` fails on Windows
-(`Init system not found`). Use [pm2-installer](https://github.com/jessety/pm2-installer)
-to register pm2 as a Windows Service, then `pm2 save` in the service's
-`PM2_HOME` context. After a reboot, confirm `pm2 list` shows the worker online
-without a manual start.
-
 If you change `ecosystem.config.js`, run `pm2 restart outreach-worker --update-env`
 (or `pm2 delete` + `pm2 start` for structural changes) and `pm2 save` again.
+
+### Boot persistence (Windows) — logon Scheduled Task
+
+pm2's native `pm2 startup` fails on Windows (`Init system not found`). Boot
+recovery is a **logon Scheduled Task** named `pm2-resurrect-outreach` that runs
+`pm2 resurrect` as the user. After a reboot, the worker comes back **a few
+seconds after you log in** (not before — fine for a personal laptop; the
+server-side watchdog covers any work-hours gap). The task action is:
+
+```powershell
+powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `
+  "$env:PM2_HOME='C:\Users\SH Computer\.pm2'; & 'C:\Users\SH Computer\AppData\Roaming\npm\pm2.cmd' resurrect"
+```
+
+Verify it: `Get-ScheduledTaskInfo -TaskName 'pm2-resurrect-outreach'` →
+`LastTaskResult` should be `0`.
+
+> ⚠️ **Do NOT also run pm2 as a Windows Service (pm2-installer).** pm2 on Windows
+> uses ONE global control pipe `\\.\pipe\rpc.sock` that is **not** namespaced by
+> `PM2_HOME`. A LocalService pm2 service grabs that pipe at boot and blocks the
+> user-level pm2 with `connect EPERM //./pipe/rpc.sock` — the logon task then
+> fails (`LastTaskResult=1`) and the worker never resurrects. The two cannot
+> coexist. If pm2-installer was ever set up, disable it (admin PowerShell):
+>
+> ```powershell
+> Stop-Service pm2.exe -Force
+> Set-Service  -Name pm2.exe -StartupType Disabled
+> [Environment]::SetEnvironmentVariable('PM2_HOME', $null, 'Machine')
+> ```
+>
+> Then the pipe is free, `pm2 resurrect` works, and the worker heartbeats again
+> (confirm with `railway run node scripts/check-outreach-worker.js` →
+> `heartbeat_age_minutes` ~0).
 
 ## Server-side offline watchdog
 
