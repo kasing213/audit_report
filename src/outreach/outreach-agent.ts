@@ -3,9 +3,8 @@ import { SalesCaseRepository } from '../database/repository';
 import { CustomerCase } from '../database/models';
 import { Logger } from '../utils/logger';
 import { toInternationalPhone } from '../utils/phone-utils';
-import { draftMessage, reviewMessage } from './openai-drafter';
 import { OutreachRepository, OutreachProposalDocument } from './outreach-repository';
-import { canAutoApprove, isAutoApproveEnabled } from './auto-approve-gate';
+import { getStaticOutreachMessage } from './static-template';
 
 const DEFAULT_STALE_DAYS = 45;
 const DEFAULT_BATCH_LIMIT = 10;
@@ -75,94 +74,29 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       continue;
     }
 
-    const draft = await draftMessage(customer);
-    if (!draft) {
-      details.push({ phone: intlPhone, outcome: 'errored', reason: 'drafter failed' });
-      continue;
-    }
-
-    const review = await reviewMessage(draft.message, customer);
+    // AI generation disabled: send a fixed Khmer template, held for manual approval.
     const now = new Date();
-
-    if (!review) {
-      // Reviewer failed entirely — err on the safe side, mark as pending but flag reasoning.
-      toInsert.push({
-        generation_id: generationId,
-        customer_phone: intlPhone,
-        customer_name: customer.name,
-        reason_code: customer.current_reason_code ?? null,
-        days_since_contact: daysSince(customer.last_update_date),
-        follower: customer.follower,
-        message: draft.message,
-        reasoning: `${draft.reasoning} (reviewer unavailable)`,
-        status: 'pending',
-        skipped_reason: null,
-        failed_reason: null,
-        custom_image_id: null,
-        created_at: now,
-        approved_at: null,
-        approved_by: null,
-        sent_at: null,
-        lease_expires_at: null,
-        model: draft.model,
-      });
-      details.push({ phone: intlPhone, outcome: 'created', reason: 'reviewer unavailable' });
-      continue;
-    }
-
-    if (review.approve) {
-      const autoApprove = isAutoApproveEnabled() ? canAutoApprove(draft, customer, review) : { ok: false, reason: 'auto-approve disabled' };
-      Logger.info(`outreach.autoApprove[${intlPhone}]: ${autoApprove.ok ? 'PASS' : 'HOLD'} — ${autoApprove.reason}`);
-
-      const isAuto = autoApprove.ok;
-      toInsert.push({
-        generation_id: generationId,
-        customer_phone: intlPhone,
-        customer_name: customer.name,
-        reason_code: customer.current_reason_code ?? null,
-        days_since_contact: daysSince(customer.last_update_date),
-        follower: customer.follower,
-        message: draft.message,
-        reasoning: draft.reasoning,
-        status: isAuto ? 'approved' : 'pending',
-        skipped_reason: null,
-        failed_reason: null,
-        custom_image_id: null,
-        created_at: now,
-        approved_at: isAuto ? now : null,
-        approved_by: isAuto ? 'auto' : null,
-        sent_at: null,
-        lease_expires_at: null,
-        model: draft.model,
-      });
-      if (isAuto) {
-        details.push({ phone: intlPhone, outcome: 'created', reason: 'auto-approved' });
-      } else {
-        details.push({ phone: intlPhone, outcome: 'created' });
-      }
-    } else {
-      toInsert.push({
-        generation_id: generationId,
-        customer_phone: intlPhone,
-        customer_name: customer.name,
-        reason_code: customer.current_reason_code ?? null,
-        days_since_contact: daysSince(customer.last_update_date),
-        follower: customer.follower,
-        message: draft.message,
-        reasoning: draft.reasoning,
-        status: 'skipped',
-        skipped_reason: review.reason,
-        failed_reason: null,
-        custom_image_id: null,
-        created_at: now,
-        approved_at: null,
-        approved_by: null,
-        sent_at: null,
-        lease_expires_at: null,
-        model: draft.model,
-      });
-      details.push({ phone: intlPhone, outcome: 'skipped', reason: review.reason });
-    }
+    toInsert.push({
+      generation_id: generationId,
+      customer_phone: intlPhone,
+      customer_name: customer.name,
+      reason_code: customer.current_reason_code ?? null,
+      days_since_contact: daysSince(customer.last_update_date),
+      follower: customer.follower,
+      message: getStaticOutreachMessage(),
+      reasoning: 'static template (AI generation disabled)',
+      status: 'pending',
+      skipped_reason: null,
+      failed_reason: null,
+      custom_image_id: null,
+      created_at: now,
+      approved_at: null,
+      approved_by: null,
+      sent_at: null,
+      lease_expires_at: null,
+      model: 'static',
+    });
+    details.push({ phone: intlPhone, outcome: 'created' });
   }
 
   if (toInsert.length > 0) {
