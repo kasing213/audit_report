@@ -111,8 +111,13 @@ export class JpgReportGenerator {
     }
   }
 
-  public async saveDailyReport(date: string, outputPath?: string, groupId?: string): Promise<string> {
-    const screenshot = await this.generateDailyReport(date, groupId);
+  public async saveDailyReport(
+    date: string,
+    outputPath?: string,
+    groupId?: string,
+    opts?: { byEntryDay?: boolean; timezone?: string }
+  ): Promise<string> {
+    const screenshot = await this.generateDailyReport(date, groupId, opts);
 
     const fileName = groupId
       ? `daily-report-${date}-${groupId}.jpg`

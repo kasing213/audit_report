@@ -39,6 +39,15 @@ export async function ensureIndexes<T extends Document>(collection: Collection<T
       }
     );
 
+    // Compound index for the daily report's entry-day query (created_at range + group)
+    await collection.createIndex(
+      { created_at: 1, group_id: 1 },
+      {
+        name: 'created_at_group_idx',
+        sparse: false
+      }
+    );
+
     Logger.info('Database indexes created successfully');
   } catch (error) {
     Logger.error('Failed to create indexes', error as Error);
