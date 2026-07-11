@@ -14,6 +14,7 @@
 import * as dotenv from 'dotenv';
 import * as fs from 'fs';
 import * as os from 'os';
+import * as path from 'path';
 import bigInt from 'big-integer';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
@@ -33,6 +34,14 @@ const MIN_DELAY_MS = intEnv('MIN_DELAY_SEC', 60) * 1000;
 const MAX_DELAY_MS = intEnv('MAX_DELAY_SEC', 180) * 1000;
 const POLL_INTERVAL_MS = 60_000;
 const HEARTBEAT_INTERVAL_MS = 30_000;
+// Hard ceiling on a single send. gramjs's client.invoke() has no per-call
+// timeout: if the MTProto connection stalls mid-request (reconnect storm),
+// the await blocks forever and freezes this single-threaded loop, so no
+// further approved proposal is ever claimed. Racing every send against this
+// timeout guarantees the loop always advances. Default is generous (240s)
+// because a send now downloads a ~50MB video from R2 and uploads it to
+// Telegram, which is slow on a home connection.
+const SEND_TIMEOUT_MS = intEnv('SEND_TIMEOUT_SEC', 240) * 1000;
 const INBOUND_DISABLED = String(process.env.INBOUND_DISABLED || '').toLowerCase() === 'true';
 const WORKER_ID = process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
 const CLAIM_URL = `${BASE_URL}/crm/api/outreach/claim`;
@@ -43,6 +52,7 @@ const REPORT_INBOUND_URL = `${BASE_URL}/crm/api/outreach/report-inbound`;
 const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-sent`;
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
 const EFFECTIVE_IMAGE_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-image`;
+const DEFAULT_VIDEO_URL = `${BASE_URL}/crm/api/outreach/default-video-url`;
 
 if (!API_ID || !API_HASH) {
   console.error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env. Get them from https://my.telegram.org/apps.');
@@ -228,17 +238,92 @@ async function reportInbound(payload: {
   }
 }
 
+// Monotonic counter for unique temp media filenames within this process.
+let mediaSeq = 0;
+
+// Write a buffer to a uniquely-named temp file with the given extension and
+// return its path. Used to stage the image + video on disk so gramjs can send
+// them as one album (sendFile with an array of file paths).
+async function writeTemp(buffer: Buffer, ext: string): Promise<string> {
+  const safeExt = (ext || 'bin').replace(/[^a-z0-9]/gi, '').toLowerCase() || 'bin';
+  const tmpPath = path.join(os.tmpdir(), `outreach-media-${process.pid}-${mediaSeq++}.${safeExt}`);
+  await fs.promises.writeFile(tmpPath, buffer);
+  return tmpPath;
+}
+
+// Ask the server for a presigned URL to the default marketing video, download
+// the bytes, and stage them in a temp file. Returns null when no video is
+// available to send — either none is set (server 404) or R2 storage isn't
+// configured yet (server 503) — the signal to fall back to an image-only
+// send. Any other failure throws, which the send's catch turns into a
+// marked-failed proposal (never a freeze — withTimeout bounds the whole send).
+async function fetchDefaultVideo(): Promise<{ path: string; mime: string } | null> {
+  const resp = await authedFetch(DEFAULT_VIDEO_URL);
+  if (resp.status === 404) return null;
+  if (resp.status === 503) {
+    console.log('  video: R2 not configured on server — sending image-only');
+    return null;
+  }
+  if (!resp.ok) {
+    throw new Error(`default-video-url ${resp.status}: ${await resp.text().catch(() => '')}`);
+  }
+  const meta = (await resp.json()) as { url: string; mime_type?: string };
+  const dl = await fetch(meta.url); // presigned R2 URL — no auth header
+  if (!dl.ok) throw new Error(`video download failed: HTTP ${dl.status}`);
+  const bytes = Buffer.from(await dl.arrayBuffer());
+  const filePath = await writeTemp(bytes, 'mp4'); // upload endpoint accepts mp4 only
+  console.log(`  video: ${bytes.length}B staged at ${path.basename(filePath)}`);
+  return { path: filePath, mime: meta.mime_type || 'video/mp4' };
+}
+
 // ---- Telegram (MTProto via gramjs) ----
 function isSessionExpiredError(err: Error): boolean {
   const m = err.message || '';
   return /AUTH_KEY_UNREGISTERED|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|AUTH_KEY_INVALID/i.test(m);
 }
 
+// Resolve a raw phone number to a Telegram user. gramjs's getEntity(phone)
+// only works for numbers already in the account's contacts/dialogs; a fresh
+// lead's number throws "Cannot find any entity corresponding to …". The
+// documented path for an arbitrary number is contacts.ImportContacts, which
+// returns the user IFF the number is on Telegram AND their privacy settings
+// permit phone lookup. Returns null (not throwing) when unreachable.
+async function importPhoneAsPeer(
+  client: TelegramClient,
+  phoneDigits: string,
+  firstName: string
+): Promise<Api.User | null> {
+  const imported = await client.invoke(new Api.contacts.ImportContacts({
+    contacts: [new Api.InputPhoneContact({
+      clientId: bigInt(0),
+      phone: `+${phoneDigits}`,
+      firstName: firstName || 'Lead',
+      lastName: '',
+    })],
+  }));
+  const user = imported.users.find((u): u is Api.User => u instanceof Api.User);
+  return user || null;
+}
+
+// Remove a contact we imported only to reach it, so the account's address
+// book doesn't balloon with every lead. Best-effort — a failure here never
+// fails the send (the message is already delivered by the time we call this).
+async function deleteImportedContact(client: TelegramClient, user: Api.User): Promise<void> {
+  try {
+    await client.invoke(new Api.contacts.DeleteContacts({
+      id: [new Api.InputUser({ userId: user.id, accessHash: user.accessHash ?? bigInt(0) })],
+    }));
+  } catch (err) {
+    console.error('  contact cleanup failed:', (err as Error).message);
+  }
+}
+
 async function sendViaMTProto(
   client: TelegramClient,
   proposalId: string,
   phone: string,
-  message: string
+  message: string,
+  customerName: string | null
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const phoneDigits = phone.replace(/\D/g, '');
 
@@ -250,28 +335,63 @@ async function sendViaMTProto(
   }
   console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
 
+  let importedPeer: Api.User | null = null;
+  let imageTmpPath: string | null = null;
+  let videoTmpPath: string | null = null;
   try {
-    const peer = await client.getEntity(`+${phoneDigits}`);
-    const file = new CustomFile(img.filename, img.buffer.length, '', img.buffer);
+    importedPeer = await importPhoneAsPeer(client, phoneDigits, customerName || '');
+    if (!importedPeer) {
+      return { ok: false, reason: 'phone number not on Telegram (or hidden by privacy)' };
+    }
+    const peer = importedPeer;
 
+    // Cache the phone now, before any cleanup, so inbound replies from this
+    // user still resolve to a phone even after we delete the contact below.
+    peerPhoneByUserId.set(peer.id.toString(), phoneDigits);
+
+    // Pull the default marketing video (null when none set → image-only send).
+    // Fetched after the peer resolves so unreachable numbers don't cost a 50MB
+    // download.
+    const video = await fetchDefaultVideo();
     const captionMode = message.length <= 1024;
-    if (captionMode) {
-      console.log(`  send mode: caption (msg=${message.length}B <= 1024)`);
-      await client.sendFile(peer, { file, caption: message });
+
+    if (video) {
+      // Album: image (legitimacy proof) + marketing video, sent as one Telegram
+      // media group. Both staged as temp files so gramjs streams from disk.
+      videoTmpPath = video.path;
+      imageTmpPath = await writeTemp(img.buffer, img.filename.split('.').pop() || 'jpg');
+      const album = [imageTmpPath, videoTmpPath];
+      if (captionMode) {
+        console.log(`  send mode: album+caption (img+video, msg=${message.length}B <= 1024)`);
+        await client.sendFile(peer, { file: album, caption: message, forceDocument: false, supportsStreaming: true });
+      } else {
+        console.log(`  send mode: album+two_bubble (img+video, msg=${message.length}B > 1024)`);
+        await client.sendFile(peer, { file: album, forceDocument: false, supportsStreaming: true });
+        try {
+          await client.sendMessage(peer, { message });
+        } catch (err) {
+          const e = err as Error;
+          return { ok: false, reason: `album sent, text failed: ${e.message || String(err)}` };
+        }
+      }
     } else {
-      console.log(`  send mode: two_bubble (msg=${message.length}B > 1024)`);
-      await client.sendFile(peer, { file });
-      try {
-        await client.sendMessage(peer, { message });
-      } catch (err) {
-        const e = err as Error;
-        return { ok: false, reason: `image sent, text failed: ${e.message || String(err)}` };
+      // No default video set — image-only path (unchanged behavior).
+      const file = new CustomFile(img.filename, img.buffer.length, '', img.buffer);
+      if (captionMode) {
+        console.log(`  send mode: caption (msg=${message.length}B <= 1024)`);
+        await client.sendFile(peer, { file, caption: message });
+      } else {
+        console.log(`  send mode: two_bubble (msg=${message.length}B > 1024)`);
+        await client.sendFile(peer, { file });
+        try {
+          await client.sendMessage(peer, { message });
+        } catch (err) {
+          const e = err as Error;
+          return { ok: false, reason: `image sent, text failed: ${e.message || String(err)}` };
+        }
       }
     }
 
-    if (peer instanceof Api.User) {
-      peerPhoneByUserId.set(peer.id.toString(), phoneDigits);
-    }
     return { ok: true };
   } catch (err) {
     const e = err as Error;
@@ -280,6 +400,10 @@ async function sendViaMTProto(
       return { ok: false, reason: 'phone number not on Telegram' };
     }
     return { ok: false, reason: `mtproto exception: ${msg}` };
+  } finally {
+    if (importedPeer) await deleteImportedContact(client, importedPeer);
+    if (imageTmpPath) await fs.promises.unlink(imageTmpPath).catch(() => {});
+    if (videoTmpPath) await fs.promises.unlink(videoTmpPath).catch(() => {});
   }
 }
 
@@ -424,7 +548,11 @@ async function main(): Promise<void> {
     console.log(`→ sending to ${proposal.customer_name || '?'} ${proposal.customer_phone}`);
     let result: { ok: true } | { ok: false; reason: string };
     try {
-      result = await sendViaMTProto(client, proposal._id, proposal.customer_phone, proposal.message);
+      result = await withTimeout(
+        sendViaMTProto(client, proposal._id, proposal.customer_phone, proposal.message, proposal.customer_name),
+        SEND_TIMEOUT_MS,
+        'send'
+      );
     } catch (err) {
       result = { ok: false as const, reason: `exception: ${(err as Error).message}` };
     }
@@ -452,6 +580,23 @@ async function main(): Promise<void> {
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// Reject `p` if it doesn't settle within `ms`. Used to bound MTProto sends so a
+// stalled Telegram connection can't wedge the main loop. The underlying promise
+// keeps running (JS can't cancel it), but the loop moves on and marks the
+// proposal failed — a false "failed" is acceptable; a frozen worker is not.
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`${label} timed out after ${Math.round(ms / 1000)}s`)),
+      ms
+    );
+    p.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      (e) => { clearTimeout(timer); reject(e); }
+    );
+  });
 }
 
 main().catch(async (err) => {

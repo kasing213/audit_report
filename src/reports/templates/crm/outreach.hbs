@@ -305,6 +305,18 @@
       <button class="btn btn-primary" onclick="document.getElementById('default-image-file').click()">Replace image</button>
     </div>
   </div>
+  <div class="default-image-card" id="default-video-card">
+    <div class="default-image-thumb empty" id="default-video-thumb">🎬</div>
+    <div class="default-image-meta">
+      <div class="name" id="default-video-name">Loading…</div>
+      <div class="sub" id="default-video-sub"></div>
+    </div>
+    <div class="default-image-actions">
+      <input type="file" id="default-video-file" accept="video/mp4" style="display:none" onchange="uploadDefaultVideo(event)">
+      <button class="btn btn-primary" onclick="document.getElementById('default-video-file').click()">Replace video</button>
+      <button class="btn btn-ghost" id="default-video-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultVideo()">Remove</button>
+    </div>
+  </div>
   <div class="lightbox-backdrop" id="lightbox" onclick="closeLightbox()">
     <img id="lightbox-img" alt="Full size">
   </div>
@@ -325,7 +337,7 @@
       <button class="status-tab" data-status="failed">Failed <span class="count" data-count="failed">0</span></button>
     </div>
     <div class="generate-bar">
-      <input type="number" id="gen-limit" value="10" min="1" max="50" style="width:70px" title="Max proposals to create">
+      <input type="number" id="gen-limit" value="20" min="1" max="50" style="width:70px" title="Max proposals to create">
       <button class="btn btn-ghost" onclick="openTestPrompt()">Test on me (kasing / Chan kasing)</button>
       <button class="btn btn-primary" id="gen-batch-btn" onclick="generateBatch()">Generate batch</button>
       <button class="btn btn-ghost" style="color:var(--red);border-color:var(--red)" onclick="clearAll()">Clear all</button>
@@ -399,6 +411,61 @@
     } finally {
       ev.target.value = '';
     }
+  }
+
+  const DEFAULT_VIDEO_URL = API + '/default-video';
+
+  async function refreshDefaultVideo() {
+    const thumb = document.getElementById('default-video-thumb');
+    const name = document.getElementById('default-video-name');
+    const sub = document.getElementById('default-video-sub');
+    const removeBtn = document.getElementById('default-video-remove');
+    try {
+      const resp = await fetch(DEFAULT_VIDEO_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
+      if (resp.status === 404) {
+        name.textContent = 'No marketing video set';
+        sub.textContent = 'Optional — leads get image + text only';
+        thumb.textContent = '🎬';
+        removeBtn.style.display = 'none';
+        return;
+      }
+      if (!resp.ok) throw new Error('GET default-video ' + resp.status);
+      const data = await resp.json();
+      const sizeMb = (Number(data.size_bytes || 0) / (1024 * 1024)).toFixed(1);
+      name.textContent = data.filename || 'video.mp4';
+      sub.textContent = (data.mime_type || 'video/mp4') + ' · ' + sizeMb + ' MB';
+      thumb.textContent = '🎬';
+      removeBtn.style.display = '';
+    } catch (err) {
+      console.error('refreshDefaultVideo', err);
+    }
+  }
+
+  async function uploadDefaultVideo(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    showToast('Uploading video… (may take a moment)', 'success');
+    try {
+      const resp = await fetch(DEFAULT_VIDEO_URL, { method: 'POST', credentials: 'same-origin', body: fd });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) { showToast('Marketing video updated', 'success'); refreshDefaultVideo(); }
+      else { showToast(data.error || ('Upload failed: ' + resp.status), 'error'); }
+    } catch (err) {
+      showToast('Upload failed', 'error');
+    } finally {
+      ev.target.value = '';
+    }
+  }
+
+  async function removeDefaultVideo() {
+    if (!confirm('Remove the marketing video? Leads will get image + text only.')) return;
+    try {
+      const resp = await fetch(DEFAULT_VIDEO_URL, { method: 'DELETE', credentials: 'same-origin' });
+      if (resp.ok) { showToast('Video removed', 'success'); refreshDefaultVideo(); }
+      else showToast('Remove failed', 'error');
+    } catch { showToast('Remove failed', 'error'); }
   }
 
   function openLightbox() {
@@ -670,7 +737,7 @@
   }
 
   async function generateBatch() {
-    const limit = parseInt(document.getElementById('gen-limit').value, 10) || 10;
+    const limit = parseInt(document.getElementById('gen-limit').value, 10) || 20;
     if (!confirm('Generate ' + limit + ' outreach drafts for stale (45d+) leads?')) return;
     await postGenerate({ limit });
   }
@@ -773,6 +840,7 @@
   }
 
   refreshDefaultImage();
+  refreshDefaultVideo();
   startWorkerStatusPoll();
   loadList();
 </script>

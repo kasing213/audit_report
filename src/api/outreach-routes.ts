@@ -3,6 +3,8 @@ import multer from 'multer';
 import { authMiddleware, getSessionUser } from './auth-middleware';
 import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachImagesRepository, OutreachImageDocument } from '../outreach/outreach-images-repository';
+import { OutreachVideoRepository } from '../outreach/outreach-video-repository';
+import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { getRegisteredOutreachScheduler } from '../scheduler/outreach-scheduler';
@@ -21,6 +23,10 @@ const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
 
+const ALLOWED_VIDEO_MIME = ['video/mp4'];
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50MB
+const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_VIDEO_BYTES } });
+
 function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
   if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
     res.status(413).json({ error: `File exceeds ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB limit` });
@@ -28,6 +34,19 @@ function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: N
   }
   if (err) {
     Logger.error('image upload middleware error', err);
+    res.status(400).json({ error: err.message || 'upload error' });
+    return;
+  }
+  next();
+}
+
+function videoUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
+  if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
+    res.status(413).json({ error: `File exceeds ${Math.round(MAX_VIDEO_BYTES / 1024 / 1024)} MB limit` });
+    return;
+  }
+  if (err) {
+    Logger.error('video upload middleware error', err);
     res.status(400).json({ error: err.message || 'upload error' });
     return;
   }
@@ -289,6 +308,92 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
     res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
     Logger.error('default-image POST failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-video — metadata for the CRM UI (or 404)
+router.get('/default-video', async (_req: Request, res: Response) => {
+  try {
+    const doc = await new OutreachVideoRepository().getDefault();
+    if (!doc) { res.status(404).json({ error: 'No default video set' }); return; }
+    res.json({
+      filename: doc.filename,
+      mime_type: doc.mime_type,
+      size_bytes: doc.size_bytes,
+      uploaded_at: doc.uploaded_at,
+      uploaded_by: doc.uploaded_by,
+    });
+  } catch (err) {
+    Logger.error('default-video GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/default-video — multipart upload, replaces default (bytes → R2)
+router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandler, async (req: Request, res: Response) => {
+  try {
+    const r2 = new R2StorageService();
+    if (!r2.isConfigured()) {
+      res.status(503).json({ error: 'R2 storage not configured (set R2_ACCOUNT_ID / R2_ACCESS_KEY / R2_SECRET_KEY / R2_BUCKET)' });
+      return;
+    }
+    if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
+    if (!ALLOWED_VIDEO_MIME.includes(req.file.mimetype)) {
+      res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use MP4 (video/mp4)` });
+      return;
+    }
+
+    const uploadedBy = getSessionUser(req) || 'unknown';
+    const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
+    const previousKey = await new OutreachVideoRepository().setDefault({
+      r2_key: key,
+      filename: req.file.originalname,
+      mime_type: req.file.mimetype,
+      size_bytes: req.file.size,
+      uploaded_by: uploadedBy,
+    });
+    // Best-effort: delete the object the metadata previously pointed at.
+    if (previousKey && previousKey !== key) {
+      await r2.deleteObject(previousKey).catch(() => {});
+    }
+    Logger.info(`outreach default video replaced by ${uploadedBy}: ${req.file.originalname} (${req.file.size}B) key=${key}`);
+    res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
+  } catch (err) {
+    Logger.error('default-video POST failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// DELETE /crm/api/outreach/default-video — clear default, remove object from R2
+router.delete('/default-video', async (_req: Request, res: Response) => {
+  try {
+    const removedKey = await new OutreachVideoRepository().clearDefault();
+    if (removedKey) {
+      await new R2StorageService().deleteObject(removedKey).catch(() => {});
+    }
+    res.json({ ok: true, removed: Boolean(removedKey) });
+  } catch (err) {
+    Logger.error('default-video DELETE failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-video-url — worker-facing: presigned GET URL for
+// the default video, or 404 when none is set (the worker's signal to send image-only).
+router.get('/default-video-url', async (_req: Request, res: Response) => {
+  try {
+    const doc = await new OutreachVideoRepository().getDefault();
+    if (!doc) { res.status(404).json({ error: 'No default video set' }); return; }
+    const r2 = new R2StorageService();
+    if (!r2.isConfigured()) {
+      res.status(503).json({ error: 'R2 storage not configured' });
+      return;
+    }
+    const url = await r2.generatePresignedGet(doc.r2_key);
+    res.json({ url, mime_type: doc.mime_type, size_bytes: doc.size_bytes });
+  } catch (err) {
+    Logger.error('default-video-url GET failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
