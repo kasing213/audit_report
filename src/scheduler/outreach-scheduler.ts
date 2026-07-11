@@ -1,11 +1,13 @@
 import * as cron from 'node-cron';
 import { Logger } from '../utils/logger';
 import { generateBatch } from '../outreach/outreach-agent';
+import { OutreachSuppressionRepository } from '../outreach/outreach-suppression-repository';
 
 const DEFAULT_CRON = '0 9 * * *';
-const DEFAULT_BATCH_LIMIT = 10;
+const DEFAULT_BATCH_LIMIT = 20;
 const DEFAULT_STALE_DAYS = 45;
 const DEFAULT_DAILY_DRAFT_BUDGET = 30;
+const DEFAULT_RETRY_DAILY_BUDGET = 10;
 
 type SendMessage = (chatId: string, text: string, extra?: any) => Promise<void>;
 
@@ -29,6 +31,11 @@ export class OutreachScheduler {
     await this.runScan();
   }
 
+  /** Force a backup-retry scan now (used for testing). */
+  public async triggerRetryNow(): Promise<{ due: number; created: number }> {
+    return this.runRetryScan();
+  }
+
   public startScheduler(): void {
     registeredScheduler = this;
 
@@ -42,13 +49,71 @@ export class OutreachScheduler {
 
     cron.schedule(cronExpr, () => {
       Logger.info('Outreach scheduler tick');
-      this.runScan().catch((err) => Logger.error('outreach scan tick failed', err as Error));
+      this.runScan()
+        .then(() => this.runRetryScan())
+        .catch((err) => Logger.error('outreach scan tick failed', err as Error));
     }, {
       scheduled: true,
       timezone: tz,
     });
 
     Logger.info(`Outreach scheduler started (cron='${cronExpr}', tz='${tz}')`);
+  }
+
+  private retryBudget(): number {
+    const parsed = Number(process.env.OUTREACH_RETRY_DAILY_BUDGET);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_RETRY_DAILY_BUDGET;
+  }
+
+  /**
+   * Backup-retry scan: re-attempt privacy-blocked numbers whose 60-day cooldown
+   * has elapsed (up to 3 times each, per OutreachSuppressionRepository). Mints
+   * auto-approved proposals so the worker sends them under the normal daily cap.
+   * Gated by OUTREACH_RETRY_ENABLED.
+   */
+  private async runRetryScan(): Promise<{ due: number; created: number }> {
+    if (process.env.OUTREACH_RETRY_ENABLED !== 'true') {
+      return { due: 0, created: 0 };
+    }
+    const supp = new OutreachSuppressionRepository();
+    const due = await supp.listForRetry(new Date(), this.retryBudget());
+    if (due.length === 0) {
+      Logger.info('Outreach retry scan: nothing due');
+      return { due: 0, created: 0 };
+    }
+
+    const phones = due.map((d) => d.customer_phone);
+    const result = await generateBatch({ phones, bypassSuppression: true, autoApprove: true });
+    const created = new Set(
+      result.details.filter((d) => d.outcome === 'created').map((d) => d.phone)
+    );
+
+    // Count a retry only when a fresh proposal was actually minted; otherwise
+    // defer (already has a live proposal, or no customer record) so the phone
+    // doesn't monopolize tomorrow's budget.
+    for (const d of due) {
+      if (created.has(d.customer_phone)) {
+        await supp.bumpRetry(d.customer_phone, null);
+      } else {
+        await supp.deferRetry(d.customer_phone);
+      }
+    }
+
+    Logger.info(
+      `Outreach retry scan: due=${due.length} created=${result.created} skipped=${result.skipped}`
+    );
+
+    const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
+    if (chatId && this.sendMessageCallback && result.created > 0) {
+      const lines = ['🔁 *Outreach backup retry*', '', `Due: ${due.length}`, `Re-queued: ${result.created}`];
+      try {
+        await this.sendMessageCallback(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+      } catch (err) {
+        Logger.error('Outreach retry summary send failed', err as Error);
+      }
+    }
+
+    return { due: due.length, created: result.created };
   }
 
   private dailyBudget(): number {

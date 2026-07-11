@@ -11,10 +11,12 @@ sharing the same repo (production setup, see "Run on Railway" below).
 ## How it talks to the API
 
 The worker authenticates as a **restricted `agent` role** via Bearer token.
-That role can only call seven endpoints — `claim`, `mark-sent`, `mark-failed`,
-`worker-heartbeat`, `worker-alert`, `worker-status`, `report-inbound`.
-Everything else returns `403`. So if the worker's credential is ever pulled
-off the disk it can't be used to read customer data, generate batches,
+That role can only call nine endpoints — `claim`, `mark-sent`, `mark-failed`,
+`worker-heartbeat`, `worker-alert`, `worker-status`, `report-inbound`,
+`:id/effective-image` (image bytes to send), and `default-video-url` (presigned
+R2 URL for the marketing video). Everything else returns `403`. So if the
+worker's credential is ever pulled off the disk it can't be used to read
+customer data, generate batches,
 approve proposals, or pause itself.
 
 The `agent` role is granted by the server's `AGENT_TOKEN` env var. The legacy
@@ -163,11 +165,23 @@ channels going through the same bot.
 
 ## Implementation notes — MTProto
 
-- Sending: `client.getEntity('+<digits>')` resolves the phone via
-  Telegram's `contacts.ResolvePhone` RPC and returns a `User` peer; then
-  `client.sendMessage(peer, { message })`. If the number is not on Telegram,
-  Telegram throws `PHONE_NOT_OCCUPIED` / `USER_NOT_FOUND`, which the worker
-  maps to `phone number not on Telegram` and marks the proposal failed.
+- Peer resolution: a fresh lead's number isn't in the account's contacts, so
+  `getEntity(phone)` throws. The worker uses `contacts.ImportContacts`
+  (`importPhoneAsPeer`), which returns the `User` **iff** the number is on
+  Telegram AND their privacy permits phone lookup — otherwise `null`, mapped to
+  `phone number not on Telegram (or hidden by privacy)`. The imported contact is
+  deleted afterward so the address book doesn't balloon. `PHONE_NUMBER_INVALID`
+  is mapped separately to `phone number invalid (permanent)`.
+- Sending: the worker fetches the effective image (mandatory) and the default
+  video (via `default-video-url`, if set), then sends **image + video as one
+  album** (`client.sendFile(peer, { file: [img, video], … })`) with the message
+  as caption (≤ 1024 chars) or a follow-up bubble. With no video it falls back to
+  an image-only send. `SEND_TIMEOUT_SEC` (default 240 s) bounds the whole send
+  because the video is downloaded from R2 first. See `../../OUTREACH_MEDIA.md`.
+- On any send failure the proposal is flipped to `failed` with a reason; the
+  server records it in `outreach_suppressions` so the number isn't re-hammered
+  (privacy failures are retried every 60 days, up to 3 times). See
+  `../../OUTREACH_MEDIA.md`.
 - Inbound: `client.addEventHandler(handler, new NewMessage({ incoming: true }))`
   pushes events as soon as Telegram delivers them. Handler filters to
   `Api.PeerUser` (private chats only) and posts to `/report-inbound`.

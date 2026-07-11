@@ -6,7 +6,9 @@ import { OutreachImagesRepository, OutreachImageDocument } from '../outreach/out
 import { OutreachVideoRepository } from '../outreach/outreach-video-repository';
 import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
+import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery } from '../outreach/outreach-suppression-repository';
 import { generateBatch } from '../outreach/outreach-agent';
+import { formatPhoneDisplay, formatTelegramLink } from '../utils/phone-utils';
 import { getRegisteredOutreachScheduler } from '../scheduler/outreach-scheduler';
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
@@ -584,6 +586,14 @@ router.post('/:id/mark-sent', async (req: Request, res: Response) => {
     const ok = await outreachRepo.markSent(req.params.id);
     if (!ok) { res.status(409).json({ error: 'could not mark sent' }); return; }
 
+    // Clear any suppression for this phone — a previously-failed number that
+    // finally delivered (e.g. via a backup retry) should leave the Failed list.
+    try {
+      await new OutreachSuppressionRepository().resolve(proposal.customer_phone);
+    } catch (e) {
+      Logger.warn(`resolve suppression on mark-sent: ${(e as Error).message}`);
+    }
+
     // Record a lead event for the outbound message.
     const salesRepo = new SalesCaseRepository();
     const today = new Date().toISOString().slice(0, 10);
@@ -627,8 +637,30 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
     if (!proposal) { res.status(404).json({ error: 'not found' }); return; }
     const ok = await outreachRepo.markFailed(req.params.id, reason);
     if (!ok) { res.status(404).json({ error: 'not found' }); return; }
-    // Free the daily reservation since this attempt didn't actually send.
-    try { await new OutreachWorkerStateRepository().releaseClaim(); } catch (e) { Logger.warn(`releaseClaim on mark-failed: ${(e as Error).message}`); }
+
+    // Record the failure in the phone-level suppression ledger (stops re-hammering;
+    // schedules a 60-day backup retry for privacy failures). Best-effort.
+    let failureKind: string | undefined;
+    try {
+      const result = await new OutreachSuppressionRepository().recordFailure({
+        phone: proposal.customer_phone,
+        reason,
+        proposalId: proposal._id ?? null,
+        customerName: proposal.customer_name,
+        follower: proposal.follower,
+      });
+      failureKind = result.kind;
+    } catch (e) {
+      Logger.warn(`recordFailure on mark-failed: ${(e as Error).message}`);
+    }
+
+    // Refund the daily reservation ONLY for transient/system failures (they never
+    // reached Telegram). Privacy/invalid failures consumed a real ImportContacts
+    // round-trip, so they count against the cap — this stops unreachable numbers
+    // from burning unlimited throughput. Unknown kind → refund (preserves prior behavior).
+    if (failureKind === undefined || failureKind === 'transient') {
+      try { await new OutreachWorkerStateRepository().releaseClaim(); } catch (e) { Logger.warn(`releaseClaim on mark-failed: ${(e as Error).message}`); }
+    }
     notifyOutreachFailure(proposal, 'mark-failed', { reason }).catch((err) => {
       Logger.error('mark-failed alert dispatch errored', err as Error);
     });
@@ -679,6 +711,40 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
     res.send(doc.data.buffer);
   } catch (err) {
     Logger.error('effective-image GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/failed-numbers — phone-level failed/suppressed list (CRM,
+// developer/manager). Deduped by phone; nothing is ever deleted.
+router.get('/failed-numbers', async (req: Request, res: Response) => {
+  try {
+    const limit = Math.min(parseInt((req.query.limit as string) || '200', 10) || 200, 500);
+    const offset = Math.max(0, parseInt((req.query.offset as string) || '0', 10) || 0);
+    const query: SuppressionListQuery = { limit, offset };
+    if (req.query.kind) query.kind = req.query.kind as SuppressionKind;
+    if (req.query.status) query.status = req.query.status as SuppressionStatus;
+    if (req.query.follower) query.follower = req.query.follower as string;
+    if (req.query.q) query.q = req.query.q as string;
+
+    const { rows, total, counts } = await new OutreachSuppressionRepository().list(query);
+    const enriched = rows.map((r) => ({
+      customer_phone: r.customer_phone,
+      phone_display: formatPhoneDisplay(r.customer_phone),
+      telegram_link: formatTelegramLink(r.customer_phone),
+      customer_name: r.customer_name,
+      follower: r.follower,
+      failure_kind: r.failure_kind,
+      status: r.status,
+      retries_used: r.retries_used,
+      next_retry_at: r.next_retry_at,
+      last_failed_at: r.last_failed_at,
+      last_failed_reason: r.last_failed_reason,
+      first_failed_at: r.first_failed_at,
+    }));
+    res.json({ rows: enriched, total, counts });
+  } catch (err) {
+    Logger.error('failed-numbers list failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });

@@ -396,7 +396,13 @@ async function sendViaMTProto(
   } catch (err) {
     const e = err as Error;
     const msg = e.message || String(err);
-    if (/PHONE_NOT_OCCUPIED|USER_NOT_FOUND|PHONE_NUMBER_INVALID|PEER_ID_INVALID/i.test(msg)) {
+    // A permanently malformed number is distinct from privacy/not-on-Telegram:
+    // the server classifies 'invalid (permanent)' as never-retry, the rest as
+    // privacy (retried every 60d in case they open up / join Telegram).
+    if (/PHONE_NUMBER_INVALID/i.test(msg)) {
+      return { ok: false, reason: 'phone number invalid (permanent)' };
+    }
+    if (/PHONE_NOT_OCCUPIED|USER_NOT_FOUND|PEER_ID_INVALID/i.test(msg)) {
       return { ok: false, reason: 'phone number not on Telegram' };
     }
     return { ok: false, reason: `mtproto exception: ${msg}` };

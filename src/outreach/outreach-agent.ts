@@ -4,16 +4,21 @@ import { CustomerCase } from '../database/models';
 import { Logger } from '../utils/logger';
 import { toInternationalPhone } from '../utils/phone-utils';
 import { OutreachRepository, OutreachProposalDocument } from './outreach-repository';
+import { OutreachSuppressionRepository } from './outreach-suppression-repository';
 import { getStaticOutreachMessage } from './static-template';
 
 const DEFAULT_STALE_DAYS = 45;
-const DEFAULT_BATCH_LIMIT = 10;
+const DEFAULT_BATCH_LIMIT = 20;
 
 export interface GenerateOptions {
   limit?: number;
   followerFilter?: string;
   phones?: string[];
   staleDays?: number;
+  /** Skip the suppression filter (used by the explicit backup-retry path). */
+  bypassSuppression?: boolean;
+  /** Create proposals as 'approved' (auto-retry) instead of 'pending'. */
+  autoApprove?: boolean;
 }
 
 export interface GenerateResult {
@@ -48,7 +53,15 @@ async function selectCandidates(
 
   const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS;
   const candidates = await salesRepo.getStaleCustomers(staleDays, opts.followerFilter);
-  return candidates.slice(0, opts.limit ?? DEFAULT_BATCH_LIMIT);
+  if (opts.bypassSuppression) {
+    return candidates.slice(0, opts.limit ?? DEFAULT_BATCH_LIMIT);
+  }
+  // Drop phones on the suppression list BEFORE slicing, so a batch isn't wasted
+  // on numbers that already failed (privacy/invalid). See OutreachSuppressionRepository.
+  const suppressed = await new OutreachSuppressionRepository().getSuppressedPhones();
+  return candidates
+    .filter((c) => c.phone && !suppressed.has(toInternationalPhone(c.phone.trim())))
+    .slice(0, opts.limit ?? DEFAULT_BATCH_LIMIT);
 }
 
 export async function generateBatch(opts: GenerateOptions): Promise<GenerateResult> {
@@ -74,7 +87,8 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       continue;
     }
 
-    // AI generation disabled: send a fixed Khmer template, held for manual approval.
+    // AI generation disabled: send a fixed Khmer template, held for manual approval
+    // (or auto-approved when this is an automated backup retry).
     const now = new Date();
     toInsert.push({
       generation_id: generationId,
@@ -84,14 +98,16 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       days_since_contact: daysSince(customer.last_update_date),
       follower: customer.follower,
       message: getStaticOutreachMessage(),
-      reasoning: 'static template (AI generation disabled)',
-      status: 'pending',
+      reasoning: opts.autoApprove
+        ? 'static template (auto-approved backup retry)'
+        : 'static template (AI generation disabled)',
+      status: opts.autoApprove ? 'approved' : 'pending',
       skipped_reason: null,
       failed_reason: null,
       custom_image_id: null,
       created_at: now,
-      approved_at: null,
-      approved_by: null,
+      approved_at: opts.autoApprove ? now : null,
+      approved_by: opts.autoApprove ? 'auto-retry' : null,
       sent_at: null,
       lease_expires_at: null,
       model: 'static',

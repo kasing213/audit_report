@@ -76,6 +76,17 @@ router.get('/outreach', async (_req: Request, res: Response) => {
   }
 });
 
+// GET /crm/failed-numbers — failed / privacy-blocked numbers list
+router.get('/failed-numbers', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/failed-numbers', {});
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving CRM failed-numbers page', error as Error);
+    res.status(500).json({ error: 'Failed to load failed-numbers page', message: (error as Error).message });
+  }
+});
+
 // GET /crm/brain — AI brain document manager
 router.get('/brain', async (_req: Request, res: Response) => {
   try {

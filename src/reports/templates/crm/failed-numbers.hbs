@@ -1,0 +1,152 @@
+{{> head title="Sales CRM — Failed Numbers"}}
+{{> nav activeNav="failed-numbers"}}
+
+<style>
+  .fn-summary {
+    display: flex; flex-wrap: wrap; gap: 0.5rem;
+    padding: 0.75rem 1.25rem 0;
+    max-width: 1200px; margin: 0 auto;
+  }
+  .fn-pill {
+    display: inline-flex; align-items: center; gap: 0.4rem;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 0.4rem 0.75rem;
+    font-size: 0.8rem; color: var(--text-muted);
+  }
+  .fn-pill b { color: var(--text); font-family: var(--font-mono); }
+  .fn-note { color: var(--text-muted); font-size: 0.75rem; margin-left: auto; align-self: center; }
+  .fn-kind, .fn-status { text-transform: capitalize; }
+  .reason-text {
+    color: var(--text-muted); font-size: 0.8rem;
+    max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .retry-cell { font-family: var(--font-mono); font-size: 0.8rem; }
+</style>
+
+<div class="fn-summary" id="fn-summary">
+  <span class="fn-pill">Active <b id="c-active">—</b></span>
+  <span class="fn-pill">Exhausted <b id="c-exhausted">—</b></span>
+  <span class="fn-pill">Resolved <b id="c-resolved">—</b></span>
+  <span class="fn-note">Numbers are never deleted. Privacy failures are retried every 60 days, up to 3 times.</span>
+</div>
+
+<div class="filters">
+  <div class="filter-group">
+    <span class="filter-label">Status</span>
+    <select id="f-status">
+      <option value="active" selected>Active</option>
+      <option value="">All</option>
+      <option value="exhausted">Exhausted</option>
+      <option value="resolved">Resolved</option>
+    </select>
+  </div>
+  <div class="filter-group">
+    <span class="filter-label">Kind</span>
+    <select id="f-kind">
+      <option value="">All</option>
+      <option value="privacy">Privacy</option>
+      <option value="invalid">Invalid</option>
+      <option value="transient">Transient</option>
+    </select>
+  </div>
+  <div class="filter-group search-wrap" style="flex:1">
+    <span class="filter-label">Search</span>
+    <input type="text" id="f-q" placeholder="phone or name" style="width:100%">
+  </div>
+  <div class="filter-group" style="align-self:flex-end">
+    <button class="btn btn-ghost" id="btn-refresh">Refresh</button>
+  </div>
+</div>
+
+<div class="section-wrap" style="padding-top:1rem">
+  <div id="fn-body">
+    <div class="loading"><div class="spinner"></div> Loading…</div>
+  </div>
+</div>
+
+{{> footer}}
+
+<script>
+  const KIND_CLASS = { privacy: 'tag-stale-yellow', invalid: 'tag-stale-red', transient: 'tag' };
+  const STATUS_CLASS = { active: 'tag-stale-yellow', exhausted: 'tag-stale-red', resolved: 'tag-stale-green' };
+
+  function fmtDate(v) {
+    if (!v) return '—';
+    const d = new Date(v);
+    if (isNaN(d.getTime())) return '—';
+    return d.toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' });
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"]/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]
+    ));
+  }
+  function tag(cls, text) { return '<span class="tag ' + cls + '">' + esc(text) + '</span>'; }
+
+  function rowHtml(r) {
+    const phone = r.telegram_link
+      ? '<a class="phone-link" href="' + esc(r.telegram_link) + '" target="_blank" rel="noopener">' + esc(r.phone_display) + '</a>'
+      : esc(r.phone_display);
+    const retries = r.failure_kind === 'privacy' ? (r.retries_used + '/3') : '—';
+    const nextRetry = r.failure_kind === 'privacy' && r.status === 'active' ? fmtDate(r.next_retry_at) : '—';
+    return '<tr>'
+      + '<td>' + phone + '</td>'
+      + '<td class="customer-name">' + esc(r.customer_name || 'Unknown') + '</td>'
+      + '<td>' + esc(r.follower || '—') + '</td>'
+      + '<td class="fn-kind">' + tag(KIND_CLASS[r.failure_kind] || 'tag', r.failure_kind) + '</td>'
+      + '<td class="fn-status">' + tag(STATUS_CLASS[r.status] || 'tag', r.status) + '</td>'
+      + '<td class="retry-cell">' + retries + '</td>'
+      + '<td class="retry-cell">' + nextRetry + '</td>'
+      + '<td>' + fmtDate(r.last_failed_at) + '</td>'
+      + '<td class="reason-text" title="' + esc(r.last_failed_reason) + '">' + esc(r.last_failed_reason) + '</td>'
+      + '</tr>';
+  }
+
+  function render(data) {
+    const c = data.counts || {};
+    document.getElementById('c-active').textContent = c.active ?? 0;
+    document.getElementById('c-exhausted').textContent = c.exhausted ?? 0;
+    document.getElementById('c-resolved').textContent = c.resolved ?? 0;
+
+    const body = document.getElementById('fn-body');
+    if (!data.rows || data.rows.length === 0) {
+      body.innerHTML = '<div class="empty-state"><h3>No failed numbers</h3><p>Nothing matches the current filters.</p></div>';
+      return;
+    }
+    const head = '<thead><tr>'
+      + '<th>Phone</th><th>Name</th><th>Follower</th><th>Kind</th><th>Status</th>'
+      + '<th>Retries</th><th>Next retry</th><th>Last failed</th><th>Reason</th>'
+      + '</tr></thead>';
+    body.innerHTML = '<div class="table-wrap"><table class="customer-table">'
+      + head + '<tbody>' + data.rows.map(rowHtml).join('') + '</tbody></table></div>'
+      + '<div class="fn-note" style="padding:0.75rem 0.5rem">Showing ' + data.rows.length + ' of ' + data.total + '</div>';
+  }
+
+  async function load() {
+    const params = new URLSearchParams();
+    const status = document.getElementById('f-status').value;
+    const kind = document.getElementById('f-kind').value;
+    const q = document.getElementById('f-q').value.trim();
+    if (status) params.set('status', status);
+    if (kind) params.set('kind', kind);
+    if (q) params.set('q', q);
+    params.set('limit', '300');
+
+    document.getElementById('fn-body').innerHTML = '<div class="loading"><div class="spinner"></div> Loading…</div>';
+    try {
+      const resp = await fetch('/crm/api/outreach/failed-numbers?' + params.toString());
+      if (resp.status === 401) { window.location.href = '/login'; return; }
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      render(await resp.json());
+    } catch (err) {
+      document.getElementById('fn-body').innerHTML = '<div class="empty-state"><h3>Failed to load</h3><p>' + esc(err.message) + '</p></div>';
+    }
+  }
+
+  let qTimer = null;
+  document.getElementById('f-status').addEventListener('change', load);
+  document.getElementById('f-kind').addEventListener('change', load);
+  document.getElementById('btn-refresh').addEventListener('click', load);
+  document.getElementById('f-q').addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(load, 300); });
+  load();
+</script>

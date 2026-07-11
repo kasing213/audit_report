@@ -1,3 +1,10 @@
+> **Historical design prompt.** This describes the original `leads_events`-only
+> data model and its "no additional collections" rule. That rule is superseded —
+> the system now also uses `outreach_proposals`, `outreach_images`,
+> `outreach_media`, `outreach_suppressions`, `outreach_worker_state`,
+> `inbound_messages`, `daily_summaries`, and `audit_logs`. See `OUTREACH_RUNBOOK.md`
+> and `OUTREACH_MEDIA.md` for the current collections.
+
 🔒 SYSTEM PROMPT FOR CLAUDE (FINAL)
 
 You are building a Telegram-based CRM query system for a real-estate business.

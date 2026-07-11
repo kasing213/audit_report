@@ -102,10 +102,15 @@ expect one DM; `pm2 start outreach-worker` to clear.
 | `daily_summaries` | Per-day counter aggregates from bulk reports | reports |
 | `outreach_proposals` | Drafted outreach messages with `status` lifecycle | outreach agent, worker, `/crm/outreach` |
 | `outreach_worker_state` | Singleton heartbeat / counters / pause flag | worker, dashboard badge |
+| `outreach_images` | Default + custom image **bytes** | worker (`effective-image`), `/crm/outreach` |
+| `outreach_media` | Default marketing video **metadata** (R2 key); bytes live in Cloudflare R2 | worker (`default-video-url`), `/crm/outreach` |
+| `outreach_suppressions` | Phone-level failed/suppressed ledger + backup-retry schedule | mark-failed, retry scan, `/crm/failed-numbers` |
 | `inbound_messages` | Customer replies received by the worker | inbound alerts |
 | `audit_logs` | Bot action history | audit trail |
 
 ⚠️ The collection is `outreach_proposals`, NOT `outreach_drafts`. (Easy mistake — burned us once.)
+
+**Media & failed-number lifecycle:** R2 env vars (`R2_ACCOUNT_ID`/`R2_ACCESS_KEY`/`R2_SECRET_KEY`/`R2_BUCKET`), the image+video album send, the 503 "R2 not configured" fallback, suppression classification, the 60d×3 backup retry (`OUTREACH_RETRY_ENABLED`, `OUTREACH_RETRY_DAILY_BUDGET`), and the `/crm/failed-numbers` page are all documented in **`OUTREACH_MEDIA.md`**.
 
 ## When something is broken
 

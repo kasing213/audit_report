@@ -1,5 +1,10 @@
 # Outreach Image Attachment — Design Spec
 
+> **Point-in-time artifact.** Its "text-only baseline" and "image is mandatory,
+> no other media" framing is superseded: outreach now sends an **image + video
+> album** (video optional, MP4 ≤ 50 MB, stored in Cloudflare R2). See
+> `OUTREACH_MEDIA.md`.
+
 **Status:** Approved (brainstorming) → Ready for implementation plan
 **Date:** 2026-05-06
 **Author:** kasing + Claude
