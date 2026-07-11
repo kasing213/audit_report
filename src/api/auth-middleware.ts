@@ -171,6 +171,7 @@ const AGENT_ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: /^\/crm\/api\/outreach\/report-inbound$/ },
   { method: 'GET',  pattern: /^\/crm\/api\/outreach\/worker-status$/ },
   { method: 'GET',  pattern: /^\/crm\/api\/outreach\/[A-Za-z0-9_-]+\/effective-image$/ },
+  { method: 'GET',  pattern: /^\/crm\/api\/outreach\/default-video-url$/ },
 ];
 
 function isAgentAllowed(req: Request): boolean {
