@@ -6,6 +6,7 @@ import {
   buildCasesByFollowerAndMonthPipeline,
   buildMonthlyCasesSummaryPipeline,
   buildAllCustomersPipeline,
+  buildQuickBookCustomersPipeline,
   buildStaleCustomersPipeline,
   buildCustomersByReasonPipeline,
   buildCustomersByTemperatureAndMonthPipeline
@@ -196,6 +197,17 @@ export class SalesCaseRepository {
   async getStaleCustomers(days: number, follower?: string): Promise<CustomerCase[]> {
     const pipeline = buildStaleCustomersPipeline(days, follower);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
+  }
+
+  async getQuickBookCustomers(
+    page: number,
+    pageSize: number
+  ): Promise<{ customers: CustomerCase[]; total: number }> {
+    const pipeline = buildQuickBookCustomersPipeline(page, pageSize);
+    const [result] = await this.leadsEventsCollection
+      .aggregate<{ data: CustomerCase[]; meta: { total: number }[] }>(pipeline)
+      .toArray();
+    return { customers: result?.data ?? [], total: result?.meta?.[0]?.total ?? 0 };
   }
 
   async getCustomersByReason(reasonCode: string, follower?: string): Promise<CustomerCase[]> {

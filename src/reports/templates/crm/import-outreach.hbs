@@ -1,5 +1,5 @@
-{{> head title="Sales CRM — Import"}}
-{{> nav activeNav="import"}}
+{{> head title="Sales CRM — Import to Outreach"}}
+{{> nav activeNav="import-outreach"}}
 
 <style>
   .drop-zone {
@@ -30,24 +30,35 @@
   .import-preview.show { display: block; }
   .import-preview h4 { font-size: 0.9rem; margin-bottom: 0.5rem; }
   .import-actions { display: flex; gap: 0.5rem; margin-top: 0.75rem; }
+  .callout {
+    margin-top: 0.75rem;
+    padding: 0.6rem 0.8rem;
+    border-radius: var(--radius);
+    background: var(--accent-dim);
+    border: 1px solid var(--border);
+    font-size: 0.8rem;
+    color: var(--text);
+  }
 </style>
 
 <div class="section-wrap">
   <h2 class="section-title">
     <svg width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" viewBox="0 0 24 24" style="vertical-align:-3px;margin-right:0.35rem"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
-    Import CSV / Excel
+    Import → Outreach Pending
   </h2>
-  <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()">
+  <div class="callout">
+    For old QuickBook phone lists with <strong>no sales name</strong>. Rows with no phone number are skipped, leads are dated 45 days back, and every imported number is pushed straight into the <a href="/crm/outreach">Outreach</a> <strong>Pending</strong> tab for approval.
+  </div>
+  <div class="drop-zone" id="drop-zone" onclick="document.getElementById('file-input').click()" style="margin-top:0.75rem">
     <input type="file" id="file-input" accept=".csv,.xlsx,.xls">
-    <p>Click or drop a CSV/Excel file here</p>
-    <p style="font-size:0.75rem;margin-top:0.25rem">Columns: phone (required), name, date, page, destination, follower, reason_code, note</p>
-    <p style="font-size:0.75rem;margin-top:0.15rem;color:var(--text-muted)">QuickBook phone-list exports (no header, "ID-Name Phone" per line) are auto-detected — rows with no phone number are skipped, and old leads are dated 45 days back so they stage into outreach.</p>
+    <p>Click or drop the QuickBook Excel file here</p>
+    <p style="font-size:0.75rem;margin-top:0.25rem">Auto-detects the "ID-Name Phone" format (no header)</p>
   </div>
   <div class="import-preview" id="import-preview">
-    <h4>Preview: <span id="import-count">0</span> records</h4>
+    <h4>Preview: <span id="import-count">0</span> leads → will be staged as pending outreach</h4>
     <div style="overflow-x:auto;max-height:320px;font-size:0.8rem;font-family:var(--font-mono)" id="import-preview-table"></div>
     <div class="import-actions">
-      <button class="btn btn-primary" onclick="confirmImport()">Confirm Import</button>
+      <button class="btn btn-primary" onclick="confirmImport()">Import &amp; Push to Outreach</button>
       <button class="btn btn-ghost" onclick="cancelImport()">Cancel</button>
     </div>
   </div>
@@ -113,7 +124,7 @@
   async function confirmImport() {
     if (!importRows) return;
     try {
-      const resp = await fetch(API_BASE + '/api/import/confirm', {
+      const resp = await fetch(API_BASE + '/api/import/confirm-outreach', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
@@ -122,7 +133,7 @@
       if (resp.status === 401) { window.location.href = '/login'; return; }
       const data = await resp.json();
       if (data.success) {
-        showToast('Imported ' + data.imported + ' records' + (data.skipped ? ', skipped ' + data.skipped : ''), 'success');
+        showToast('Imported ' + data.imported + ' · staged ' + data.staged + ' pending' + (data.staged_skipped ? ', ' + data.staged_skipped + ' already queued' : ''), 'success');
         cancelImport();
       } else {
         showToast(data.error || 'Import failed', 'error');

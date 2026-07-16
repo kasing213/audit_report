@@ -5,7 +5,8 @@ import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
 import { REASON_CODES } from '../constants/reason-codes';
 import { GroupConfigManager } from '../utils/group-config';
-import { formatTelegramLink, formatPhoneDisplay } from '../utils/phone-utils';
+import { formatTelegramLink, formatPhoneDisplay, toInternationalPhone } from '../utils/phone-utils';
+import { generateBatch } from '../outreach/outreach-agent';
 import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
 
@@ -14,6 +15,25 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
 
 function getRepository(): SalesCaseRepository {
   return new SalesCaseRepository();
+}
+
+// Parse one QuickBook report line: "060-Pkarikkongsuon 092 462911"
+// → { name: "Pkarikkongsuon", phone: "+85592462911" }. Returns null if no phone → reject row.
+function extractQuickBookRecord(text: string): { name: string | null; phone: string } | null {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  // strip leading sequence id like "060-" or "6." (1-3 digits + separator)
+  const idMatch = trimmed.match(/^\s*\d{1,3}\s*[-.]\s*/);
+  const body = idMatch ? trimmed.slice(idMatch[0].length) : trimmed;
+  // find first digit run that is a Cambodian phone (8-11 digits, spaces/dots/dashes allowed)
+  for (const m of body.matchAll(/\d[\d\s.\-]{5,}\d/g)) {
+    const digits = m[0].replace(/\D/g, '');
+    if (digits.length >= 8 && digits.length <= 11) {
+      const name = body.slice(0, m.index).trim();
+      return { name: name || null, phone: toInternationalPhone(digits) };
+    }
+  }
+  return null; // no number in the row → reject
 }
 
 // GET /crm — customers page
@@ -62,6 +82,30 @@ router.get('/import', async (_req: Request, res: Response) => {
   } catch (error) {
     Logger.error('Error serving CRM import page', error as Error);
     res.status(500).json({ error: 'Failed to load import page', message: (error as Error).message });
+  }
+});
+
+// GET /crm/import-outreach — import + push straight to outreach pending
+router.get('/import-outreach', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/import-outreach', {});
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving CRM import-outreach page', error as Error);
+    res.status(500).json({ error: 'Failed to load import-outreach page', message: (error as Error).message });
+  }
+});
+
+// GET /crm/quickbook-customers — paginated dashboard of QuickBook-imported customers
+router.get('/quickbook-customers', async (_req: Request, res: Response) => {
+  try {
+    const html = await renderPage('crm/quickbook-customers', {
+      reasonCodesJson: JSON.stringify(REASON_CODES)
+    });
+    res.set('Content-Type', 'text/html').send(html);
+  } catch (error) {
+    Logger.error('Error serving QuickBook customers page', error as Error);
+    res.status(500).json({ error: 'Failed to load QuickBook customers page', message: (error as Error).message });
   }
 });
 
@@ -155,6 +199,33 @@ router.get('/api/customers', async (req: Request, res: Response) => {
   }
 });
 
+// GET /crm/api/quickbook-customers?page=N — paginated (20/page) list of customers
+// imported from a QuickBook/spreadsheet file (source.model = 'csv-import').
+router.get('/api/quickbook-customers', async (req: Request, res: Response) => {
+  try {
+    const pageSize = 20;
+    const page = Math.max(1, parseInt(req.query.page as string) || 1);
+    const repository = getRepository();
+    const { customers, total } = await repository.getQuickBookCustomers(page, pageSize);
+
+    // Same enrichment as /api/customers so the row rendering is identical.
+    const enriched = customers.map(c => ({
+      ...c,
+      temperature: c.current_temperature ?? null,
+      telegram_link: c.phone ? formatTelegramLink(c.phone) : null,
+      phone_display: c.phone ? formatPhoneDisplay(c.phone) : null,
+      days_since_contact: c.last_update_date
+        ? Math.floor((Date.now() - new Date(c.last_update_date).getTime()) / (1000 * 60 * 60 * 24))
+        : null
+    }));
+
+    res.json({ customers: enriched, total, page, pageSize, totalPages: Math.ceil(total / pageSize) });
+  } catch (error) {
+    Logger.error('Error fetching QuickBook customers', error as Error);
+    res.status(500).json({ error: 'Failed to fetch QuickBook customers' });
+  }
+});
+
 // GET /crm/api/groups-config — sales + admin group chat ID restrictions
 router.get('/api/groups-config', (_req: Request, res: Response) => {
   try {
@@ -233,27 +304,55 @@ router.post('/api/import', upload.single('file'), async (req: Request, res: Resp
       headers[colNumber - 1] = String(cell.value || '').toLowerCase().trim();
     });
 
-    // Parse data rows
-    worksheet.eachRow((row, rowNumber) => {
-      if (rowNumber === 1) return; // skip header
-      const record: any = {};
-      row.eachCell((cell, colNumber) => {
-        const header = headers[colNumber - 1];
-        if (header) {
-          record[header] = cell.value !== null && cell.value !== undefined ? String(cell.value).trim() : null;
+    let responseHeaders = headers.filter(Boolean);
+    const hasPhoneHeader = headers.includes('phone');
+
+    if (hasPhoneHeader) {
+      // Standard CSV/Excel with a phone column
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return; // skip header
+        const record: any = {};
+        row.eachCell((cell, colNumber) => {
+          const header = headers[colNumber - 1];
+          if (header) {
+            record[header] = cell.value !== null && cell.value !== undefined ? String(cell.value).trim() : null;
+          }
+        });
+        if (record.phone) {
+          rows.push(record);
         }
       });
-      if (record.phone) {
-        rows.push(record);
-      }
-    });
+    } else {
+      // QuickBook report export: no header, "ID-Name Phone" jammed into one text column.
+      // Extract name + phone from each row's text; reject rows with no phone number.
+      //
+      // These are old leads (years old at export) with no real dates in the file. Backdate
+      // them to the outreach stale threshold (45 days) so they immediately count as stale
+      // and get staged into the outreach pipeline instead of looking brand-new.
+      const STALE_DAYS = 45; // matches DEFAULT_STALE_DAYS in outreach-agent.ts
+      const staleDate = new Date();
+      staleDate.setDate(staleDate.getDate() - STALE_DAYS);
+      const staleDateStr = staleDate.toISOString().slice(0, 10);
+      worksheet.eachRow((row, rowNumber) => {
+        if (rowNumber === 1) return; // skip potential header/title row
+        const parts: string[] = [];
+        row.eachCell({ includeEmpty: false }, (cell) => {
+          if (cell.value !== null && cell.value !== undefined) parts.push(String(cell.value).trim());
+        });
+        const record = extractQuickBookRecord(parts.join(' '));
+        if (record) {
+          rows.push({ ...record, date: staleDateStr });
+        }
+      });
+      responseHeaders = ['name', 'phone', 'date'];
+    }
 
     // Return preview
     res.json({
       preview: true,
       total: rows.length,
       sample: rows.slice(0, 5),
-      headers: headers.filter(Boolean),
+      headers: responseHeaders,
       rows
     });
   } catch (error) {
@@ -328,6 +427,82 @@ router.post('/api/import/confirm', express.json(), async (req: Request, res: Res
   } catch (error) {
     Logger.error('Error confirming import', error as Error);
     res.status(500).json({ error: 'Failed to import records' });
+  }
+});
+
+// POST /crm/api/import/confirm-outreach — insert parsed rows AND stage every one as a
+// PENDING outreach proposal. Used for no-sales-name QuickBook lists: import (rows already
+// carry the 45-day backdate) then push straight to the outreach Pending tab for approval.
+router.post('/api/import/confirm-outreach', express.json(), async (req: Request, res: Response) => {
+  try {
+    const { rows } = req.body;
+    if (!rows || !Array.isArray(rows) || rows.length === 0) {
+      res.status(400).json({ error: 'No rows to import' });
+      return;
+    }
+
+    const repository = getRepository();
+    const today = new Date().toISOString().slice(0, 10);
+    let imported = 0;
+    let skipped = 0;
+
+    const leadEvents: LeadEventDocument[] = [];
+    const phones: string[] = [];
+
+    for (const row of rows) {
+      if (!row.phone) {
+        skipped++;
+        continue;
+      }
+
+      leadEvents.push({
+        date: row.date || today,
+        customer: {
+          name: row.name || null,
+          phone: row.phone
+        },
+        page: row.page || null,
+        destination: row.destination || null,
+        follower: row.follower || null,
+        status_text: null,
+        reason_code: row.reason_code || null,
+        note: row.note || null,
+        promise_date: row.promise_date || null,
+        promise_status: row.promise_date ? 'pending' : null,
+        group_id: null,
+        source: {
+          telegram_msg_id: 'csv-import',
+          model: 'csv-import'
+        },
+        created_at: new Date()
+      });
+      phones.push(row.phone);
+      imported++;
+    }
+
+    // Save the lead events FIRST so generateBatch's getAllCustomers() sees them.
+    if (leadEvents.length > 0) {
+      await repository.saveLeadEvents(leadEvents);
+    }
+
+    // Stage every imported phone as a PENDING proposal (limit = all rows, bypassing the
+    // default 20/batch cap). Static Khmer template, held for manual approval in /crm/outreach.
+    const generation = await generateBatch({ phones, limit: phones.length });
+
+    await repository.logAudit({
+      timestamp: new Date(),
+      action: 'csv-import-outreach',
+      message_id: 0,
+      user_id: 0,
+      username: 'dashboard',
+      original_message: `Imported ${imported} records and staged ${generation.created} outreach proposals`,
+      parsed_result: { imported, skipped, staged: generation.created, staged_skipped: generation.skipped }
+    });
+
+    res.json({ success: true, imported, skipped, staged: generation.created, staged_skipped: generation.skipped });
+  } catch (error) {
+    Logger.error('Error confirming import-outreach', error as Error);
+    res.status(500).json({ error: 'Failed to import and stage records' });
   }
 });
 
