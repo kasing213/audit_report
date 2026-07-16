@@ -32,6 +32,11 @@ export class OutreachSettingsRepository {
     return doc?.static_message ?? null;
   }
 
+  /** Full settings doc, or null. Used by the API to surface updated_at/by. */
+  async getDefaultDoc(): Promise<OutreachSettingsDocument | null> {
+    return this.col.findOne({ _id: DEFAULT_ID } as any);
+  }
+
   /** Upsert the default message. */
   async setStaticMessage(text: string, updatedBy: string): Promise<void> {
     const doc: OutreachSettingsDocument = {

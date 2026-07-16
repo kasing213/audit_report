@@ -4,6 +4,8 @@ import { authMiddleware, getSessionUser } from './auth-middleware';
 import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachImagesRepository, OutreachImageDocument } from '../outreach/outreach-images-repository';
 import { OutreachVideoRepository } from '../outreach/outreach-video-repository';
+import { OutreachSettingsRepository } from '../outreach/outreach-settings-repository';
+import { getStaticOutreachMessage, DEFAULT_STATIC_MESSAGE } from '../outreach/static-template';
 import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery } from '../outreach/outreach-suppression-repository';
@@ -396,6 +398,67 @@ router.get('/default-video-url', async (_req: Request, res: Response) => {
     res.json({ url, mime_type: doc.mime_type, size_bytes: doc.size_bytes });
   } catch (err) {
     Logger.error('default-video-url GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-text — effective message + whether a custom one is saved
+router.get('/default-text', async (_req: Request, res: Response) => {
+  try {
+    const repo = new OutreachSettingsRepository();
+    const saved = await repo.getStaticMessage();
+    let updated_at: Date | null = null;
+    let updated_by: string | null = null;
+    if (saved && saved.trim()) {
+      const doc = await repo.getDefaultDoc();
+      updated_at = doc?.updated_at ?? null;
+      updated_by = doc?.updated_by ?? null;
+    }
+    const message = await getStaticOutreachMessage();
+    res.json({
+      message,
+      is_custom: Boolean(saved && saved.trim()),
+      updated_at,
+      updated_by,
+      default_message: DEFAULT_STATIC_MESSAGE,
+    });
+  } catch (err) {
+    Logger.error('default-text GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/default-text — save the operator-edited default message
+router.post('/default-text', express.json(), async (req: Request, res: Response) => {
+  try {
+    const raw = req.body?.message;
+    if (typeof raw !== 'string' || raw.trim().length === 0) {
+      res.status(400).json({ error: 'message required' });
+      return;
+    }
+    const message = raw.trim();
+    if (message.length > 4096) {
+      res.status(400).json({ error: 'message exceeds 4096 characters' });
+      return;
+    }
+    const updatedBy = getSessionUser(req) || 'unknown';
+    await new OutreachSettingsRepository().setStaticMessage(message, updatedBy);
+    Logger.info(`outreach default text updated by ${updatedBy} (${message.length} chars)`);
+    res.json({ ok: true });
+  } catch (err) {
+    Logger.error('default-text POST failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// DELETE /crm/api/outreach/default-text — clear the saved message, revert to env/hardcoded
+router.delete('/default-text', async (req: Request, res: Response) => {
+  try {
+    await new OutreachSettingsRepository().clearStaticMessage();
+    Logger.info(`outreach default text reset to default by ${getSessionUser(req) || 'unknown'}`);
+    res.json({ ok: true });
+  } catch (err) {
+    Logger.error('default-text DELETE failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
