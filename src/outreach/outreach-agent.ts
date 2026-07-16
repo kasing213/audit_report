@@ -73,6 +73,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
 
   const candidates = await selectCandidates(salesRepo, opts);
   Logger.info(`outreach.generateBatch(${generationId}): ${candidates.length} candidates`);
+  const staticMessage = await getStaticOutreachMessage();
 
   for (const customer of candidates) {
     if (!customer.phone) {
@@ -97,7 +98,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       reason_code: customer.current_reason_code ?? null,
       days_since_contact: daysSince(customer.last_update_date),
       follower: customer.follower,
-      message: getStaticOutreachMessage(),
+      message: staticMessage,
       reasoning: opts.autoApprove
         ? 'static template (auto-approved backup retry)'
         : 'static template (AI generation disabled)',
