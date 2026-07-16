@@ -317,6 +317,21 @@
       <button class="btn btn-ghost" id="default-video-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultVideo()">Remove</button>
     </div>
   </div>
+  <div class="default-image-card" id="default-text-card" style="align-items:flex-start">
+    <div class="default-image-meta" style="flex:1 1 100%">
+      <div class="name" id="default-text-name">Default message text</div>
+      <div class="sub" id="default-text-sub">Applies to newly generated proposals.</div>
+      <textarea id="default-text-input" class="proposal-message" style="margin-top:0.5rem;min-height:120px" placeholder="Loading…"></textarea>
+      <div class="image-bar" style="margin-top:0.4rem">
+        <span class="label" id="default-text-source">—</span>
+        <span class="counter" id="default-text-counter">0 / 1024</span>
+        <div class="actions" style="margin-left:auto">
+          <button class="btn btn-ghost" id="default-text-reset" onclick="resetDefaultText()">Reset to default</button>
+          <button class="btn btn-primary" id="default-text-save" onclick="saveDefaultText()">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
   <div class="lightbox-backdrop" id="lightbox" onclick="closeLightbox()">
     <img id="lightbox-img" alt="Full size">
   </div>
@@ -466,6 +481,68 @@
       if (resp.ok) { showToast('Video removed', 'success'); refreshDefaultVideo(); }
       else showToast('Remove failed', 'error');
     } catch { showToast('Remove failed', 'error'); }
+  }
+
+  const DEFAULT_TEXT_URL = API + '/default-text';
+  let defaultTextFallback = '';
+
+  function updateDefaultTextCounter() {
+    const ta = document.getElementById('default-text-input');
+    const counter = document.getElementById('default-text-counter');
+    const saveBtn = document.getElementById('default-text-save');
+    if (!ta || !counter) return;
+    const len = ta.value.length;
+    counter.textContent = len + ' / 1024';
+    counter.classList.remove('green', 'yellow', 'red');
+    counter.classList.add(counterClass(len));
+    if (saveBtn) saveBtn.disabled = len === 0 || ta.value.trim().length === 0 || len > 4096;
+  }
+
+  async function refreshDefaultText() {
+    const ta = document.getElementById('default-text-input');
+    const source = document.getElementById('default-text-source');
+    try {
+      const resp = await fetch(DEFAULT_TEXT_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
+      if (!resp.ok) throw new Error('GET default-text ' + resp.status);
+      const data = await resp.json();
+      defaultTextFallback = data.default_message || '';
+      ta.value = data.message || '';
+      if (data.is_custom) {
+        source.textContent = 'Custom (edited' + (data.updated_by ? ' by ' + data.updated_by : '') + ')';
+        source.classList.add('custom');
+      } else {
+        source.textContent = 'Using built-in default';
+        source.classList.remove('custom');
+      }
+      updateDefaultTextCounter();
+    } catch (err) {
+      console.error('refreshDefaultText', err);
+    }
+  }
+
+  async function saveDefaultText() {
+    const msg = document.getElementById('default-text-input').value;
+    if (!msg.trim()) { showToast('Message cannot be empty', 'error'); return; }
+    try {
+      const resp = await fetch(DEFAULT_TEXT_URL, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) { showToast('Default text saved', 'success'); refreshDefaultText(); }
+      else showToast(data.error || ('Save failed: ' + resp.status), 'error');
+    } catch { showToast('Save failed', 'error'); }
+  }
+
+  async function resetDefaultText() {
+    if (!confirm('Reset the default message to the built-in text?')) return;
+    try {
+      const resp = await fetch(DEFAULT_TEXT_URL, { method: 'DELETE', credentials: 'same-origin' });
+      if (resp.ok) { showToast('Reset to default', 'success'); refreshDefaultText(); }
+      else showToast('Reset failed', 'error');
+    } catch { showToast('Reset failed', 'error'); }
   }
 
   function openLightbox() {
@@ -839,8 +916,10 @@
     workerStatusTimer = setInterval(refreshWorkerStatus, 10000);
   }
 
+  document.getElementById('default-text-input').addEventListener('input', updateDefaultTextCounter);
   refreshDefaultImage();
   refreshDefaultVideo();
+  refreshDefaultText();
   startWorkerStatusPoll();
   loadList();
 </script>
