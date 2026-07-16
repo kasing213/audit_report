@@ -484,7 +484,6 @@
   }
 
   const DEFAULT_TEXT_URL = API + '/default-text';
-  let defaultTextFallback = '';
 
   function updateDefaultTextCounter() {
     const ta = document.getElementById('default-text-input');
@@ -505,7 +504,6 @@
       const resp = await fetch(DEFAULT_TEXT_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
       if (!resp.ok) throw new Error('GET default-text ' + resp.status);
       const data = await resp.json();
-      defaultTextFallback = data.default_message || '';
       ta.value = data.message || '';
       if (data.is_custom) {
         source.textContent = 'Custom (edited' + (data.updated_by ? ' by ' + data.updated_by : '') + ')';

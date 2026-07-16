@@ -6,7 +6,6 @@
  */
 import { Collection } from 'mongodb';
 import DatabaseConnection from '../database/connection';
-import { Logger } from '../utils/logger';
 
 export interface OutreachSettingsDocument {
   _id: 'default';
@@ -50,9 +49,7 @@ export class OutreachSettingsRepository {
 
   /** Remove the saved message so the effective text reverts to env/hardcoded. */
   async clearStaticMessage(): Promise<void> {
-    const res = await this.col.deleteOne({ _id: DEFAULT_ID } as any);
-    if (res.deletedCount !== 1) {
-      Logger.warn('outreach_settings clearStaticMessage: no default doc to delete (already absent)');
-    }
+    // Deleting zero docs is a normal no-op (reset when no custom message was set).
+    await this.col.deleteOne({ _id: DEFAULT_ID } as any);
   }
 }
