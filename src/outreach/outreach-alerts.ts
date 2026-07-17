@@ -21,13 +21,15 @@ export function setOutreachAlertSender(fn: SendMessage | null): void {
   sender = fn;
 }
 
-function dedupeKey(kind: AlertKind, phone: string | null): string {
-  if (WORKER_LEVEL_KINDS.has(kind)) return `kind:${kind}`;
+function dedupeKey(kind: AlertKind, phone: string | null, org?: string): string {
+  // Worker-level alerts throttle per (kind, org) so a company-offline alert
+  // doesn't suppress a personal-offline one (and vice versa).
+  if (WORKER_LEVEL_KINDS.has(kind)) return `kind:${kind}:${org || 'default'}`;
   return `${kind}:${phone || 'unknown'}`;
 }
 
-function shouldThrottle(kind: AlertKind, phone: string | null): boolean {
-  const key = dedupeKey(kind, phone);
+function shouldThrottle(kind: AlertKind, phone: string | null, org?: string): boolean {
+  const key = dedupeKey(kind, phone, org);
   const last = recentAlerts.get(key);
   const now = Date.now();
   const window = WORKER_LEVEL_KINDS.has(kind) ? PER_KIND_THROTTLE_MS : PER_PHONE_THROTTLE_MS;
@@ -47,6 +49,9 @@ interface FailureContext {
   // Override the destination chat. Defaults to AUDIT_CHAT_ID. The heartbeat
   // watchdog uses this to DM the operator directly instead of the audit group.
   chatId?: string;
+  // Which outreach workspace this alert is about ('company' | 'personal'). Used
+  // to label worker-level alerts and to throttle them per org.
+  org?: string;
 }
 
 function formatProposalAlert(
@@ -55,6 +60,7 @@ function formatProposalAlert(
   ctx: FailureContext
 ): string {
   const lines: string[] = [];
+  const orgTag = ctx.org ? ` (${ctx.org})` : '';
   switch (kind) {
     case 'mark-failed':
       lines.push('🚨 *Outreach send FAILED*');
@@ -63,13 +69,13 @@ function formatProposalAlert(
       lines.push('⚠️ *Outreach lease expired (3rd attempt)*');
       break;
     case 'worker-offline':
-      lines.push('⚠️ *Outreach worker is offline*');
+      lines.push(`⚠️ *Outreach worker is offline*${orgTag}`);
       break;
     case 'session-expired':
-      lines.push('🚨 *Outreach worker session expired*');
+      lines.push(`🚨 *Outreach worker session expired*${orgTag}`);
       break;
     case 'worker-fatal':
-      lines.push('🚨 *Outreach worker fatal error*');
+      lines.push(`🚨 *Outreach worker fatal error*${orgTag}`);
       break;
   }
 
@@ -103,7 +109,7 @@ export async function notifyOutreachFailure(
   ctx: FailureContext = {}
 ): Promise<void> {
   const phone = proposal?.customer_phone ?? null;
-  if (shouldThrottle(kind, phone)) {
+  if (shouldThrottle(kind, phone, ctx.org)) {
     Logger.info(`outreach-alerts: throttled ${kind} for ${phone || 'worker'}`);
     return;
   }

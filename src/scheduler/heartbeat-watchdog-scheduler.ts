@@ -2,6 +2,7 @@ import * as cron from 'node-cron';
 import { Logger } from '../utils/logger';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { notifyOutreachFailure } from '../outreach/outreach-alerts';
+import { OUTREACH_ORGS } from '../outreach/orgs';
 
 // Every 5 min, but only 09:00–21:59 — the hour range encodes the work-hours
 // window so a laptop asleep overnight never produces a false "offline" alert.
@@ -44,21 +45,31 @@ export class HeartbeatWatchdogScheduler {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_STALE_MINUTES;
   }
 
-  /** Force a check now (exposed for testing). */
+  /** Force a check now (exposed for testing). Checks every org independently. */
   public async check(): Promise<void> {
-    const state = await this.repo.getStatus();
-    const last = state.last_heartbeat_at ? new Date(state.last_heartbeat_at).getTime() : null;
-    const ageMin = last === null ? Infinity : (Date.now() - last) / 60000;
     const threshold = this.staleMinutes();
+    for (const org of OUTREACH_ORGS) {
+      await this.checkOrg(org.id, threshold);
+    }
+  }
 
+  private async checkOrg(orgId: string, threshold: number): Promise<void> {
+    const state = await this.repo.getStatus(orgId);
+
+    // An org whose worker has NEVER heartbeated is "not set up", not "offline" —
+    // skip it so an org the operator doesn't run (e.g. personal before it's
+    // started) never false-alarms. It enrolls in the watchdog on its 1st beat.
+    if (!state.last_heartbeat_at) return;
+
+    const ageMin = (Date.now() - new Date(state.last_heartbeat_at).getTime()) / 60000;
     if (ageMin <= threshold) {
-      return; // fresh heartbeat — worker is alive
+      return; // fresh heartbeat — this org's worker is alive
     }
 
-    const reason = last === null ? 'no heartbeat on record' : `last heartbeat ${Math.round(ageMin)}m ago`;
-    Logger.warn(`heartbeat watchdog: worker offline (${reason})`);
+    const reason = `last heartbeat ${Math.round(ageMin)}m ago`;
+    Logger.warn(`heartbeat watchdog: ${orgId} worker offline (${reason})`);
 
-    const ctx: { reason: string; worker_id?: string; chatId?: string } = { reason };
+    const ctx: { reason: string; worker_id?: string; chatId?: string; org: string } = { reason, org: orgId };
     if (state.worker_id) ctx.worker_id = state.worker_id;
     if (process.env.WORKER_ALERT_CHAT_ID) ctx.chatId = process.env.WORKER_ALERT_CHAT_ID;
     await notifyOutreachFailure(null, 'worker-offline', ctx);

@@ -207,7 +207,7 @@ router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res
     const reason = typeof body.reason === 'string' ? body.reason : 'unspecified';
     const workerId = typeof body.worker_id === 'string' ? body.worker_id : undefined;
     const org = resolveOrg(req);
-    await notifyOutreachFailure(null, kind, { reason, worker_id: workerId });
+    await notifyOutreachFailure(null, kind, { reason, worker_id: workerId, org });
     if (kind === 'session-expired' || kind === 'worker-fatal') {
       await new OutreachWorkerStateRepository().setLastError(org, `${kind}: ${reason}`);
     }
