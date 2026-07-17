@@ -76,9 +76,10 @@ number's app, and (if set) the 2FA password. Each session is saved as a single
 string blob to the given path (gitignored). Treat those files like passwords —
 each grants full access to that Telegram account.
 
-**Personal must have a default image set** on the dashboard (switch to Personal
-→ upload a default brand image) before its worker can deliver — a send with no
-image is a hard failure.
+**Default image, message and video are all optional per org.** With none set,
+the worker sends **text-only** using the built-in template. Set an image/video
+on the dashboard (switch to the org first) only if you want them on that org's
+sends.
 
 ## Run the worker (laptop)
 

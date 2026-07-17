@@ -19,7 +19,6 @@ import bigInt from 'big-integer';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
-import { CustomFile } from 'telegram/client/uploads';
 
 dotenv.config();
 
@@ -205,23 +204,22 @@ async function markFailed(id: string, reason: string): Promise<void> {
   if (!resp.ok) console.error(`mark-failed ${resp.status}: ${await resp.text()}`);
 }
 
+// Fetch the send image. Returns null when the org has NO default/custom image
+// configured (server 404) — a legitimate "send text/video only" signal, not an
+// error. Any other non-OK status throws, so a transient fetch failure fails the
+// send (and retries) rather than silently dropping an image that does exist.
 async function fetchEffectiveImage(proposalId: string): Promise<{ buffer: Buffer; filename: string; kind: string } | null> {
-  try {
-    const resp = await authedFetch(EFFECTIVE_IMAGE_URL(proposalId));
-    if (!resp.ok) {
-      console.error(`effective-image ${resp.status}: ${await resp.text().catch(() => '')}`);
-      return null;
-    }
-    const arr = await resp.arrayBuffer();
-    const buffer = Buffer.from(arr);
-    const rawFilename = resp.headers.get('x-filename') || 'brand.jpg';
-    const filename = (() => { try { return decodeURIComponent(rawFilename); } catch { return rawFilename; } })();
-    const kind = resp.headers.get('x-image-kind') || 'unknown';
-    return { buffer, filename, kind };
-  } catch (err) {
-    console.error('effective-image fetch err', err);
-    return null;
+  const resp = await authedFetch(EFFECTIVE_IMAGE_URL(proposalId));
+  if (resp.status === 404) return null; // no image configured for this org → text/video-only send
+  if (!resp.ok) {
+    throw new Error(`effective-image ${resp.status}: ${await resp.text().catch(() => '')}`);
   }
+  const arr = await resp.arrayBuffer();
+  const buffer = Buffer.from(arr);
+  const rawFilename = resp.headers.get('x-filename') || 'brand.jpg';
+  const filename = (() => { try { return decodeURIComponent(rawFilename); } catch { return rawFilename; } })();
+  const kind = resp.headers.get('x-image-kind') || 'unknown';
+  return { buffer, filename, kind };
 }
 
 async function reportInbound(payload: {
@@ -333,14 +331,6 @@ async function sendViaMTProto(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const phoneDigits = phone.replace(/\D/g, '');
 
-  // Fetch the image first; mandatory per spec.
-  const img = await fetchEffectiveImage(proposalId);
-  if (!img) {
-    await postAlert('image-missing', `effective-image fetch failed for proposal ${proposalId}`);
-    return { ok: false, reason: 'image fetch failed (no default or worker auth issue)' };
-  }
-  console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
-
   let importedPeer: Api.User | null = null;
   let imageTmpPath: string | null = null;
   let videoTmpPath: string | null = null;
@@ -355,45 +345,39 @@ async function sendViaMTProto(
     // user still resolve to a phone even after we delete the contact below.
     peerPhoneByUserId.set(peer.id.toString(), phoneDigits);
 
-    // Pull the default marketing video (null when none set → image-only send).
-    // Fetched after the peer resolves so unreachable numbers don't cost a 50MB
-    // download.
+    // Image and video are BOTH optional. The message always exists (server
+    // falls back to the built-in template), so a send with no media is a plain
+    // text message. Media is fetched only after the peer resolves so unreachable
+    // numbers don't cost a wasted image fetch / 50MB video download.
+    const img = await fetchEffectiveImage(proposalId); // null = none configured for this org
+    if (img) console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
     const video = await fetchDefaultVideo();
+
+    // Stage whatever media exists as temp files, image first (legitimacy proof).
+    const mediaPaths: string[] = [];
+    if (img) { imageTmpPath = await writeTemp(img.buffer, img.filename.split('.').pop() || 'jpg'); mediaPaths.push(imageTmpPath); }
+    if (video) { videoTmpPath = video.path; mediaPaths.push(videoTmpPath); }
+
     const captionMode = message.length <= 1024;
 
-    if (video) {
-      // Album: image (legitimacy proof) + marketing video, sent as one Telegram
-      // media group. Both staged as temp files so gramjs streams from disk.
-      videoTmpPath = video.path;
-      imageTmpPath = await writeTemp(img.buffer, img.filename.split('.').pop() || 'jpg');
-      const album = [imageTmpPath, videoTmpPath];
-      if (captionMode) {
-        console.log(`  send mode: album+caption (img+video, msg=${message.length}B <= 1024)`);
-        await client.sendFile(peer, { file: album, caption: message, forceDocument: false, supportsStreaming: true });
-      } else {
-        console.log(`  send mode: album+two_bubble (img+video, msg=${message.length}B > 1024)`);
-        await client.sendFile(peer, { file: album, forceDocument: false, supportsStreaming: true });
-        try {
-          await client.sendMessage(peer, { message });
-        } catch (err) {
-          const e = err as Error;
-          return { ok: false, reason: `album sent, text failed: ${e.message || String(err)}` };
-        }
-      }
+    if (mediaPaths.length === 0) {
+      // Text-only send — no image or video configured for this org.
+      console.log('  send mode: text-only (no image/video configured)');
+      await client.sendMessage(peer, { message });
     } else {
-      // No default video set — image-only path (unchanged behavior).
-      const file = new CustomFile(img.filename, img.buffer.length, '', img.buffer);
+      const fileArg = mediaPaths.length === 1 ? mediaPaths[0] : mediaPaths;
+      const label = mediaPaths.length === 1 ? (img ? 'image' : 'video') : 'album(img+video)';
       if (captionMode) {
-        console.log(`  send mode: caption (msg=${message.length}B <= 1024)`);
-        await client.sendFile(peer, { file, caption: message });
+        console.log(`  send mode: ${label}+caption (msg=${message.length}B <= 1024)`);
+        await client.sendFile(peer, { file: fileArg, caption: message, forceDocument: false, supportsStreaming: true });
       } else {
-        console.log(`  send mode: two_bubble (msg=${message.length}B > 1024)`);
-        await client.sendFile(peer, { file });
+        console.log(`  send mode: ${label}+two_bubble (msg=${message.length}B > 1024)`);
+        await client.sendFile(peer, { file: fileArg, forceDocument: false, supportsStreaming: true });
         try {
           await client.sendMessage(peer, { message });
         } catch (err) {
           const e = err as Error;
-          return { ok: false, reason: `image sent, text failed: ${e.message || String(err)}` };
+          return { ok: false, reason: `media sent, text failed: ${e.message || String(err)}` };
         }
       }
     }

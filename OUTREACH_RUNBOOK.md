@@ -93,12 +93,13 @@ pm2 save
 ### Adding / setting up the personal workspace
 
 1. Bootstrap the personal session (above), with its own `STRING_SESSION_PATH`.
-2. Dashboard → switch to **Personal** → **upload a default brand image**
-   (**mandatory** — a send with no image is a hard failure).
-3. Optionally set a personal default message / video.
-4. Import personal customers via **Import → Outreach** while Personal is active;
+2. (Optional) Dashboard → switch to **Personal** → set a default image, message,
+   and/or video. **All three are optional** — with none set, the worker sends
+   **text-only** using the built-in template. Image and video are added for
+   legitimacy/marketing, not required to send.
+3. Import personal customers via **Import → Outreach** while Personal is active;
    the import is stamped `org_id=personal` and never mixes with company.
-5. Start `outreach-worker-personal` and confirm its log says `org=personal`.
+4. Start `outreach-worker-personal` and confirm its log says `org=personal`.
 
 ### One-time migration (already applied 2026-07-17)
 

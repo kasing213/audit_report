@@ -91,11 +91,8 @@ function agentOnly(req: Request, res: Response, next: NextFunction): void {
 router.post('/generate', express.json(), async (req: Request, res: Response) => {
   try {
     const org = resolveOrg(req);
-    const hasDefault = await new OutreachImagesRepository().hasDefault(org);
-    if (!hasDefault) {
-      res.status(409).json({ error: `No default brand image is set for the ${org} workspace. Upload one before generating proposals.` });
-      return;
-    }
+    // Image, video and a custom message are all optional — the worker sends
+    // text-only (built-in template) when an org has no default image/video set.
     const { limit, followerFilter, phones, staleDays } = req.body || {};
     const opts: Parameters<typeof generateBatch>[0] = { orgId: org };
     if (typeof limit === 'number') opts.limit = limit;
@@ -810,7 +807,9 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
     }
 
     if (!doc) {
-      Logger.error(`effective-image: no image available for proposal ${req.params.id} (no custom, no default)`);
+      // Not an error: no image configured for this org → the worker sends
+      // text-only (with the marketing video if one is set). 404 is the signal.
+      Logger.info(`effective-image[${req.params.id}] no image configured (org=${normalizeOrg(proposal.org_id)}) → worker will send text/video-only`);
       res.status(404).json({ error: 'no default image and no custom set' });
       return;
     }
