@@ -10,7 +10,7 @@ document is for the **operator** AFTER setup is done.
 |---|---|---|---|
 | Bot (Telegraf) | Railway | `TELEGRAM_BOT_TOKEN` | Receives bulk reports, posts audit messages, serves `/crm` |
 | Outreach agent | Railway (cron tick) | DB only | Drafts proposals via OpenAI, writes to `outreach_proposals` |
-| Outreach worker | Your laptop | `TELEGRAM_API_ID/HASH` + StringSession | Claims approved proposals, sends MTProto messages, posts heartbeats |
+| Outreach worker(s) | Your laptop | `TELEGRAM_API_ID/HASH` + StringSession | **One per org** (company / personal). Claims that org's approved proposals, sends MTProto messages, posts heartbeats. See [Multi-org](#multi-org-company--personal). |
 
 The flow is:
 
@@ -23,24 +23,130 @@ bulk Telegram report
                    → worker poll claims → sendMessage → mark-sent
 ```
 
+## Multi-org (Company / Personal)
+
+Outreach runs as **two separate workspaces under one dashboard**: `company`
+(default) and `personal`, each with its **own Telegram sending number**, daily
+caps, branding, imported customers, and failed-numbers list. Sales-group
+ingestion and the daily/monthly reports are **always Company** — `personal` is
+import-and-outreach only. A single `org_id` string threads through everything
+(registry: `src/outreach/orgs.ts`; request resolver: `src/outreach/org-context.ts`).
+
+### How the active org is chosen
+
+- **Dashboard:** the **Company | Personal** toggle top-right next to Logout sets
+  an `outreach_org` cookie (`GET /crm/set-org?org=…`). Every `/crm` page and API
+  call follows the cookie — **no second password**, available to any logged-in
+  user. (Not the developer/manager token gate — it's a plain workspace toggle.)
+- **Worker:** each worker declares its org via the `ORG_ID` env, sent as the
+  `X-Org-Id` header on every request.
+- `company` also matches legacy **null**, so all pre-split data is Company
+  automatically.
+
+### What's scoped per org
+
+| Thing | Per-org key / field |
+|---|---|
+| Proposals / leads / suppressions | `org_id` field (absent ⇒ company) |
+| Worker state (caps, heartbeat, pause) | doc `_id` = `company` \| `personal` |
+| Default message / image / video | doc `_id` = `default:company` \| `default:personal` |
+| Daily caps | 15 **delivered** + 40 **attempt** ceiling, counted per org |
+
+### Two workers, two sessions
+
+`ecosystem.config.js` defines **two pm2 apps**, each pinned to its own session
+file + `ORG_ID`:
+
+| App | Session file | Org |
+|---|---|---|
+| `outreach-worker-company` | `telegram-string-session.txt` | company |
+| `outreach-worker-personal` | `telegram-string-session-personal.txt` | personal |
+
+Bootstrap each number's session ONCE — the `STRING_SESSION_PATH` decides which
+file gets written:
+
+```powershell
+# company number
+$env:STRING_SESSION_PATH="./telegram-string-session.txt"; npm run login
+# personal (new) number
+$env:STRING_SESSION_PATH="./telegram-string-session-personal.txt"; npm run login
+```
+
+> ⚠️ **Session-path gotcha — this bit us once.** `npm run login` writes to
+> `STRING_SESSION_PATH`, or if that's unset, the **default**
+> `./telegram-string-session.txt` (the *company* file). A bare `npm run login`
+> (or an `$env:` line that didn't take) will **overwrite the company session**
+> with whatever number you log in as. Always run `$env:…; npm run login` as ONE
+> line and **confirm the `Session saved to …` output names the file you meant.**
+> Recovery if you clobbered company: `mv` the just-written file to the personal
+> path, then re-login the **company** number back into
+> `./telegram-string-session.txt`.
+
+Start both (replacing the old single `outreach-worker` app):
+
+```powershell
+pm2 delete outreach-worker            # remove the old single-app process if present
+pm2 start scripts/telegram-worker/ecosystem.config.js
+pm2 save
+```
+
+### Adding / setting up the personal workspace
+
+1. Bootstrap the personal session (above), with its own `STRING_SESSION_PATH`.
+2. Dashboard → switch to **Personal** → **upload a default brand image**
+   (**mandatory** — a send with no image is a hard failure).
+3. Optionally set a personal default message / video.
+4. Import personal customers via **Import → Outreach** while Personal is active;
+   the import is stamped `org_id=personal` and never mixes with company.
+5. Start `outreach-worker-personal` and confirm its log says `org=personal`.
+
+### One-time migration (already applied 2026-07-17)
+
+`scripts/backfill-org-company.js` stamps all pre-split data `company`, migrates
+the singleton worker-state → `company`, re-keys the `default` branding docs →
+`default:company`, and drops the legacy `phone_unique` suppression index.
+**Must run together with the deploy** — the new code reads `default:company`, so
+running it long before or after the deploy leaves company branding unreadable in
+the gap. Dry-run by default; `--confirm` to apply; idempotent.
+
+### Verify multi-org is healthy
+
+- `node scripts/check-outreach-worker.js` → lists **two** per-org state blocks
+  (company + personal) with independent caps.
+- `curl -H "Authorization: Bearer $AGENT_TOKEN" $BASE/crm/api/outreach/worker-status`
+  → JSON includes `"org"` and `"attempt_cap"` (their presence proves the new
+  code is live; the `X-Org-Id` header / `outreach_org` cookie selects the org).
+- Each worker's startup log shows `org=company` or `org=personal`.
+
+### Known limitations (scoped out deliberately)
+
+- Editing a customer (`PATCH`/`DELETE /crm/api/customers/:phone`) acts by phone
+  **across** orgs — low risk since the two lists are different people.
+- Automated backup-retries (privacy failures) run **Company-only**; Personal is
+  manual re-import.
+- `inbound_messages` docs aren't org-tagged (the inbound customer *lookup* is).
+
 ## Worker process management (pm2)
 
-The laptop worker runs under **pm2** (`scripts/telegram-worker/ecosystem.config.js`,
-app name `outreach-worker`). pm2 restarts it on crash and bounces it nightly at
-**10pm laptop-local** (`cron_restart: '0 22 * * *'`).
+The laptop worker runs under **pm2** (`scripts/telegram-worker/ecosystem.config.js`).
+Since the multi-org split there are **two apps** — `outreach-worker-company` and
+`outreach-worker-personal` (see [Multi-org](#multi-org-company--personal)). pm2
+restarts each on crash and bounces them nightly at **10pm laptop-local**
+(`cron_restart: '0 22 * * *'`). Commands below use `<app>` — substitute either
+app name, or omit it to act on all.
 
 | Command | What it does |
 |---|---|
-| `pm2 list` | Is `outreach-worker` `online`? `↺` column = restart count. |
-| `pm2 logs outreach-worker` | Tail worker output (heartbeats, sends, errors). |
-| `pm2 restart outreach-worker` | Manual bounce. |
-| `pm2 stop outreach-worker` | Stop (stays registered; won't auto-restart). |
-| `pm2 start scripts/telegram-worker/ecosystem.config.js` | (Re)start from the ecosystem file. |
+| `pm2 list` | Are both apps `online`? `↺` column = restart count. |
+| `pm2 logs <app>` | Tail worker output (heartbeats, sends, errors). |
+| `pm2 restart <app>` | Manual bounce. |
+| `pm2 stop <app>` | Stop (stays registered; won't auto-restart). |
+| `pm2 start scripts/telegram-worker/ecosystem.config.js` | (Re)start both from the ecosystem file. |
 | `pm2 save` | Persist the process list so it survives a daemon restart. |
 | `pm2 resurrect` | Restore the saved process list (used at boot). |
 
-If you change `ecosystem.config.js`, run `pm2 restart outreach-worker --update-env`
-(or `pm2 delete` + `pm2 start` for structural changes) and `pm2 save` again.
+If you change `ecosystem.config.js`, run `pm2 delete` + `pm2 start` (structural
+changes need a full recreate, not `--update-env`) and `pm2 save` again.
 
 ### Boot persistence (Windows) — logon Scheduled Task
 
@@ -100,11 +206,12 @@ expect one DM; `pm2 start outreach-worker` to clear.
 |---|---|---|
 | `leads_events` | Customer interaction history (one row per touch) | `/crm`, bulk-confirm, scheduler |
 | `daily_summaries` | Per-day counter aggregates from bulk reports | reports |
-| `outreach_proposals` | Drafted outreach messages with `status` lifecycle | outreach agent, worker, `/crm/outreach` |
-| `outreach_worker_state` | Singleton heartbeat / counters / pause flag | worker, dashboard badge |
-| `outreach_images` | Default + custom image **bytes** | worker (`effective-image`), `/crm/outreach` |
-| `outreach_media` | Default marketing video **metadata** (R2 key); bytes live in Cloudflare R2 | worker (`default-video-url`), `/crm/outreach` |
-| `outreach_suppressions` | Phone-level failed/suppressed ledger + backup-retry schedule | mark-failed, retry scan, `/crm/failed-numbers` |
+| `outreach_proposals` | Drafted outreach messages with `status` lifecycle (+ `org_id`) | outreach agent, worker, `/crm/outreach` |
+| `outreach_worker_state` | **Per-org** (`_id: company\|personal`) heartbeat / caps / pause flag | worker, dashboard badge |
+| `outreach_settings` | **Per-org** (`_id: default:<org>`) default outreach message | `/crm/outreach`, worker text |
+| `outreach_images` | Per-org default (`_id: default:<org>`) + per-proposal custom image **bytes** | worker (`effective-image`), `/crm/outreach` |
+| `outreach_media` | **Per-org** default video **metadata** (R2 key); bytes live in Cloudflare R2 | worker (`default-video-url`), `/crm/outreach` |
+| `outreach_suppressions` | Phone-level failed/suppressed ledger (+ `org_id`, unique per org+phone) | mark-failed, retry scan, `/crm/failed-numbers` |
 | `inbound_messages` | Customer replies received by the worker | inbound alerts |
 | `audit_logs` | Bot action history | audit trail |
 
@@ -120,16 +227,17 @@ expect one DM; `pm2 start outreach-worker` to clear.
 railway run node scripts/check-outreach-worker.js
 ```
 
-Read the `outreach_worker_state` singleton at the top of the output:
+Read the `outreach_worker_state` block(s) — **one per org** — at the top of the output:
 
 | Field | Healthy value | If wrong → |
 |---|---|---|
-| `heartbeat_age_minutes` | 0–5 | Worker is dead (closed laptop, crashed, expired session). `pm2 restart outreach-worker` on the laptop (see Worker process management). |
+| `heartbeat_age_minutes` | 0–5 | That org's worker is dead (closed laptop, crashed, expired session). `pm2 restart outreach-worker-<org>` (see Worker process management). |
 | `worker_id` | `HOSTNAME-PID` of the machine you expect | Wrong host is running the worker. Stop the other one. |
-| `paused` | `false` | Someone hit Pause on `/crm/outreach`. Click Resume. |
+| `paused` | `false` | Someone hit Pause on `/crm/outreach` for that org. Click Resume. |
 | `last_error` | `null` | Read it — names the failing layer. |
-| `sent_today` | Within `DAILY_CAP` | Cap reached → wait for UTC midnight. |
-| `claims_today_day` | Today's UTC date | Stale → counter will reset on next claim. |
+| `deliveries_today` | `< 15` (delivery cap) | Cap reached → org done for the day; resets UTC midnight. |
+| `claims_today` | `< 40` (attempt ceiling) | Hit before 15 delivered ⇒ a batch of unreachable numbers; check `/crm/failed-numbers`. |
+| `claims_today_day` | Today's UTC date | Stale → counters reset on next claim. |
 
 Then `outreach_proposals counts by status`:
 
@@ -208,15 +316,24 @@ Common cases:
 | `AUTH_KEY_UNREGISTERED` / `SESSION_REVOKED` | StringSession invalidated (logged out from another device, account password changed) | Re-run `npm run login` in `scripts/telegram-worker/` |
 | `chat did not load via tgaddr …` (with `screenshot=…`) | Legacy Playwright error \| | Worker is on old code. `git pull` to get the gramjs rewrite. |
 
-### 6. Switching the worker to a different Telegram account
+### 6. Switching a worker to a different Telegram account
 
-1. Ctrl-C the worker.
-2. Delete `scripts/telegram-worker/telegram-string-session.txt`.
-3. `npm run login` and enter the new phone.
-4. `npm start`.
+Each org has its own session file — re-login **the one for that org** and be
+careful with the path (see the session-path gotcha under
+[Multi-org](#multi-org-company--personal)):
+
+1. `pm2 stop outreach-worker-<org>`.
+2. Re-create just that org's session — the `STRING_SESSION_PATH` decides the file:
+   ```powershell
+   # company:  $env:STRING_SESSION_PATH="./telegram-string-session.txt"; npm run login
+   # personal: $env:STRING_SESSION_PATH="./telegram-string-session-personal.txt"; npm run login
+   ```
+   Confirm the `Session saved to …` line names the file you intended, then enter
+   the new phone.
+3. `pm2 start outreach-worker-<org>` (or restart both from the ecosystem file).
 
 The `TELEGRAM_API_ID`/`HASH` in `.env` don't change — they're app-level, not
-account-level.
+account-level, and are shared by both workers.
 
 ## Diagnostic scripts
 
@@ -230,7 +347,7 @@ railway run node scripts/<name>.js
 | Script | Purpose | Destructive? |
 |---|---|---|
 | `check-bulk-confirm.js` | Look up bulk-confirm test phones in `leads_events`, plus latest bulk-telegram audits | no |
-| `check-outreach-worker.js` | Worker heartbeat + draft counts by status + queued/in_flight rows | no |
+| `check-outreach-worker.js` | Per-org worker heartbeats + draft counts by status + queued/in_flight rows | no |
 | `preview-pending-outreach.js` | Full message body of every claimable proposal — read before starting the worker if you're unsure what's queued | no |
 | `query-bulk.js` | Older snapshot script for the deprecated `bulk-paste` model. Mostly historical. | no |
 
@@ -249,12 +366,17 @@ Use only when you genuinely want to start from zero.
 
 - **Sending to your own phone routes to Saved Messages** in Telegram. Test
   with a phone other than the worker account's, or look in Saved Messages.
-- **The session file lives next to `worker.ts`** by default
-  (`./telegram-string-session.txt`). Treat it like a password — it's a full
-  account login. Don't commit, don't paste in chat.
-- **DAILY_CAP is enforced server-side too** (the `claims_today` counter on
-  `outreach_worker_state`), so running two worker copies doesn't double the
-  cap. They'll just race for the same claim slot.
+- **Session files live next to `worker.ts`** — `telegram-string-session.txt`
+  (company) and `telegram-string-session-personal.txt` (personal). Treat each
+  like a password — a full account login. Don't commit, don't paste in chat.
+  Mind the **session-path gotcha** under [Multi-org](#multi-org-company--personal):
+  a bare `npm run login` overwrites the *company* file.
+- **Caps are enforced server-side, per org** (`deliveries_today` /
+  `claims_today` on that org's `outreach_worker_state` doc): **15 delivered** +
+  a **40 attempt** ceiling. Unreachable numbers (privacy/not-on-Telegram) burn
+  an *attempt* but not a *delivery* slot, so the worker keeps going until 15
+  land or 40 attempts are spent. Running two copies of the same org's worker
+  doesn't double its cap — they race for the same slot.
 - **`failed` is terminal.** No silent retries. Re-generate to draft again.
 - **Pause is server-side.** Click Pause on `/crm/outreach`; the worker reads
   the flag every iteration. No restart needed.
