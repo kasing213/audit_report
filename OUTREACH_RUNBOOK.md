@@ -349,6 +349,8 @@ railway run node scripts/<name>.js
 |---|---|---|
 | `check-bulk-confirm.js` | Look up bulk-confirm test phones in `leads_events`, plus latest bulk-telegram audits | no |
 | `check-outreach-worker.js` | Per-org worker heartbeats + draft counts by status + queued/in_flight rows | no |
+| `telegram-worker/whoami-session.js` | Print which Telegram account a session file is (`node whoami-session.js ./telegram-string-session.txt` → phone + name). Run from `scripts/telegram-worker`. **Stop that org's worker first** so you don't double-connect the same session. | no |
+| `check-070.js` | Proposals/leads/suppression for the 070597666 test number, plus proposal counts by (org, status) | no |
 | `preview-pending-outreach.js` | Full message body of every claimable proposal — read before starting the worker if you're unsure what's queued | no |
 | `query-bulk.js` | Older snapshot script for the deprecated `bulk-paste` model. Mostly historical. | no |
 
@@ -381,3 +383,18 @@ Use only when you genuinely want to start from zero.
 - **`failed` is terminal.** No silent retries. Re-generate to draft again.
 - **Pause is server-side.** Click Pause on `/crm/outreach`; the worker reads
   the flag every iteration. No restart needed.
+- **Media sends go as SEPARATE messages, not an album.** Image and video (then
+  the text, if it's over 1024 chars) are sent one at a time. A mixed photo+video
+  album via `messages.SendMultiMedia` throws `MEDIA_EMPTY` in gramjs, so the
+  worker never groups them. With no image/video set, it's a plain text send. If
+  a send fails with `MEDIA_EMPTY`, the worker is on old code — restart it.
+- **A session file is identified by ACCOUNT, not filename.** `npm run login`
+  writes whatever number you enter to `STRING_SESSION_PATH`, so a mislabeled
+  login can silently put the personal account in the company file (or vice
+  versa) and the worker runs the wrong number. After ANY login mishap, verify
+  with `whoami-session.js` (stop that worker first) — the account name/phone is
+  the source of truth, not the filename.
+- **Creating a proposal writes to the ACTIVE org.** Import → Outreach (and
+  generation) tag the new lead/proposal with whatever org the dashboard toggle
+  is on (the `outreach_org` cookie). If a personal import "shows up in company,"
+  the toggle wasn't on Personal when you imported — switch first, then import.
