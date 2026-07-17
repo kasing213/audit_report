@@ -365,14 +365,20 @@ async function sendViaMTProto(
       console.log('  send mode: text-only (no image/video configured)');
       await client.sendMessage(peer, { message });
     } else {
-      const fileArg = mediaPaths.length === 1 ? mediaPaths[0] : mediaPaths;
-      const label = mediaPaths.length === 1 ? (img ? 'image' : 'video') : 'album(img+video)';
-      if (captionMode) {
-        console.log(`  send mode: ${label}+caption (msg=${message.length}B <= 1024)`);
-        await client.sendFile(peer, { file: fileArg, caption: message, forceDocument: false, supportsStreaming: true });
-      } else {
-        console.log(`  send mode: ${label}+two_bubble (msg=${message.length}B > 1024)`);
-        await client.sendFile(peer, { file: fileArg, forceDocument: false, supportsStreaming: true });
+      // Send each media item as its OWN message. A mixed photo+video album via
+      // messages.SendMultiMedia can fail with MEDIA_EMPTY; sequential single-file
+      // sends are reliable. The caption rides on the first item when it fits
+      // (<=1024); otherwise the text follows as its own bubble after all media.
+      const kinds = `${img ? 'image' : ''}${img && video ? '+' : ''}${video ? 'video' : ''}`;
+      console.log(`  send mode: ${mediaPaths.length} media (${kinds})${captionMode ? '+caption' : '+two_bubble'}`);
+      for (let i = 0; i < mediaPaths.length; i++) {
+        if (captionMode && i === 0) {
+          await client.sendFile(peer, { file: mediaPaths[i], caption: message, forceDocument: false, supportsStreaming: true });
+        } else {
+          await client.sendFile(peer, { file: mediaPaths[i], forceDocument: false, supportsStreaming: true });
+        }
+      }
+      if (!captionMode) {
         try {
           await client.sendMessage(peer, { message });
         } catch (err) {
