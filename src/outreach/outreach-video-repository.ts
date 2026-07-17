@@ -9,9 +9,10 @@
 import { Collection } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
+import { OrgId, DEFAULT_ORG, defaultDocKey } from './orgs';
 
 export interface OutreachVideoDocument {
-  _id: 'default';
+  _id: string; // defaultDocKey(orgId), e.g. 'default:company'
   r2_key: string;
   filename: string;
   mime_type: string;
@@ -21,7 +22,6 @@ export interface OutreachVideoDocument {
 }
 
 const COLLECTION = 'outreach_media';
-const DEFAULT_ID = 'default';
 
 export class OutreachVideoRepository {
   private col: Collection<OutreachVideoDocument>;
@@ -31,22 +31,22 @@ export class OutreachVideoRepository {
     this.col = db.collection<OutreachVideoDocument>(COLLECTION);
   }
 
-  async getDefault(): Promise<OutreachVideoDocument | null> {
-    return this.col.findOne({ _id: DEFAULT_ID } as any);
+  async getDefault(orgId: OrgId = DEFAULT_ORG): Promise<OutreachVideoDocument | null> {
+    return this.col.findOne({ _id: defaultDocKey(orgId) });
   }
 
-  /** Upsert the default-video metadata. Returns the previous r2_key (if any) so
-   *  the caller can delete the now-orphaned object from R2. */
+  /** Upsert this org's default-video metadata. Returns the previous r2_key (if
+   *  any) so the caller can delete the now-orphaned object from R2. */
   async setDefault(input: {
     r2_key: string;
     filename: string;
     mime_type: string;
     size_bytes: number;
     uploaded_by: string;
-  }): Promise<string | null> {
-    const previous = await this.getDefault();
+  }, orgId: OrgId = DEFAULT_ORG): Promise<string | null> {
+    const previous = await this.getDefault(orgId);
     const doc: OutreachVideoDocument = {
-      _id: DEFAULT_ID,
+      _id: defaultDocKey(orgId),
       r2_key: input.r2_key,
       filename: input.filename,
       mime_type: input.mime_type,
@@ -54,16 +54,16 @@ export class OutreachVideoRepository {
       uploaded_at: new Date(),
       uploaded_by: input.uploaded_by,
     };
-    await this.col.replaceOne({ _id: DEFAULT_ID } as any, doc, { upsert: true });
+    await this.col.replaceOne({ _id: doc._id }, doc, { upsert: true });
     return previous?.r2_key ?? null;
   }
 
-  /** Remove the default-video metadata. Returns the removed r2_key (if any) so
-   *  the caller can delete the object from R2. */
-  async clearDefault(): Promise<string | null> {
-    const previous = await this.getDefault();
+  /** Remove this org's default-video metadata. Returns the removed r2_key (if
+   *  any) so the caller can delete the object from R2. */
+  async clearDefault(orgId: OrgId = DEFAULT_ORG): Promise<string | null> {
+    const previous = await this.getDefault(orgId);
     if (!previous) return null;
-    const res = await this.col.deleteOne({ _id: DEFAULT_ID } as any);
+    const res = await this.col.deleteOne({ _id: defaultDocKey(orgId) });
     if (res.deletedCount !== 1) {
       Logger.warn('outreach_media clearDefault: default doc vanished between read and delete');
     }

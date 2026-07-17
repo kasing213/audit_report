@@ -38,6 +38,25 @@
     font-family: var(--font-body);
   }
   .logout-link:hover { color: var(--text); }
+  .org-switch {
+    display: flex;
+    align-items: center;
+    gap: 0;
+    border: 1px solid var(--surface-2);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .org-opt {
+    color: var(--text-muted);
+    text-decoration: none;
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 0.35rem 0.7rem;
+    white-space: nowrap;
+    transition: all 0.15s;
+  }
+  .org-opt:hover { color: var(--text); background: var(--surface-2); }
+  .org-opt.active { color: var(--bg); background: var(--accent); }
   @media (max-width: 768px) {
     .header-top { gap: 0.5rem; flex-wrap: wrap; }
     .header-right { font-size: 0.75rem; gap: 0.5rem; }
@@ -63,6 +82,13 @@
       <a href="/data-entry/bulk" class="nav-link{{#if (eq activeNav "bulk-entry")}} active{{/if}}">Data Entry</a>
     </nav>
     <div class="header-right">
+      {{#if orgs}}
+      <div class="org-switch" title="Active outreach workspace">
+        {{#each orgs}}
+        <a href="/crm/set-org?org={{this.id}}" class="org-opt{{#if (eq ../activeOrg this.id)}} active{{/if}}">{{this.label}}</a>
+        {{/each}}
+      </div>
+      {{/if}}
       {{#if showStats}}
       <span class="stat-pill">Total: <span class="stat-val" id="stat-total">—</span></span>
       <span class="stat-pill">Stale: <span class="stat-val" id="stat-stale" style="color:var(--red)">—</span></span>

@@ -25,13 +25,18 @@ import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
 import { toInternationalPhone } from '../utils/phone-utils';
+import { OrgId, DEFAULT_ORG, orgMatch } from './orgs';
 
 export type SuppressionKind = 'privacy' | 'invalid' | 'transient';
 export type SuppressionStatus = 'active' | 'exhausted' | 'resolved';
 
 export interface OutreachSuppressionDocument {
   _id?: ObjectId;
-  customer_phone: string;          // toInternationalPhone-normalized — UNIQUE
+  // Outreach workspace ('company' | 'personal'). Absent on pre-multi-org docs,
+  // treated as 'company' by orgMatch(). Uniqueness is per (org_id, phone) so the
+  // same number can have an independent ledger entry in each org.
+  org_id?: string | null;
+  customer_phone: string;          // toInternationalPhone-normalized — unique per org
   failure_kind: SuppressionKind;
   status: SuppressionStatus;
   first_failed_at: Date;
@@ -86,6 +91,7 @@ function daysFromNow(days: number): Date {
 export interface RecordFailureInput {
   phone: string;
   reason: string;
+  orgId?: OrgId;
   proposalId?: ObjectId | null;
   customerName?: string | null;
   follower?: string | null;
@@ -110,7 +116,10 @@ export class OutreachSuppressionRepository {
       indexesReady = true;
       this.col
         .createIndexes([
-          { key: { customer_phone: 1 }, name: 'phone_unique', unique: true },
+          // Unique per (org, phone) so company and personal keep independent
+          // ledgers for the same number. The legacy single-field 'phone_unique'
+          // index is dropped by scripts/backfill-org-company.ts on existing DBs.
+          { key: { org_id: 1, customer_phone: 1 }, name: 'org_phone_unique', unique: true },
           { key: { status: 1, next_retry_at: 1 }, name: 'retry_due_idx' },
           { key: { status: 1, last_failed_at: -1 }, name: 'list_idx' },
         ])
@@ -128,13 +137,16 @@ export class OutreachSuppressionRepository {
    */
   async recordFailure(input: RecordFailureInput): Promise<{ kind: SuppressionKind; suppressed: boolean }> {
     const phone = toInternationalPhone(input.phone.trim());
+    const orgId = input.orgId ?? DEFAULT_ORG;
+    const org = orgMatch(orgId);
     const kind = classifyFailure(input.reason);
     const now = new Date();
 
-    const existing = await this.col.findOne({ customer_phone: phone });
+    const existing = await this.col.findOne({ org_id: org, customer_phone: phone });
 
     if (!existing) {
       const doc: OutreachSuppressionDocument = {
+        org_id: orgId,
         customer_phone: phone,
         failure_kind: kind,
         status: 'active',
@@ -160,7 +172,7 @@ export class OutreachSuppressionRepository {
     }
 
     // Existing doc (or lost an insert race): merge.
-    const prev = existing ?? (await this.col.findOne({ customer_phone: phone }));
+    const prev = existing ?? (await this.col.findOne({ org_id: org, customer_phone: phone }));
     const effectiveKind = prev ? higherKind(prev.failure_kind, kind) : kind;
     const set: Partial<OutreachSuppressionDocument> = {
       last_failed_at: now,
@@ -188,13 +200,14 @@ export class OutreachSuppressionRepository {
     }
     // privacy-staying-privacy: leave retries_used / next_retry_at to bumpRetry.
 
-    await this.col.updateOne({ customer_phone: phone }, { $set: set });
+    await this.col.updateOne({ org_id: org, customer_phone: phone }, { $set: set });
     return { kind: effectiveKind, suppressed: effectiveKind !== 'transient' };
   }
 
   /** True if this phone should be excluded from normal candidate generation. */
-  async isSuppressed(phone: string): Promise<boolean> {
+  async isSuppressed(phone: string, orgId: OrgId = DEFAULT_ORG): Promise<boolean> {
     const doc = await this.col.findOne({
+      org_id: orgMatch(orgId),
       customer_phone: toInternationalPhone(phone.trim()),
       failure_kind: { $in: SUPPRESSING_KINDS },
       status: { $in: SUPPRESSING_STATUSES },
@@ -202,10 +215,10 @@ export class OutreachSuppressionRepository {
     return Boolean(doc);
   }
 
-  /** Set of all phones currently suppressing normal generation (for bulk filtering). */
-  async getSuppressedPhones(): Promise<Set<string>> {
+  /** Set of all phones currently suppressing normal generation for this org. */
+  async getSuppressedPhones(orgId: OrgId = DEFAULT_ORG): Promise<Set<string>> {
     const cursor = this.col.find(
-      { failure_kind: { $in: SUPPRESSING_KINDS }, status: { $in: SUPPRESSING_STATUSES } },
+      { org_id: orgMatch(orgId), failure_kind: { $in: SUPPRESSING_KINDS }, status: { $in: SUPPRESSING_STATUSES } },
       { projection: { customer_phone: 1, _id: 0 } }
     );
     const set = new Set<string>();
@@ -214,9 +227,9 @@ export class OutreachSuppressionRepository {
   }
 
   /** Privacy suppressions whose next backup retry is due, oldest first, capped. */
-  async listForRetry(now: Date, budget: number): Promise<OutreachSuppressionDocument[]> {
+  async listForRetry(now: Date, budget: number, orgId: OrgId = DEFAULT_ORG): Promise<OutreachSuppressionDocument[]> {
     return this.col
-      .find({ failure_kind: 'privacy', status: 'active', next_retry_at: { $lte: now } })
+      .find({ org_id: orgMatch(orgId), failure_kind: 'privacy', status: 'active', next_retry_at: { $lte: now } })
       .sort({ next_retry_at: 1 })
       .limit(Math.max(0, budget))
       .toArray();
@@ -228,11 +241,12 @@ export class OutreachSuppressionRepository {
    * +60d, or marks the phone 'exhausted' once MAX_RETRIES is reached. This is
    * the SOLE owner of retries_used/next_retry_at for an in-progress privacy doc.
    */
-  async bumpRetry(phone: string, proposalId: ObjectId | null): Promise<void> {
+  async bumpRetry(phone: string, proposalId: ObjectId | null, orgId: OrgId = DEFAULT_ORG): Promise<void> {
     const normalized = toInternationalPhone(phone.trim());
+    const org = orgMatch(orgId);
     const now = new Date();
     const updated = await this.col.findOneAndUpdate(
-      { customer_phone: normalized, failure_kind: 'privacy', status: 'active' },
+      { org_id: org, customer_phone: normalized, failure_kind: 'privacy', status: 'active' },
       {
         $inc: { retries_used: 1 },
         $set: { last_proposal_id: proposalId, next_retry_at: daysFromNow(RETRY_INTERVAL_DAYS), updated_at: now },
@@ -242,7 +256,7 @@ export class OutreachSuppressionRepository {
     const doc = updated as OutreachSuppressionDocument | null;
     if (doc && doc.retries_used >= MAX_RETRIES) {
       await this.col.updateOne(
-        { customer_phone: doc.customer_phone },
+        { org_id: org, customer_phone: doc.customer_phone },
         { $set: { status: 'exhausted', next_retry_at: null, updated_at: new Date() } }
       );
     }
@@ -254,29 +268,29 @@ export class OutreachSuppressionRepository {
    * has a live proposal, or has no customer record) so it doesn't monopolize the
    * daily retry budget on every scan.
    */
-  async deferRetry(phone: string): Promise<void> {
+  async deferRetry(phone: string, orgId: OrgId = DEFAULT_ORG): Promise<void> {
     await this.col.updateOne(
-      { customer_phone: toInternationalPhone(phone.trim()), failure_kind: 'privacy', status: 'active' },
+      { org_id: orgMatch(orgId), customer_phone: toInternationalPhone(phone.trim()), failure_kind: 'privacy', status: 'active' },
       { $set: { next_retry_at: daysFromNow(RETRY_INTERVAL_DAYS), updated_at: new Date() } }
     );
   }
 
   /** Clear suppression after a confirmed successful send. Idempotent. */
-  async resolve(phone: string): Promise<void> {
+  async resolve(phone: string, orgId: OrgId = DEFAULT_ORG): Promise<void> {
     const now = new Date();
     await this.col.updateOne(
-      { customer_phone: toInternationalPhone(phone.trim()), status: { $ne: 'resolved' } },
+      { org_id: orgMatch(orgId), customer_phone: toInternationalPhone(phone.trim()), status: { $ne: 'resolved' } },
       { $set: { status: 'resolved', resolved_at: now, next_retry_at: null, updated_at: now } }
     );
   }
 
   /** Paginated list for the Failed-numbers CRM page, plus status counts. */
-  async list(query: SuppressionListQuery): Promise<{
+  async list(query: SuppressionListQuery, orgId: OrgId = DEFAULT_ORG): Promise<{
     rows: OutreachSuppressionDocument[];
     total: number;
     counts: Record<SuppressionStatus, number>;
   }> {
-    const filter: Record<string, unknown> = {};
+    const filter: Record<string, unknown> = { org_id: orgMatch(orgId) };
     if (query.kind) filter.failure_kind = query.kind;
     if (query.status) filter.status = query.status;
     if (query.follower) filter.follower = query.follower;
@@ -292,6 +306,7 @@ export class OutreachSuppressionRepository {
       this.col.find(filter).sort({ last_failed_at: -1 }).skip(offset).limit(limit).toArray(),
       this.col.countDocuments(filter),
       this.col.aggregate<{ _id: SuppressionStatus; count: number }>([
+        { $match: { org_id: orgMatch(orgId) } },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]).toArray(),
     ]);
@@ -314,7 +329,7 @@ export class OutreachSuppressionRepository {
 
     const groups = await proposals
       .aggregate<{
-        _id: string;
+        _id: { phone: string; org_id: string | null };
         first_failed_at: Date;
         last_failed_at: Date;
         last_reason: string | null;
@@ -325,8 +340,9 @@ export class OutreachSuppressionRepository {
         { $match: { status: 'failed' } },
         { $sort: { created_at: 1 } },
         {
+          // One suppression per (org, phone) so each workspace keeps its own ledger.
           $group: {
-            _id: '$customer_phone',
+            _id: { phone: '$customer_phone', org_id: { $ifNull: ['$org_id', DEFAULT_ORG] } },
             first_failed_at: { $first: '$created_at' },
             last_failed_at: { $last: '$created_at' },
             last_reason: { $last: '$failed_reason' },
@@ -344,10 +360,11 @@ export class OutreachSuppressionRepository {
 
     for (let i = 0; i < groups.length; i++) {
       const g = groups[i];
-      if (!g._id) { skipped++; continue; }
-      const phone = toInternationalPhone(String(g._id).trim());
+      if (!g._id || !g._id.phone) { skipped++; continue; }
+      const phone = toInternationalPhone(String(g._id.phone).trim());
+      const orgId = g._id.org_id ?? DEFAULT_ORG;
 
-      const existing = await this.col.findOne({ customer_phone: phone });
+      const existing = await this.col.findOne({ org_id: orgMatch(orgId), customer_phone: phone });
       if (existing) { skipped++; continue; }
 
       const reason = g.last_reason || 'unspecified worker failure';
@@ -357,6 +374,7 @@ export class OutreachSuppressionRepository {
       const stagger = kind === 'privacy' ? daysFromNow(RETRY_INTERVAL_DAYS + (i % 30)) : null;
 
       const doc: OutreachSuppressionDocument = {
+        org_id: orgId,
         customer_phone: phone,
         failure_kind: kind,
         status: 'active',

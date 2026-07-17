@@ -14,23 +14,27 @@ const { MongoClient } = require('mongodb');
   const db = client.db();
   console.log('DB:', db.databaseName);
 
-  const state = await db.collection('outreach_worker_state').findOne({ _id: 'singleton' });
+  // worker_state is now per-org (_id: 'company' | 'personal'), not a singleton.
+  const states = await db.collection('outreach_worker_state').find({}).toArray();
   const nowMs = Date.now();
-  const heartbeatAgeMin =
-    state?.last_heartbeat_at ? Math.round((nowMs - new Date(state.last_heartbeat_at).getTime()) / 60000) : null;
-
-  console.log('\n=== outreach_worker_state (singleton) ===');
-  console.log(JSON.stringify({
-    paused: state?.paused,
-    worker_id: state?.worker_id,
-    last_heartbeat_at: state?.last_heartbeat_at,
-    heartbeat_age_minutes: heartbeatAgeMin,
-    sent_today: state?.sent_today,
-    claims_today: state?.claims_today,
-    claims_today_day: state?.claims_today_day,
-    last_error: state?.last_error,
-    updated_at: state?.updated_at,
-  }, null, 2));
+  console.log('\n=== outreach_worker_state (per-org) ===');
+  for (const state of states) {
+    const heartbeatAgeMin =
+      state?.last_heartbeat_at ? Math.round((nowMs - new Date(state.last_heartbeat_at).getTime()) / 60000) : null;
+    console.log(JSON.stringify({
+      org: state?._id,
+      paused: state?.paused,
+      worker_id: state?.worker_id,
+      last_heartbeat_at: state?.last_heartbeat_at,
+      heartbeat_age_minutes: heartbeatAgeMin,
+      sent_today: state?.sent_today,
+      claims_today: state?.claims_today,
+      deliveries_today: state?.deliveries_today,
+      claims_today_day: state?.claims_today_day,
+      last_error: state?.last_error,
+      updated_at: state?.updated_at,
+    }, null, 2));
+  }
 
   const drafts = db.collection('outreach_proposals');
   const counts = await drafts.aggregate([

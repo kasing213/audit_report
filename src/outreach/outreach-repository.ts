@@ -1,11 +1,15 @@
 import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
+import { OrgId, orgMatch } from './orgs';
 
 export type OutreachStatus = 'pending' | 'approved' | 'in_flight' | 'sent' | 'skipped' | 'failed';
 
 export interface OutreachProposalDocument {
   _id?: ObjectId;
+  // Outreach workspace ('company' | 'personal'). Absent on pre-multi-org
+  // proposals, treated as 'company' by orgMatch(). See src/outreach/orgs.ts.
+  org_id?: string | null;
   generation_id: string;
   customer_phone: string;
   customer_name: string | null;
@@ -45,6 +49,7 @@ export class OutreachRepository {
       this.col
         .createIndexes([
           { key: { status: 1 }, name: 'status_idx' },
+          { key: { org_id: 1, status: 1 }, name: 'org_status_idx' },
           { key: { customer_phone: 1 }, name: 'phone_idx' },
           { key: { generation_id: 1 }, name: 'generation_idx' },
           { key: { created_at: -1 }, name: 'created_at_desc' },
@@ -59,8 +64,9 @@ export class OutreachRepository {
     return result.insertedCount;
   }
 
-  async listByStatus(status: OutreachStatus | 'all', limit = 100): Promise<OutreachProposalDocument[]> {
-    const filter = status === 'all' ? {} : { status };
+  async listByStatus(orgId: OrgId, status: OutreachStatus | 'all', limit = 100): Promise<OutreachProposalDocument[]> {
+    const filter: Record<string, unknown> = { org_id: orgMatch(orgId) };
+    if (status !== 'all') filter.status = status;
     return this.col.find(filter).sort({ created_at: -1 }).limit(limit).toArray();
   }
 
@@ -116,15 +122,17 @@ export class OutreachRepository {
   }
 
   async claimNextApproved(
+    orgId: OrgId,
     leaseMs: number,
     onLeaseFailedFinal?: (proposal: OutreachProposalDocument) => Promise<void>
   ): Promise<OutreachProposalDocument | null> {
     const now = new Date();
     const leaseExpires = new Date(now.getTime() + leaseMs);
+    const org = orgMatch(orgId);
 
     // Reclaim expired in_flight leases. Increment claim_attempts; if the cap
     // is hit, flip to `failed` so the same broken proposal doesn't loop forever.
-    const expiredCursor = this.col.find({ status: 'in_flight', lease_expires_at: { $lt: now } });
+    const expiredCursor = this.col.find({ org_id: org, status: 'in_flight', lease_expires_at: { $lt: now } });
     for await (const expired of expiredCursor) {
       const attempts = (expired.claim_attempts || 0) + 1;
       if (attempts >= MAX_LEASE_ATTEMPTS) {
@@ -155,7 +163,7 @@ export class OutreachRepository {
     }
 
     const result = await this.col.findOneAndUpdate(
-      { status: 'approved' },
+      { org_id: org, status: 'approved' },
       { $set: { status: 'in_flight', lease_expires_at: leaseExpires } },
       { sort: { approved_at: 1 }, returnDocument: 'after' }
     );
@@ -198,9 +206,10 @@ export class OutreachRepository {
     }
   }
 
-  async hasRecentProposalForPhone(phone: string): Promise<boolean> {
+  async hasRecentProposalForPhone(phone: string, orgId: OrgId): Promise<boolean> {
     const cutoff = new Date(Date.now() - RECENT_PROPOSAL_WINDOW_DAYS * 24 * 60 * 60 * 1000);
     const existing = await this.col.findOne({
+      org_id: orgMatch(orgId),
       customer_phone: phone,
       status: { $in: ['pending', 'approved', 'in_flight', 'sent'] },
       created_at: { $gte: cutoff },
@@ -213,8 +222,11 @@ export class OutreachRepository {
     return result.deletedCount;
   }
 
-  async counts(): Promise<Record<OutreachStatus, number>> {
-    const pipeline = [{ $group: { _id: '$status', count: { $sum: 1 } } }];
+  async counts(orgId: OrgId): Promise<Record<OutreachStatus, number>> {
+    const pipeline = [
+      { $match: { org_id: orgMatch(orgId) } },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ];
     const rows = await this.col.aggregate<{ _id: OutreachStatus; count: number }>(pipeline).toArray();
     const base: Record<OutreachStatus, number> = {
       pending: 0,

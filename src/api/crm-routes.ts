@@ -7,15 +7,34 @@ import { REASON_CODES } from '../constants/reason-codes';
 import { GroupConfigManager } from '../utils/group-config';
 import { formatTelegramLink, formatPhoneDisplay, toInternationalPhone } from '../utils/phone-utils';
 import { generateBatch } from '../outreach/outreach-agent';
+import { resolveOrg, ORG_COOKIE_NAME } from '../outreach/org-context';
+import { OUTREACH_ORGS, normalizeOrg } from '../outreach/orgs';
 import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
+const ORG_COOKIE_MAX_AGE_MS = 365 * 24 * 60 * 60 * 1000;
 
 function getRepository(): SalesCaseRepository {
   return new SalesCaseRepository();
 }
+
+// Common template context so every CRM page shows the org switcher and reflects
+// the active workspace. Merge into each page's renderPage data.
+function withOrg(req: Request): { activeOrg: string; orgs: typeof OUTREACH_ORGS } {
+  return { activeOrg: resolveOrg(req), orgs: OUTREACH_ORGS };
+}
+
+// GET /crm/set-org?org=personal — flip the active workspace, then return to the
+// page the switcher was clicked from. The cookie is what resolveOrg reads for all
+// browser API calls, so nothing else needs to change client-side.
+router.get('/set-org', (req: Request, res: Response) => {
+  const org = normalizeOrg(req.query.org);
+  res.cookie(ORG_COOKIE_NAME, org, { path: '/', maxAge: ORG_COOKIE_MAX_AGE_MS, sameSite: 'lax' });
+  const referer = req.get('referer');
+  res.redirect(referer || '/crm');
+});
 
 // Parse one QuickBook report line: "060-Pkarikkongsuon 092 462911"
 // → { name: "Pkarikkongsuon", phone: "+85592462911" }. Returns null if no phone → reject row.
@@ -37,10 +56,11 @@ function extractQuickBookRecord(text: string): { name: string | null; phone: str
 }
 
 // GET /crm — customers page
-router.get('/', async (_req: Request, res: Response) => {
+router.get('/', async (req: Request, res: Response) => {
   try {
     const groupConfig = GroupConfigManager.getInstance();
     const html = await renderPage('crm/customers', {
+      ...withOrg(req),
       followers: groupConfig.getAllFollowerNames(),
       reasonCodes: REASON_CODES,
       reasonCodesJson: JSON.stringify(REASON_CODES),
@@ -53,9 +73,9 @@ router.get('/', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/groups — groups page
-router.get('/groups', async (_req: Request, res: Response) => {
+router.get('/groups', async (req: Request, res: Response) => {
   try {
-    const html = await renderPage('crm/groups', {});
+    const html = await renderPage('crm/groups', { ...withOrg(req) });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving CRM groups page', error as Error);
@@ -64,9 +84,9 @@ router.get('/groups', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/reports — reports page
-router.get('/reports', async (_req: Request, res: Response) => {
+router.get('/reports', async (req: Request, res: Response) => {
   try {
-    const html = await renderPage('crm/reports', {});
+    const html = await renderPage('crm/reports', { ...withOrg(req) });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving CRM reports page', error as Error);
@@ -75,9 +95,9 @@ router.get('/reports', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/import — import page
-router.get('/import', async (_req: Request, res: Response) => {
+router.get('/import', async (req: Request, res: Response) => {
   try {
-    const html = await renderPage('crm/import', {});
+    const html = await renderPage('crm/import', { ...withOrg(req) });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving CRM import page', error as Error);
@@ -86,9 +106,9 @@ router.get('/import', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/import-outreach — import + push straight to outreach pending
-router.get('/import-outreach', async (_req: Request, res: Response) => {
+router.get('/import-outreach', async (req: Request, res: Response) => {
   try {
-    const html = await renderPage('crm/import-outreach', {});
+    const html = await renderPage('crm/import-outreach', { ...withOrg(req) });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving CRM import-outreach page', error as Error);
@@ -97,9 +117,10 @@ router.get('/import-outreach', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/quickbook-customers — paginated dashboard of QuickBook-imported customers
-router.get('/quickbook-customers', async (_req: Request, res: Response) => {
+router.get('/quickbook-customers', async (req: Request, res: Response) => {
   try {
     const html = await renderPage('crm/quickbook-customers', {
+      ...withOrg(req),
       reasonCodesJson: JSON.stringify(REASON_CODES)
     });
     res.set('Content-Type', 'text/html').send(html);
@@ -110,9 +131,9 @@ router.get('/quickbook-customers', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/outreach — outreach queue page
-router.get('/outreach', async (_req: Request, res: Response) => {
+router.get('/outreach', async (req: Request, res: Response) => {
   try {
-    const html = await renderPage('crm/outreach', {});
+    const html = await renderPage('crm/outreach', { ...withOrg(req) });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving CRM outreach page', error as Error);
@@ -121,9 +142,9 @@ router.get('/outreach', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/failed-numbers — failed / privacy-blocked numbers list
-router.get('/failed-numbers', async (_req: Request, res: Response) => {
+router.get('/failed-numbers', async (req: Request, res: Response) => {
   try {
-    const html = await renderPage('crm/failed-numbers', {});
+    const html = await renderPage('crm/failed-numbers', { ...withOrg(req) });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving CRM failed-numbers page', error as Error);
@@ -132,9 +153,9 @@ router.get('/failed-numbers', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/brain — AI brain document manager
-router.get('/brain', async (_req: Request, res: Response) => {
+router.get('/brain', async (req: Request, res: Response) => {
   try {
-    const html = await renderPage('crm/brain', {});
+    const html = await renderPage('crm/brain', { ...withOrg(req) });
     res.set('Content-Type', 'text/html').send(html);
   } catch (error) {
     Logger.error('Error serving CRM brain page', error as Error);
@@ -145,6 +166,7 @@ router.get('/brain', async (_req: Request, res: Response) => {
 // GET /crm/api/customers — JSON customer data with filters
 router.get('/api/customers', async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const repository = getRepository();
     const follower = req.query.follower as string | undefined;
     const filter = (req.query.filter as string) || 'all';
@@ -157,17 +179,17 @@ router.get('/api/customers', async (req: Request, res: Response) => {
 
     switch (filter) {
       case 'stale':
-        cases = await repository.getStaleCustomers(days, followerParam);
+        cases = await repository.getStaleCustomers(days, followerParam, org);
         break;
       case 'reason':
         if (!reason) {
           res.status(400).json({ error: 'reason parameter required for reason filter' });
           return;
         }
-        cases = await repository.getCustomersByReason(reason, followerParam);
+        cases = await repository.getCustomersByReason(reason, followerParam, org);
         break;
       default:
-        cases = await repository.getAllCustomers(followerParam);
+        cases = await repository.getAllCustomers(followerParam, org);
     }
 
     // Optional temperature filter applied in-memory to stay compatible with all base filters
@@ -203,10 +225,11 @@ router.get('/api/customers', async (req: Request, res: Response) => {
 // imported from a QuickBook/spreadsheet file (source.model = 'csv-import').
 router.get('/api/quickbook-customers', async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const pageSize = 20;
     const page = Math.max(1, parseInt(req.query.page as string) || 1);
     const repository = getRepository();
-    const { customers, total } = await repository.getQuickBookCustomers(page, pageSize);
+    const { customers, total } = await repository.getQuickBookCustomers(page, pageSize, org);
 
     // Same enrichment as /api/customers so the row rendering is identical.
     const enriched = customers.map(c => ({
@@ -370,6 +393,7 @@ router.post('/api/import/confirm', express.json(), async (req: Request, res: Res
       return;
     }
 
+    const org = resolveOrg(req);
     const repository = getRepository();
     const today = new Date().toISOString().slice(0, 10);
     let imported = 0;
@@ -385,6 +409,7 @@ router.post('/api/import/confirm', express.json(), async (req: Request, res: Res
 
       const event: LeadEventDocument = {
         date: row.date || today,
+        org_id: org,
         customer: {
           name: row.name || null,
           phone: row.phone
@@ -441,6 +466,7 @@ router.post('/api/import/confirm-outreach', express.json(), async (req: Request,
       return;
     }
 
+    const org = resolveOrg(req);
     const repository = getRepository();
     const today = new Date().toISOString().slice(0, 10);
     let imported = 0;
@@ -457,6 +483,7 @@ router.post('/api/import/confirm-outreach', express.json(), async (req: Request,
 
       leadEvents.push({
         date: row.date || today,
+        org_id: org,
         customer: {
           name: row.name || null,
           phone: row.phone
@@ -485,9 +512,9 @@ router.post('/api/import/confirm-outreach', express.json(), async (req: Request,
       await repository.saveLeadEvents(leadEvents);
     }
 
-    // Stage every imported phone as a PENDING proposal (limit = all rows, bypassing the
-    // default 20/batch cap). Static Khmer template, held for manual approval in /crm/outreach.
-    const generation = await generateBatch({ phones, limit: phones.length });
+    // Stage every imported phone as a PENDING proposal for this org (limit = all rows,
+    // bypassing the default 20/batch cap). Static template, held for approval in /crm/outreach.
+    const generation = await generateBatch({ phones, limit: phones.length, orgId: org });
 
     await repository.logAudit({
       timestamp: new Date(),

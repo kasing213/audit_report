@@ -1,4 +1,5 @@
 import { Document } from 'mongodb';
+import { OrgId, DEFAULT_ORG, orgMatch } from '../outreach/orgs';
 
 /**
  * Helper function to calculate month date range
@@ -39,12 +40,13 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
   const { startDate, endDate } = getMonthDateRange(month);
 
   return [
-    // Stage 1: Filter by follower + month
+    // Stage 1: Filter by follower + month. Reports are Company-only.
     {
       $match: {
         follower: follower,
         date: { $gte: startDate, $lte: endDate },
-        deleted: { $ne: true }
+        deleted: { $ne: true },
+        org_id: orgMatch(DEFAULT_ORG)
       }
     },
 
@@ -113,10 +115,11 @@ export function buildCasesByFollowerAndMonthPipeline(follower: string, month: st
  * Build aggregation pipeline for all unique customers (optionally filtered by follower).
  * Groups all events by phone number regardless of month.
  */
-export function buildAllCustomersPipeline(follower?: string): Document[] {
+export function buildAllCustomersPipeline(follower?: string, orgId: OrgId = DEFAULT_ORG): Document[] {
   const matchStage: any = {
     'customer.phone': { $ne: null },
-    deleted: { $ne: true }
+    deleted: { $ne: true },
+    org_id: orgMatch(orgId)
   };
   if (follower) {
     matchStage.follower = follower;
@@ -177,11 +180,11 @@ export function buildAllCustomersPipeline(follower?: string): Document[] {
  * one event from a spreadsheet import (source.model === 'csv-import'). Returns a single
  * $facet document: { data: CustomerCase[] (page slice), meta: [{ total }] }.
  */
-export function buildQuickBookCustomersPipeline(page: number, pageSize: number): Document[] {
+export function buildQuickBookCustomersPipeline(page: number, pageSize: number, orgId: OrgId = DEFAULT_ORG): Document[] {
   const skip = (Math.max(1, page) - 1) * pageSize;
 
   return [
-    { $match: { 'customer.phone': { $ne: null }, deleted: { $ne: true } } },
+    { $match: { 'customer.phone': { $ne: null }, deleted: { $ne: true }, org_id: orgMatch(orgId) } },
     { $sort: { 'customer.phone': 1, date: 1, created_at: 1 } },
     {
       $group: {
@@ -242,14 +245,15 @@ export function buildQuickBookCustomersPipeline(page: number, pageSize: number):
 /**
  * Build aggregation pipeline for stale customers — those not contacted in X days.
  */
-export function buildStaleCustomersPipeline(daysThreshold: number, follower?: string): Document[] {
+export function buildStaleCustomersPipeline(daysThreshold: number, follower?: string, orgId: OrgId = DEFAULT_ORG): Document[] {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - daysThreshold);
   const cutoffStr = cutoffDate.toISOString().slice(0, 10);
 
   const matchStage: any = {
     'customer.phone': { $ne: null },
-    deleted: { $ne: true }
+    deleted: { $ne: true },
+    org_id: orgMatch(orgId)
   };
   if (follower) {
     matchStage.follower = follower;
@@ -313,10 +317,11 @@ export function buildStaleCustomersPipeline(daysThreshold: number, follower?: st
 /**
  * Build aggregation pipeline for customers filtered by most recent reason code.
  */
-export function buildCustomersByReasonPipeline(reasonCode: string, follower?: string): Document[] {
+export function buildCustomersByReasonPipeline(reasonCode: string, follower?: string, orgId: OrgId = DEFAULT_ORG): Document[] {
   const matchStage: any = {
     'customer.phone': { $ne: null },
-    deleted: { $ne: true }
+    deleted: { $ne: true },
+    org_id: orgMatch(orgId)
   };
   if (follower) {
     matchStage.follower = follower;
@@ -388,10 +393,12 @@ export function buildCustomersByTemperatureAndMonthPipeline(
 ): Document[] {
   const { startDate, endDate } = getMonthDateRange(month);
 
+  // Temperature reports (/hot /warm /cold) are Company-only.
   const matchStage: any = {
     'customer.phone': { $ne: null },
     date: { $gte: startDate, $lte: endDate },
-    deleted: { $ne: true }
+    deleted: { $ne: true },
+    org_id: orgMatch(DEFAULT_ORG)
   };
   if (follower) {
     matchStage.follower = follower;
@@ -464,9 +471,11 @@ export function buildMonthlyCasesSummaryPipeline(year: number, month: number, gr
   const monthStr = `${year}-${String(month).padStart(2, '0')}`;
   const { startDate, endDate } = getMonthDateRange(monthStr);
 
+  // Monthly cases summary (Excel export / reports) is Company-only.
   const matchStage: any = {
     date: { $gte: startDate, $lte: endDate },
-    deleted: { $ne: true }
+    deleted: { $ne: true },
+    org_id: orgMatch(DEFAULT_ORG)
   };
 
   // Add group filter if specified

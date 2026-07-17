@@ -8,6 +8,8 @@ import { OutreachSettingsRepository } from '../outreach/outreach-settings-reposi
 import { getStaticOutreachMessage, DEFAULT_STATIC_MESSAGE } from '../outreach/static-template';
 import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
+import { resolveOrg } from '../outreach/org-context';
+import { normalizeOrg } from '../outreach/orgs';
 import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery } from '../outreach/outreach-suppression-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { formatPhoneDisplay, formatTelegramLink } from '../utils/phone-utils';
@@ -23,6 +25,11 @@ import { ObjectId } from 'mongodb';
 const router = express.Router();
 const LEASE_MS = 5 * 60 * 1000; // 5 min
 const DEFAULT_DAILY_CAP = 15;
+// Anti-ban ceiling on total send attempts (ImportContacts lookups) per day.
+// Unreachable numbers (privacy-hidden / not on Telegram) no longer consume a
+// delivery slot, so this bounds how many dead numbers the worker will try
+// before giving up for the day, even if it never reaches DAILY_CAP deliveries.
+const DEFAULT_ATTEMPT_CAP = 40;
 const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
@@ -62,6 +69,14 @@ function dailyCap(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_CAP;
 }
 
+function attemptCap(): number {
+  const parsed = Number(process.env.DAILY_ATTEMPT_CAP);
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  // Never let the attempt ceiling fall below the delivery target, or the worker
+  // could hit the attempt cap before it can possibly deliver DAILY_CAP.
+  return Math.max(DEFAULT_ATTEMPT_CAP, dailyCap());
+}
+
 router.use(authMiddleware);
 
 function agentOnly(req: Request, res: Response, next: NextFunction): void {
@@ -75,13 +90,14 @@ function agentOnly(req: Request, res: Response, next: NextFunction): void {
 // POST /crm/api/outreach/generate
 router.post('/generate', express.json(), async (req: Request, res: Response) => {
   try {
-    const hasDefault = await new OutreachImagesRepository().hasDefault();
+    const org = resolveOrg(req);
+    const hasDefault = await new OutreachImagesRepository().hasDefault(org);
     if (!hasDefault) {
-      res.status(409).json({ error: 'No default brand image is set. Upload one before generating proposals.' });
+      res.status(409).json({ error: `No default brand image is set for the ${org} workspace. Upload one before generating proposals.` });
       return;
     }
     const { limit, followerFilter, phones, staleDays } = req.body || {};
-    const opts: Parameters<typeof generateBatch>[0] = {};
+    const opts: Parameters<typeof generateBatch>[0] = { orgId: org };
     if (typeof limit === 'number') opts.limit = limit;
     if (typeof followerFilter === 'string') opts.followerFilter = followerFilter;
     if (Array.isArray(phones)) opts.phones = phones.filter((p): p is string => typeof p === 'string');
@@ -97,12 +113,13 @@ router.post('/generate', express.json(), async (req: Request, res: Response) => 
 // GET /crm/api/outreach?status=pending&limit=100
 router.get('/', async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const status = (req.query.status as string) || 'pending';
     const limit = Math.min(parseInt((req.query.limit as string) || '100', 10) || 100, 500);
     const repo = new OutreachRepository();
-    const proposals = await repo.listByStatus(status as any, limit);
-    const counts = await repo.counts();
-    res.json({ proposals, counts });
+    const proposals = await repo.listByStatus(org, status as any, limit);
+    const counts = await repo.counts(org);
+    res.json({ org, proposals, counts });
   } catch (err) {
     Logger.error('outreach list failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
@@ -110,18 +127,22 @@ router.get('/', async (req: Request, res: Response) => {
 });
 
 // GET /crm/api/outreach/worker-status — visible to any logged-in user (UI badge polls this)
-router.get('/worker-status', async (_req: Request, res: Response) => {
+router.get('/worker-status', async (req: Request, res: Response) => {
   try {
-    const state = await new OutreachWorkerStateRepository().getStatus();
+    const org = resolveOrg(req);
+    const state = await new OutreachWorkerStateRepository().getStatus(org);
     res.json({
+      org,
       paused: state.paused,
       last_heartbeat_at: state.last_heartbeat_at,
       worker_id: state.worker_id,
       sent_today: state.sent_today,
       claims_today: state.claims_today,
+      deliveries_today: state.deliveries_today,
       claims_today_day: state.claims_today_day,
       last_error: state.last_error,
       daily_cap: dailyCap(),
+      attempt_cap: attemptCap(),
     });
   } catch (err) {
     Logger.error('outreach worker-status failed', err as Error);
@@ -151,11 +172,12 @@ router.post('/scheduler/run-once', async (_req: Request, res: Response) => {
 // POST /crm/api/outreach/pause — toggle or set pause state
 router.post('/pause', express.json(), async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const repo = new OutreachWorkerStateRepository();
-    const current = await repo.getStatus();
+    const current = await repo.getStatus(org);
     const target = typeof req.body?.paused === 'boolean' ? req.body.paused : !current.paused;
-    await repo.setPaused(target);
-    res.json({ paused: target });
+    await repo.setPaused(org, target);
+    res.json({ org, paused: target });
   } catch (err) {
     Logger.error('outreach pause failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
@@ -166,13 +188,14 @@ router.post('/pause', express.json(), async (req: Request, res: Response) => {
 router.post('/worker-heartbeat', express.json(), agentOnly, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
+    const org = resolveOrg(req);
     const workerId = typeof body.worker_id === 'string' ? body.worker_id : 'unknown';
     const sentToday = Number.isFinite(body.sent_today) ? Number(body.sent_today) : 0;
     const lastError = typeof body.last_error === 'string' ? body.last_error : null;
     const repo = new OutreachWorkerStateRepository();
-    await repo.setHeartbeat({ worker_id: workerId, sent_today: sentToday, last_error: lastError });
-    const state = await repo.getStatus();
-    res.json({ ok: true, paused: state.paused, daily_cap: dailyCap() });
+    await repo.setHeartbeat(org, { worker_id: workerId, sent_today: sentToday, last_error: lastError });
+    const state = await repo.getStatus(org);
+    res.json({ ok: true, org, paused: state.paused, daily_cap: dailyCap() });
   } catch (err) {
     Logger.error('outreach worker-heartbeat failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
@@ -186,9 +209,10 @@ router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res
     const kind = (body.kind as AlertKind) || 'worker-fatal';
     const reason = typeof body.reason === 'string' ? body.reason : 'unspecified';
     const workerId = typeof body.worker_id === 'string' ? body.worker_id : undefined;
+    const org = resolveOrg(req);
     await notifyOutreachFailure(null, kind, { reason, worker_id: workerId });
     if (kind === 'session-expired' || kind === 'worker-fatal') {
-      await new OutreachWorkerStateRepository().setLastError(`${kind}: ${reason}`);
+      await new OutreachWorkerStateRepository().setLastError(org, `${kind}: ${reason}`);
     }
     res.json({ ok: true });
   } catch (err) {
@@ -229,7 +253,8 @@ router.post('/report-inbound', express.json(), agentOnly, async (req: Request, r
       return;
     }
 
-    const customer = await new SalesCaseRepository().findLatestEventByPhone(phone);
+    const org = resolveOrg(req);
+    const customer = await new SalesCaseRepository().findLatestEventByPhone(phone, org);
     const customerId = customer?._id ? new ObjectId(String(customer._id)) : null;
     const customerName = customer?.customer?.name ?? null;
     const follower = customer?.follower ?? null;
@@ -274,12 +299,13 @@ router.post('/report-inbound', express.json(), agentOnly, async (req: Request, r
 });
 
 // GET /crm/api/outreach/default-image  — returns binary
-router.get('/default-image', async (_req: Request, res: Response) => {
+router.get('/default-image', async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const repo = new OutreachImagesRepository();
-    const doc = await repo.getDefault();
+    const doc = await repo.getDefault(org);
     if (!doc) {
-      res.status(404).json({ error: 'No default image set' });
+      res.status(404).json({ error: `No default image set for the ${org} workspace` });
       return;
     }
     res.setHeader('Content-Type', doc.mime_type);
@@ -301,14 +327,15 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
       res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use JPEG, PNG, or WebP` });
       return;
     }
+    const org = resolveOrg(req);
     const uploadedBy = getSessionUser(req) || 'unknown';
     await new OutreachImagesRepository().setDefault({
       filename: req.file.originalname,
       mime_type: req.file.mimetype,
       buffer: req.file.buffer,
       uploaded_by: uploadedBy,
-    });
-    Logger.info(`outreach default image replaced by ${uploadedBy}: ${req.file.originalname} (${req.file.size}B, ${req.file.mimetype})`);
+    }, org);
+    Logger.info(`outreach default image replaced by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B, ${req.file.mimetype})`);
     res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
     Logger.error('default-image POST failed', err as Error);
@@ -317,10 +344,11 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
 });
 
 // GET /crm/api/outreach/default-video — metadata for the CRM UI (or 404)
-router.get('/default-video', async (_req: Request, res: Response) => {
+router.get('/default-video', async (req: Request, res: Response) => {
   try {
-    const doc = await new OutreachVideoRepository().getDefault();
-    if (!doc) { res.status(404).json({ error: 'No default video set' }); return; }
+    const org = resolveOrg(req);
+    const doc = await new OutreachVideoRepository().getDefault(org);
+    if (!doc) { res.status(404).json({ error: `No default video set for the ${org} workspace` }); return; }
     res.json({
       filename: doc.filename,
       mime_type: doc.mime_type,
@@ -348,6 +376,7 @@ router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandle
       return;
     }
 
+    const org = resolveOrg(req);
     const uploadedBy = getSessionUser(req) || 'unknown';
     const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
     const previousKey = await new OutreachVideoRepository().setDefault({
@@ -356,12 +385,12 @@ router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandle
       mime_type: req.file.mimetype,
       size_bytes: req.file.size,
       uploaded_by: uploadedBy,
-    });
+    }, org);
     // Best-effort: delete the object the metadata previously pointed at.
     if (previousKey && previousKey !== key) {
       await r2.deleteObject(previousKey).catch(() => {});
     }
-    Logger.info(`outreach default video replaced by ${uploadedBy}: ${req.file.originalname} (${req.file.size}B) key=${key}`);
+    Logger.info(`outreach default video replaced by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) key=${key}`);
     res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
     Logger.error('default-video POST failed', err as Error);
@@ -370,9 +399,10 @@ router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandle
 });
 
 // DELETE /crm/api/outreach/default-video — clear default, remove object from R2
-router.delete('/default-video', async (_req: Request, res: Response) => {
+router.delete('/default-video', async (req: Request, res: Response) => {
   try {
-    const removedKey = await new OutreachVideoRepository().clearDefault();
+    const org = resolveOrg(req);
+    const removedKey = await new OutreachVideoRepository().clearDefault(org);
     if (removedKey) {
       await new R2StorageService().deleteObject(removedKey).catch(() => {});
     }
@@ -385,9 +415,10 @@ router.delete('/default-video', async (_req: Request, res: Response) => {
 
 // GET /crm/api/outreach/default-video-url — worker-facing: presigned GET URL for
 // the default video, or 404 when none is set (the worker's signal to send image-only).
-router.get('/default-video-url', async (_req: Request, res: Response) => {
+router.get('/default-video-url', async (req: Request, res: Response) => {
   try {
-    const doc = await new OutreachVideoRepository().getDefault();
+    const org = resolveOrg(req);
+    const doc = await new OutreachVideoRepository().getDefault(org);
     if (!doc) { res.status(404).json({ error: 'No default video set' }); return; }
     const r2 = new R2StorageService();
     if (!r2.isConfigured()) {
@@ -403,19 +434,21 @@ router.get('/default-video-url', async (_req: Request, res: Response) => {
 });
 
 // GET /crm/api/outreach/default-text — effective message + whether a custom one is saved
-router.get('/default-text', async (_req: Request, res: Response) => {
+router.get('/default-text', async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const repo = new OutreachSettingsRepository();
-    const saved = await repo.getStaticMessage();
+    const saved = await repo.getStaticMessage(org);
     let updated_at: Date | null = null;
     let updated_by: string | null = null;
     if (saved && saved.trim()) {
-      const doc = await repo.getDefaultDoc();
+      const doc = await repo.getDefaultDoc(org);
       updated_at = doc?.updated_at ?? null;
       updated_by = doc?.updated_by ?? null;
     }
-    const message = await getStaticOutreachMessage();
+    const message = await getStaticOutreachMessage(org);
     res.json({
+      org,
       message,
       is_custom: Boolean(saved && saved.trim()),
       updated_at,
@@ -441,9 +474,10 @@ router.post('/default-text', express.json(), async (req: Request, res: Response)
       res.status(400).json({ error: 'message exceeds 4096 characters' });
       return;
     }
+    const org = resolveOrg(req);
     const updatedBy = getSessionUser(req) || 'unknown';
-    await new OutreachSettingsRepository().setStaticMessage(message, updatedBy);
-    Logger.info(`outreach default text updated by ${updatedBy} (${message.length} chars)`);
+    await new OutreachSettingsRepository().setStaticMessage(message, updatedBy, org);
+    Logger.info(`outreach default text updated by ${updatedBy} for org=${org} (${message.length} chars)`);
     res.json({ ok: true });
   } catch (err) {
     Logger.error('default-text POST failed', err as Error);
@@ -454,8 +488,9 @@ router.post('/default-text', express.json(), async (req: Request, res: Response)
 // DELETE /crm/api/outreach/default-text — clear the saved message, revert to env/hardcoded
 router.delete('/default-text', async (req: Request, res: Response) => {
   try {
-    await new OutreachSettingsRepository().clearStaticMessage();
-    Logger.info(`outreach default text reset to default by ${getSessionUser(req) || 'unknown'}`);
+    const org = resolveOrg(req);
+    await new OutreachSettingsRepository().clearStaticMessage(org);
+    Logger.info(`outreach default text reset to default by ${getSessionUser(req) || 'unknown'} for org=${org}`);
     res.json({ ok: true });
   } catch (err) {
     Logger.error('default-text DELETE failed', err as Error);
@@ -597,23 +632,24 @@ router.delete('/all', async (_req: Request, res: Response) => {
 });
 
 // POST /crm/api/outreach/claim  (worker)
-router.post('/claim', async (_req: Request, res: Response) => {
+router.post('/claim', async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const stateRepo = new OutreachWorkerStateRepository();
-    const state = await stateRepo.getStatus();
+    const state = await stateRepo.getStatus(org);
     if (state.paused) {
       res.json({ proposal: null, paused: true });
       return;
     }
 
-    const reserved = await stateRepo.tryReserveClaim(dailyCap());
+    const reserved = await stateRepo.tryReserveClaim(org, dailyCap(), attemptCap());
     if (reserved === null) {
       res.json({ proposal: null, daily_cap_reached: true });
       return;
     }
 
     const repo = new OutreachRepository();
-    const proposal = await repo.claimNextApproved(LEASE_MS, async (expired) => {
+    const proposal = await repo.claimNextApproved(org, LEASE_MS, async (expired) => {
       // Capped re-leases that finally flip to failed call this hook.
       try {
         await notifyOutreachFailure(expired, 'lease-expired', { reason: 'lease expired without resolution (3rd attempt)' });
@@ -624,7 +660,7 @@ router.post('/claim', async (_req: Request, res: Response) => {
 
     if (!proposal) {
       // Nothing to send — release the reservation so the cap reflects real sends only.
-      await stateRepo.releaseClaim();
+      await stateRepo.releaseClaim(org);
       res.json({ proposal: null });
       return;
     }
@@ -649,10 +685,19 @@ router.post('/:id/mark-sent', async (req: Request, res: Response) => {
     const ok = await outreachRepo.markSent(req.params.id);
     if (!ok) { res.status(409).json({ error: 'could not mark sent' }); return; }
 
+    // Count this successful delivery toward the daily delivery cap. Only sends
+    // that actually land consume a delivery slot; unreachable numbers do not.
+    // Attribute to the proposal's own org (authoritative), not the request.
+    try {
+      await new OutreachWorkerStateRepository().recordDelivery(normalizeOrg(proposal.org_id));
+    } catch (e) {
+      Logger.warn(`recordDelivery on mark-sent: ${(e as Error).message}`);
+    }
+
     // Clear any suppression for this phone — a previously-failed number that
     // finally delivered (e.g. via a backup retry) should leave the Failed list.
     try {
-      await new OutreachSuppressionRepository().resolve(proposal.customer_phone);
+      await new OutreachSuppressionRepository().resolve(proposal.customer_phone, normalizeOrg(proposal.org_id));
     } catch (e) {
       Logger.warn(`resolve suppression on mark-sent: ${(e as Error).message}`);
     }
@@ -662,6 +707,7 @@ router.post('/:id/mark-sent', async (req: Request, res: Response) => {
     const today = new Date().toISOString().slice(0, 10);
     const leadEvent: LeadEventDocument = {
       date: today,
+      org_id: normalizeOrg(proposal.org_id),
       customer: { name: proposal.customer_name, phone: proposal.customer_phone },
       page: null,
       follower: proposal.follower,
@@ -708,6 +754,7 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
       const result = await new OutreachSuppressionRepository().recordFailure({
         phone: proposal.customer_phone,
         reason,
+        orgId: normalizeOrg(proposal.org_id),
         proposalId: proposal._id ?? null,
         customerName: proposal.customer_name,
         follower: proposal.follower,
@@ -717,12 +764,14 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
       Logger.warn(`recordFailure on mark-failed: ${(e as Error).message}`);
     }
 
-    // Refund the daily reservation ONLY for transient/system failures (they never
-    // reached Telegram). Privacy/invalid failures consumed a real ImportContacts
-    // round-trip, so they count against the cap — this stops unreachable numbers
-    // from burning unlimited throughput. Unknown kind → refund (preserves prior behavior).
+    // Refund the attempt reservation ONLY for transient/system failures (they
+    // never reached Telegram). Privacy/invalid failures consumed a real
+    // ImportContacts round-trip, so they still count toward the daily ATTEMPT
+    // ceiling — this is what stops a batch of unreachable numbers from churning
+    // unlimited Telegram lookups now that they no longer consume a delivery slot.
+    // Unknown kind → refund (preserves prior behavior).
     if (failureKind === undefined || failureKind === 'transient') {
-      try { await new OutreachWorkerStateRepository().releaseClaim(); } catch (e) { Logger.warn(`releaseClaim on mark-failed: ${(e as Error).message}`); }
+      try { await new OutreachWorkerStateRepository().releaseClaim(normalizeOrg(proposal.org_id)); } catch (e) { Logger.warn(`releaseClaim on mark-failed: ${(e as Error).message}`); }
     }
     notifyOutreachFailure(proposal, 'mark-failed', { reason }).catch((err) => {
       Logger.error('mark-failed alert dispatch errored', err as Error);
@@ -743,19 +792,20 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
 
     const imagesRepo = new OutreachImagesRepository();
+    const proposalOrg = normalizeOrg(proposal.org_id);
     let doc: OutreachImageDocument | null = null;
     let resolvedKind: 'default' | 'proposal_custom';
     if (proposal.custom_image_id) {
       doc = await imagesRepo.getById(proposal.custom_image_id);
       resolvedKind = 'proposal_custom';
       if (!doc) {
-        // Custom is referenced but missing — fall back to default and log loudly.
-        Logger.warn(`effective-image: custom_image_id ${proposal.custom_image_id} missing for proposal ${req.params.id}, falling back to default`);
-        doc = await imagesRepo.getDefault();
+        // Custom is referenced but missing — fall back to the org default and log loudly.
+        Logger.warn(`effective-image: custom_image_id ${proposal.custom_image_id} missing for proposal ${req.params.id}, falling back to ${proposalOrg} default`);
+        doc = await imagesRepo.getDefault(proposalOrg);
         resolvedKind = 'default';
       }
     } else {
-      doc = await imagesRepo.getDefault();
+      doc = await imagesRepo.getDefault(proposalOrg);
       resolvedKind = 'default';
     }
 
@@ -782,6 +832,7 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
 // developer/manager). Deduped by phone; nothing is ever deleted.
 router.get('/failed-numbers', async (req: Request, res: Response) => {
   try {
+    const org = resolveOrg(req);
     const limit = Math.min(parseInt((req.query.limit as string) || '200', 10) || 200, 500);
     const offset = Math.max(0, parseInt((req.query.offset as string) || '0', 10) || 0);
     const query: SuppressionListQuery = { limit, offset };
@@ -790,7 +841,7 @@ router.get('/failed-numbers', async (req: Request, res: Response) => {
     if (req.query.follower) query.follower = req.query.follower as string;
     if (req.query.q) query.q = req.query.q as string;
 
-    const { rows, total, counts } = await new OutreachSuppressionRepository().list(query);
+    const { rows, total, counts } = await new OutreachSuppressionRepository().list(query, org);
     const enriched = rows.map((r) => ({
       customer_phone: r.customer_phone,
       phone_display: formatPhoneDisplay(r.customer_phone),

@@ -12,6 +12,7 @@ import {
   buildCustomersByTemperatureAndMonthPipeline
 } from './aggregations';
 import { Logger } from '../utils/logger';
+import { OrgId, DEFAULT_ORG, orgMatch } from '../outreach/orgs';
 
 export class SalesCaseRepository {
   private db = DatabaseConnection.getInstance();
@@ -55,7 +56,8 @@ export class SalesCaseRepository {
 
     return await this.leadsEventsCollection.find({
       follower: follower,
-      date: { $gte: startDate, $lte: endDate }
+      date: { $gte: startDate, $lte: endDate },
+      org_id: orgMatch(DEFAULT_ORG)
     }).toArray();
   }
 
@@ -66,15 +68,17 @@ export class SalesCaseRepository {
     return `${month}-${String(lastDay).padStart(2, '0')}`;
   }
 
-  async findLatestEventByPhone(phone: string): Promise<LeadEventDocument | null> {
+  async findLatestEventByPhone(phone: string, orgId?: OrgId): Promise<LeadEventDocument | null> {
     if (!phone || phone.trim() === '') {
       return null;
     }
 
     const normalizedPhone = phone.trim();
+    const filter: Record<string, unknown> = { 'customer.phone': normalizedPhone };
+    if (orgId) filter.org_id = orgMatch(orgId);
 
     const events = await this.leadsEventsCollection
-      .find({ 'customer.phone': normalizedPhone })
+      .find(filter)
       .sort({ date: -1, created_at: -1 })
       .limit(1)
       .toArray();
@@ -189,29 +193,30 @@ export class SalesCaseRepository {
       .toArray();
   }
 
-  async getAllCustomers(follower?: string): Promise<CustomerCase[]> {
-    const pipeline = buildAllCustomersPipeline(follower);
+  async getAllCustomers(follower?: string, orgId: OrgId = DEFAULT_ORG): Promise<CustomerCase[]> {
+    const pipeline = buildAllCustomersPipeline(follower, orgId);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 
-  async getStaleCustomers(days: number, follower?: string): Promise<CustomerCase[]> {
-    const pipeline = buildStaleCustomersPipeline(days, follower);
+  async getStaleCustomers(days: number, follower?: string, orgId: OrgId = DEFAULT_ORG): Promise<CustomerCase[]> {
+    const pipeline = buildStaleCustomersPipeline(days, follower, orgId);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 
   async getQuickBookCustomers(
     page: number,
-    pageSize: number
+    pageSize: number,
+    orgId: OrgId = DEFAULT_ORG
   ): Promise<{ customers: CustomerCase[]; total: number }> {
-    const pipeline = buildQuickBookCustomersPipeline(page, pageSize);
+    const pipeline = buildQuickBookCustomersPipeline(page, pageSize, orgId);
     const [result] = await this.leadsEventsCollection
       .aggregate<{ data: CustomerCase[]; meta: { total: number }[] }>(pipeline)
       .toArray();
     return { customers: result?.data ?? [], total: result?.meta?.[0]?.total ?? 0 };
   }
 
-  async getCustomersByReason(reasonCode: string, follower?: string): Promise<CustomerCase[]> {
-    const pipeline = buildCustomersByReasonPipeline(reasonCode, follower);
+  async getCustomersByReason(reasonCode: string, follower?: string, orgId: OrgId = DEFAULT_ORG): Promise<CustomerCase[]> {
+    const pipeline = buildCustomersByReasonPipeline(reasonCode, follower, orgId);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 
@@ -230,8 +235,10 @@ export class SalesCaseRepository {
     follower?: string,
     phone?: string
   ): Promise<LeadEventDocument[]> {
+    // Report/export path — Company-only.
     const filter: any = {
-      date: { $gte: startDate, $lte: endDate }
+      date: { $gte: startDate, $lte: endDate },
+      org_id: orgMatch(DEFAULT_ORG)
     };
     if (follower) {
       filter.follower = follower;

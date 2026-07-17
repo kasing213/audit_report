@@ -6,6 +6,7 @@ import { toInternationalPhone } from '../utils/phone-utils';
 import { OutreachRepository, OutreachProposalDocument } from './outreach-repository';
 import { OutreachSuppressionRepository } from './outreach-suppression-repository';
 import { getStaticOutreachMessage } from './static-template';
+import { OrgId, DEFAULT_ORG, normalizeOrg } from './orgs';
 
 const DEFAULT_STALE_DAYS = 45;
 const DEFAULT_BATCH_LIMIT = 20;
@@ -19,6 +20,8 @@ export interface GenerateOptions {
   bypassSuppression?: boolean;
   /** Create proposals as 'approved' (auto-retry) instead of 'pending'. */
   autoApprove?: boolean;
+  /** Outreach workspace to draft for. Defaults to 'company'. */
+  orgId?: OrgId;
 }
 
 export interface GenerateResult {
@@ -43,22 +46,23 @@ function daysSince(dateString: string | null | undefined): number | null {
 
 async function selectCandidates(
   salesRepo: SalesCaseRepository,
-  opts: GenerateOptions
+  opts: GenerateOptions,
+  orgId: OrgId
 ): Promise<CustomerCase[]> {
   if (opts.phones && opts.phones.length > 0) {
     const wanted = new Set(opts.phones.map((p) => toInternationalPhone(p.trim())));
-    const all = await salesRepo.getAllCustomers();
+    const all = await salesRepo.getAllCustomers(undefined, orgId);
     return all.filter((c) => c.phone && wanted.has(toInternationalPhone(c.phone.trim())));
   }
 
   const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS;
-  const candidates = await salesRepo.getStaleCustomers(staleDays, opts.followerFilter);
+  const candidates = await salesRepo.getStaleCustomers(staleDays, opts.followerFilter, orgId);
   if (opts.bypassSuppression) {
     return candidates.slice(0, opts.limit ?? DEFAULT_BATCH_LIMIT);
   }
   // Drop phones on the suppression list BEFORE slicing, so a batch isn't wasted
   // on numbers that already failed (privacy/invalid). See OutreachSuppressionRepository.
-  const suppressed = await new OutreachSuppressionRepository().getSuppressedPhones();
+  const suppressed = await new OutreachSuppressionRepository().getSuppressedPhones(orgId);
   return candidates
     .filter((c) => c.phone && !suppressed.has(toInternationalPhone(c.phone.trim())))
     .slice(0, opts.limit ?? DEFAULT_BATCH_LIMIT);
@@ -67,13 +71,14 @@ async function selectCandidates(
 export async function generateBatch(opts: GenerateOptions): Promise<GenerateResult> {
   const salesRepo = new SalesCaseRepository();
   const outreachRepo = new OutreachRepository();
+  const orgId = normalizeOrg(opts.orgId ?? DEFAULT_ORG);
   const generationId = randomUUID();
   const details: GenerateResult['details'] = [];
   const toInsert: OutreachProposalDocument[] = [];
 
-  const candidates = await selectCandidates(salesRepo, opts);
-  Logger.info(`outreach.generateBatch(${generationId}): ${candidates.length} candidates`);
-  const staticMessage = await getStaticOutreachMessage();
+  const candidates = await selectCandidates(salesRepo, opts, orgId);
+  Logger.info(`outreach.generateBatch(${generationId}) org=${orgId}: ${candidates.length} candidates`);
+  const staticMessage = await getStaticOutreachMessage(orgId);
 
   for (const customer of candidates) {
     if (!customer.phone) {
@@ -83,7 +88,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
 
     const intlPhone = toInternationalPhone(customer.phone.trim());
 
-    if (await outreachRepo.hasRecentProposalForPhone(intlPhone)) {
+    if (await outreachRepo.hasRecentProposalForPhone(intlPhone, orgId)) {
       details.push({ phone: intlPhone, outcome: 'duplicate', reason: 'proposal within 14 days' });
       continue;
     }
@@ -92,6 +97,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
     // (or auto-approved when this is an automated backup retry).
     const now = new Date();
     toInsert.push({
+      org_id: orgId,
       generation_id: generationId,
       customer_phone: intlPhone,
       customer_name: customer.name,

@@ -145,7 +145,7 @@ export function getSessionUser(req: Request): Role | null {
 /**
  * Parse cookies from request header.
  */
-function parseCookies(cookieHeader: string | undefined): Record<string, string> {
+export function parseCookies(cookieHeader: string | undefined): Record<string, string> {
   if (!cookieHeader) return {};
   const cookies: Record<string, string> = {};
   cookieHeader.split(';').forEach(pair => {

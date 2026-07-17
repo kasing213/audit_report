@@ -2,11 +2,14 @@
 import { Collection, ObjectId, Binary } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
+import { OrgId, DEFAULT_ORG, defaultDocKey } from './orgs';
 
 export type ImageKind = 'default' | 'proposal_custom';
 
 export interface OutreachImageDocument {
-  _id: ObjectId | 'default';
+  // Per-org default images use a string _id (defaultDocKey(orgId), e.g.
+  // 'default:company'); per-proposal custom images use an ObjectId.
+  _id: ObjectId | string;
   filename: string;
   mime_type: string;
   size_bytes: number;
@@ -17,7 +20,6 @@ export interface OutreachImageDocument {
 }
 
 const COLLECTION = 'outreach_images';
-const DEFAULT_ID = 'default';
 
 let indexesReady = false;
 
@@ -35,12 +37,12 @@ export class OutreachImagesRepository {
     }
   }
 
-  async getDefault(): Promise<OutreachImageDocument | null> {
-    return this.col.findOne({ _id: DEFAULT_ID } as any);
+  async getDefault(orgId: OrgId = DEFAULT_ORG): Promise<OutreachImageDocument | null> {
+    return this.col.findOne({ _id: defaultDocKey(orgId) } as any);
   }
 
-  async hasDefault(): Promise<boolean> {
-    return (await this.col.countDocuments({ _id: DEFAULT_ID } as any)) > 0;
+  async hasDefault(orgId: OrgId = DEFAULT_ORG): Promise<boolean> {
+    return (await this.col.countDocuments({ _id: defaultDocKey(orgId) } as any)) > 0;
   }
 
   async setDefault(input: {
@@ -48,9 +50,9 @@ export class OutreachImagesRepository {
     mime_type: string;
     buffer: Buffer;
     uploaded_by: string;
-  }): Promise<void> {
+  }, orgId: OrgId = DEFAULT_ORG): Promise<void> {
     const doc: OutreachImageDocument = {
-      _id: DEFAULT_ID,
+      _id: defaultDocKey(orgId),
       filename: input.filename,
       mime_type: input.mime_type,
       size_bytes: input.buffer.length,
@@ -59,7 +61,7 @@ export class OutreachImagesRepository {
       uploaded_by: input.uploaded_by,
       kind: 'default',
     };
-    await this.col.replaceOne({ _id: DEFAULT_ID } as any, doc, { upsert: true });
+    await this.col.replaceOne({ _id: doc._id } as any, doc, { upsert: true });
   }
 
   async getById(id: string | ObjectId): Promise<OutreachImageDocument | null> {

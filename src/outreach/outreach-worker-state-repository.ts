@@ -1,39 +1,47 @@
 import { Collection } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
+import { OrgId, DEFAULT_ORG } from './orgs';
 
 const COLLECTION = 'outreach_worker_state';
-const SINGLETON_ID = 'singleton';
 
 export interface WorkerStateDocument {
+  // Per-org id: 'company' | 'personal'. Each org has its own worker state so the
+  // daily caps, heartbeat, and pause flag are independent per sending number.
+  // (Was a single _id:'singleton' doc before multi-org; migrated by
+  // scripts/backfill-org-company.js.)
   _id: string;
   paused: boolean;
   last_heartbeat_at: Date | null;
   worker_id: string | null;
   sent_today: number;
   claims_today: number;
+  deliveries_today: number;
   claims_today_day: string | null;
   last_error: string | null;
   updated_at: Date;
 }
 
-const DEFAULT_STATE: WorkerStateDocument = {
-  _id: SINGLETON_ID,
-  paused: false,
-  last_heartbeat_at: null,
-  worker_id: null,
-  sent_today: 0,
-  claims_today: 0,
-  claims_today_day: null,
-  last_error: null,
-  updated_at: new Date(0),
-};
+function defaultState(orgId: OrgId): WorkerStateDocument {
+  return {
+    _id: orgId,
+    paused: false,
+    last_heartbeat_at: null,
+    worker_id: null,
+    sent_today: 0,
+    claims_today: 0,
+    deliveries_today: 0,
+    claims_today_day: null,
+    last_error: null,
+    updated_at: new Date(0),
+  };
+}
 
 function utcDayKey(now = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
-let singletonInitialized = false;
+const initializedOrgs = new Set<OrgId>();
 
 export class OutreachWorkerStateRepository {
   private col: Collection<WorkerStateDocument>;
@@ -44,44 +52,44 @@ export class OutreachWorkerStateRepository {
   }
 
   /**
-   * Ensure the singleton document exists, so subsequent updates can use plain
+   * Ensure the per-org document exists, so subsequent updates can use plain
    * $set without an upsert. MongoDB rejects $set + $setOnInsert when fields
    * overlap, which is awkward to satisfy when callers update arbitrary subsets;
-   * one-shot init avoids that entirely.
+   * one-shot init per org avoids that entirely.
    */
-  private async ensureSingleton(): Promise<void> {
-    if (singletonInitialized) return;
+  private async ensureOrg(orgId: OrgId): Promise<void> {
+    if (initializedOrgs.has(orgId)) return;
     await this.col.updateOne(
-      { _id: SINGLETON_ID },
-      { $setOnInsert: { ...DEFAULT_STATE } },
+      { _id: orgId },
+      { $setOnInsert: defaultState(orgId) },
       { upsert: true }
     );
-    singletonInitialized = true;
+    initializedOrgs.add(orgId);
   }
 
-  async getStatus(): Promise<WorkerStateDocument> {
-    const doc = await this.col.findOne({ _id: SINGLETON_ID });
-    if (!doc) return { ...DEFAULT_STATE };
+  async getStatus(orgId: OrgId = DEFAULT_ORG): Promise<WorkerStateDocument> {
+    const doc = await this.col.findOne({ _id: orgId });
+    if (!doc) return defaultState(orgId);
     return doc;
   }
 
-  async setPaused(paused: boolean): Promise<void> {
-    await this.ensureSingleton();
+  async setPaused(orgId: OrgId, paused: boolean): Promise<void> {
+    await this.ensureOrg(orgId);
     await this.col.updateOne(
-      { _id: SINGLETON_ID },
+      { _id: orgId },
       { $set: { paused, updated_at: new Date() } }
     );
   }
 
-  async setHeartbeat(input: {
+  async setHeartbeat(orgId: OrgId, input: {
     worker_id: string;
     sent_today: number;
     last_error: string | null;
   }): Promise<void> {
-    await this.ensureSingleton();
+    await this.ensureOrg(orgId);
     const now = new Date();
     await this.col.updateOne(
-      { _id: SINGLETON_ID },
+      { _id: orgId },
       {
         $set: {
           last_heartbeat_at: now,
@@ -94,29 +102,43 @@ export class OutreachWorkerStateRepository {
     );
   }
 
-  async setLastError(message: string): Promise<void> {
-    await this.ensureSingleton();
+  async setLastError(orgId: OrgId, message: string): Promise<void> {
+    await this.ensureOrg(orgId);
     await this.col.updateOne(
-      { _id: SINGLETON_ID },
+      { _id: orgId },
       { $set: { last_error: message, updated_at: new Date() } }
     );
   }
 
   /**
-   * Atomically increment claims_today, rolling over at UTC midnight.
-   * Returns the post-increment count, or null if cap would be exceeded.
+   * Roll both daily counters over at UTC midnight. claims_today (attempts) and
+   * deliveries_today (successful sends) share one day key since they advance in
+   * lockstep and reset together.
    */
-  async tryReserveClaim(dailyCap: number): Promise<number | null> {
-    await this.ensureSingleton();
-    const today = utcDayKey();
-    // Reset the counter when the day rolls.
+  private async rollDayIfNeeded(orgId: OrgId, today: string): Promise<void> {
     await this.col.updateOne(
-      { _id: SINGLETON_ID, claims_today_day: { $ne: today } },
-      { $set: { claims_today: 0, claims_today_day: today, updated_at: new Date() } }
+      { _id: orgId, claims_today_day: { $ne: today } },
+      { $set: { claims_today: 0, deliveries_today: 0, claims_today_day: today, updated_at: new Date() } }
     );
+  }
+
+  /**
+   * Atomically reserve one send slot for this org, rolling over at UTC midnight.
+   * Grants the slot only when BOTH caps have room: deliveries_today < deliveryCap
+   * (the real "N delivered per day" target) AND claims_today < attemptCap (the
+   * anti-ban ceiling on total Telegram ImportContacts lookups). Increments
+   * claims_today (attempts); deliveries_today is bumped separately via
+   * recordDelivery() when a send actually lands, so unreachable numbers never
+   * consume a delivery slot. Returns the post-increment attempt count, or null if
+   * either cap is reached.
+   */
+  async tryReserveClaim(orgId: OrgId, deliveryCap: number, attemptCap: number): Promise<number | null> {
+    await this.ensureOrg(orgId);
+    const today = utcDayKey();
+    await this.rollDayIfNeeded(orgId, today);
 
     const result = await this.col.findOneAndUpdate(
-      { _id: SINGLETON_ID, claims_today: { $lt: dailyCap } },
+      { _id: orgId, claims_today: { $lt: attemptCap }, deliveries_today: { $lt: deliveryCap } },
       { $inc: { claims_today: 1 }, $set: { updated_at: new Date() } },
       { returnDocument: 'after' }
     );
@@ -126,10 +148,24 @@ export class OutreachWorkerStateRepository {
     return result.claims_today;
   }
 
-  async releaseClaim(): Promise<void> {
+  /**
+   * Count one successful delivery toward this org's daily delivery cap. Called
+   * from mark-sent. Rolls the day first so a send landing just after UTC midnight
+   * is attributed to the new day.
+   */
+  async recordDelivery(orgId: OrgId): Promise<void> {
+    await this.ensureOrg(orgId);
+    await this.rollDayIfNeeded(orgId, utcDayKey());
+    await this.col.updateOne(
+      { _id: orgId },
+      { $inc: { deliveries_today: 1 }, $set: { updated_at: new Date() } }
+    );
+  }
+
+  async releaseClaim(orgId: OrgId): Promise<void> {
     try {
       await this.col.updateOne(
-        { _id: SINGLETON_ID, claims_today: { $gt: 0 } },
+        { _id: orgId, claims_today: { $gt: 0 } },
         { $inc: { claims_today: -1 }, $set: { updated_at: new Date() } }
       );
     } catch (err) {

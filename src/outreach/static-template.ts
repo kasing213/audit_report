@@ -4,6 +4,7 @@
 // env override → the committed DEFAULT_STATIC_MESSAGE below. The committed
 // default means no config is required to ship.
 import { OutreachSettingsRepository } from './outreach-settings-repository';
+import { OrgId, DEFAULT_ORG } from './orgs';
 import { Logger } from '../utils/logger';
 
 export const DEFAULT_STATIC_MESSAGE = [
@@ -19,9 +20,9 @@ export const DEFAULT_STATIC_MESSAGE = [
  * DEFAULT_STATIC_MESSAGE. A DB read failure logs a warning and falls back so
  * generation never breaks.
  */
-export async function getStaticOutreachMessage(): Promise<string> {
+export async function getStaticOutreachMessage(orgId: OrgId = DEFAULT_ORG): Promise<string> {
   try {
-    const saved = await new OutreachSettingsRepository().getStaticMessage();
+    const saved = await new OutreachSettingsRepository().getStaticMessage(orgId);
     if (saved && saved.trim()) return saved.trim();
   } catch (err) {
     Logger.warn(`getStaticOutreachMessage DB read failed, using fallback: ${(err as Error).message}`);

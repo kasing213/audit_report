@@ -46,16 +46,39 @@ Edit `.env`:
 - `DAILY_CAP` — daily send ceiling. Start low (10–15).
 - `MIN_DELAY_SEC` / `MAX_DELAY_SEC` — per-send random delay window.
 
+## Multi-org (two sending numbers)
+
+The dashboard runs two outreach workspaces — `company` (default) and `personal`
+— each with its OWN Telegram number. That means **two workers**, distinguished
+by the `ORG_ID` env, which the worker sends on every request as the `X-Org-Id`
+header. The server scopes claims, daily caps, branding, and the failed list by
+that org, so the two never cross. `ORG_ID` defaults to `company` when unset
+(single-worker installs keep working unchanged).
+
+`ecosystem.config.js` defines both apps (`outreach-worker-company`,
+`outreach-worker-personal`), each pinned to its own `STRING_SESSION_PATH` +
+`ORG_ID`.
+
 ## Log in (one time per account)
 
+Bootstrap each number's session separately, pointing `STRING_SESSION_PATH` at a
+distinct file (and set `ORG_ID` for clarity):
+
 ```bash
-npm run login
+# company number
+ORG_ID=company  STRING_SESSION_PATH=./telegram-string-session.txt          npm run login
+# personal number
+ORG_ID=personal STRING_SESSION_PATH=./telegram-string-session-personal.txt npm run login
 ```
 
-You'll be prompted for your phone number, the SMS code Telegram sends to your
-existing app, and (if set) your 2FA password. The session is saved as a
-single string blob to `telegram-string-session.txt` (gitignored). Treat that
-file like a password — it grants full access to your Telegram account.
+You'll be prompted for the phone number, the SMS code Telegram sends to that
+number's app, and (if set) the 2FA password. Each session is saved as a single
+string blob to the given path (gitignored). Treat those files like passwords —
+each grants full access to that Telegram account.
+
+**Personal must have a default image set** on the dashboard (switch to Personal
+→ upload a default brand image) before its worker can deliver — a send with no
+image is a hard failure.
 
 ## Run the worker (laptop)
 
@@ -78,14 +101,15 @@ The worker:
 
 ## Run under pm2 (laptop, recommended)
 
-`ecosystem.config.js` defines the worker as a pm2 app (`outreach-worker`). pm2
-auto-restarts it on crash and bounces it nightly at 10pm (laptop-local time)
-via `cron_restart: '0 22 * * *'`.
+`ecosystem.config.js` defines TWO pm2 apps — `outreach-worker-company` and
+`outreach-worker-personal` — one per sending number. pm2 auto-restarts each on
+crash and bounces them nightly at 10pm (laptop-local time) via
+`cron_restart: '0 22 * * *'`.
 
 ```bash
-pm2 start scripts/telegram-worker/ecosystem.config.js
+pm2 start scripts/telegram-worker/ecosystem.config.js   # starts BOTH workers
 pm2 save        # persist the process list for resurrect
-pm2 logs outreach-worker
+pm2 logs outreach-worker-company    # or outreach-worker-personal
 ```
 
 **Boot persistence on Windows:** pm2's native `pm2 startup` does NOT work on

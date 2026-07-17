@@ -29,6 +29,11 @@ const AGENT_TOKEN = resolveAgentToken();
 const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0', 10);
 const API_HASH = process.env.TELEGRAM_API_HASH || '';
 const SESSION_PATH = process.env.STRING_SESSION_PATH || './telegram-string-session.txt';
+// Which outreach workspace this worker sends for. The server scopes every
+// claim / cap / mark-sent / inbound by this via the X-Org-Id header, so a
+// company worker and a personal worker (each its own Telegram session + this
+// env) never touch each other's proposals or daily caps. Defaults to 'company'.
+const ORG_ID = process.env.ORG_ID || 'company';
 const DAILY_CAP = intEnv('DAILY_CAP', 15);
 const MIN_DELAY_MS = intEnv('MIN_DELAY_SEC', 60) * 1000;
 const MAX_DELAY_MS = intEnv('MAX_DELAY_SEC', 180) * 1000;
@@ -129,6 +134,7 @@ async function authedFetch(url: string, init: RequestInit = {}): Promise<Respons
     ...init,
     headers: {
       'Authorization': `Bearer ${AGENT_TOKEN}`,
+      'X-Org-Id': ORG_ID,
       ...(init.headers || {}),
     },
   });
@@ -485,7 +491,7 @@ async function main(): Promise<void> {
   }
   const sessionStr = fs.readFileSync(SESSION_PATH, 'utf8').trim();
 
-  console.log(`Worker online. Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s, inbound=${INBOUND_DISABLED ? 'off' : 'realtime'}, id=${WORKER_ID}.`);
+  console.log(`Worker online. org=${ORG_ID}, Base=${BASE_URL}, daily cap=${DAILY_CAP}, delay=${MIN_DELAY_MS / 1000}-${MAX_DELAY_MS / 1000}s, inbound=${INBOUND_DISABLED ? 'off' : 'realtime'}, id=${WORKER_ID}.`);
 
   const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, {
     connectionRetries: 5,

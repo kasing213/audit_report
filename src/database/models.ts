@@ -1,5 +1,9 @@
 export interface LeadEventDocument {
   _id?: string;
+  // Outreach workspace this record belongs to ('company' | 'personal'). Absent
+  // on all pre-multi-org data and every sales-group ingestion record, which are
+  // treated as 'company' by orgMatch(). See src/outreach/orgs.ts.
+  org_id?: string | null;
   date: string;
   customer: {
     name: string | null;
