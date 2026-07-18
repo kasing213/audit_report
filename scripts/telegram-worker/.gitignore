@@ -1,6 +1,9 @@
 node_modules/
 telegram-session.json
-telegram-string-session.txt
+# All StringSession files are full-account credentials — never commit any variant
+# (company, -personal, .safe-bak, etc.).
+telegram-string-session*
+*.safe-bak
 .env
 *.log
 debug-fail-*.png
