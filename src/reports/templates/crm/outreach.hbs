@@ -303,6 +303,7 @@
     <div class="default-image-actions">
       <input type="file" id="default-image-file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadDefaultImage(event)">
       <button class="btn btn-primary" onclick="document.getElementById('default-image-file').click()">Replace image</button>
+      <button class="btn btn-ghost" id="default-image-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultImage()">Remove</button>
     </div>
   </div>
   <div class="default-image-card" id="default-video-card">
@@ -376,6 +377,7 @@
     const sub = document.getElementById('default-image-sub');
     const banner = document.getElementById('image-setup-banner');
     const genBtn = document.getElementById('gen-batch-btn');
+    const removeBtn = document.getElementById('default-image-remove');
 
     try {
       const resp = await fetch(DEFAULT_IMAGE_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
@@ -389,6 +391,7 @@
         sub.textContent = 'Upload one to enable outreach';
         banner.classList.remove('hidden');
         if (genBtn) genBtn.disabled = true;
+        if (removeBtn) removeBtn.style.display = 'none';
         return;
       }
       if (!resp.ok) throw new Error('GET default-image ' + resp.status);
@@ -405,6 +408,7 @@
       sub.textContent = blob.type + ' · ' + sizeKb + ' KB';
       banner.classList.add('hidden');
       if (genBtn) genBtn.disabled = false;
+      if (removeBtn) removeBtn.style.display = '';
     } catch (err) {
       console.error('refreshDefaultImage', err);
     }
@@ -426,6 +430,15 @@
     } finally {
       ev.target.value = '';
     }
+  }
+
+  async function removeDefaultImage() {
+    if (!confirm('Remove the default brand image? Outreach stays disabled for this workspace until you upload a new one.')) return;
+    try {
+      const resp = await fetch(DEFAULT_IMAGE_URL, { method: 'DELETE', credentials: 'same-origin' });
+      if (resp.ok) { showToast('Default image removed', 'success'); refreshDefaultImage(); }
+      else showToast('Remove failed', 'error');
+    } catch { showToast('Remove failed', 'error'); }
   }
 
   const DEFAULT_VIDEO_URL = API + '/default-video';
