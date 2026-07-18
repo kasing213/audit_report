@@ -340,6 +340,21 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
   }
 });
 
+// DELETE /crm/api/outreach/default-image — clear this workspace's default image.
+// Bytes live in Mongo (no R2), so deleting the doc fully removes it. Outreach for
+// this org stays disabled (the UI gates Generate) until a new image is uploaded.
+router.delete('/default-image', async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const removed = await new OutreachImagesRepository().clearDefault(org);
+    Logger.info(`outreach default image removed by ${getSessionUser(req) || 'unknown'} for org=${org} (removed=${removed})`);
+    res.json({ ok: true, removed });
+  } catch (err) {
+    Logger.error('default-image DELETE failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // GET /crm/api/outreach/default-video — metadata for the CRM UI (or 404)
 router.get('/default-video', async (req: Request, res: Response) => {
   try {

@@ -64,6 +64,13 @@ export class OutreachImagesRepository {
     await this.col.replaceOne({ _id: doc._id } as any, doc, { upsert: true });
   }
 
+  /** Remove this org's default image. Returns true when a default existed and was
+   *  deleted. The bytes live in Mongo (no R2), so this fully removes it. */
+  async clearDefault(orgId: OrgId = DEFAULT_ORG): Promise<boolean> {
+    const result = await this.col.deleteOne({ _id: defaultDocKey(orgId) } as any);
+    return result.deletedCount === 1;
+  }
+
   async getById(id: string | ObjectId): Promise<OutreachImageDocument | null> {
     try {
       const oid = typeof id === 'string' ? new ObjectId(id) : id;
