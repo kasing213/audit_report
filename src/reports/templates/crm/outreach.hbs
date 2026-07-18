@@ -223,16 +223,6 @@
   .default-image-meta .name { font-size: 0.92rem; color: var(--text); }
   .default-image-meta .sub { font-size: 0.78rem; color: var(--text-muted); font-family: var(--font-mono); }
   .default-image-actions { display: flex; gap: 0.5rem; }
-  .image-setup-banner {
-    background: var(--red);
-    color: var(--bg);
-    border-radius: var(--radius);
-    padding: 0.6rem 0.85rem;
-    margin-bottom: 0.75rem;
-    font-size: 0.85rem;
-    font-weight: 500;
-  }
-  .image-setup-banner.hidden { display: none; }
   .lightbox-backdrop {
     position: fixed;
     inset: 0;
@@ -293,7 +283,6 @@
 </style>
 
 <div class="outreach-wrap">
-  <div class="image-setup-banner hidden" id="image-setup-banner">⚠ Upload a default brand image below to enable outreach.</div>
   <div class="default-image-card">
     <img class="default-image-thumb" id="default-image-thumb" alt="Default brand image" onclick="openLightbox()">
     <div class="default-image-meta">
@@ -375,7 +364,6 @@
     const thumb = document.getElementById('default-image-thumb');
     const name = document.getElementById('default-image-name');
     const sub = document.getElementById('default-image-sub');
-    const banner = document.getElementById('image-setup-banner');
     const genBtn = document.getElementById('gen-batch-btn');
     const removeBtn = document.getElementById('default-image-remove');
 
@@ -388,9 +376,10 @@
         thumb.alt = '(none)';
         thumb.textContent = '(none)';
         name.textContent = 'No default image set';
-        sub.textContent = 'Upload one to enable outreach';
-        banner.classList.remove('hidden');
-        if (genBtn) genBtn.disabled = true;
+        // Media is optional: with no image the worker sends text (and video, if
+        // set) only, so outreach stays enabled.
+        sub.textContent = 'Optional — leads get text only';
+        if (genBtn) genBtn.disabled = false;
         if (removeBtn) removeBtn.style.display = 'none';
         return;
       }
@@ -406,7 +395,6 @@
       const sizeKb = Math.round(blob.size / 1024);
       name.textContent = filename;
       sub.textContent = blob.type + ' · ' + sizeKb + ' KB';
-      banner.classList.add('hidden');
       if (genBtn) genBtn.disabled = false;
       if (removeBtn) removeBtn.style.display = '';
     } catch (err) {
