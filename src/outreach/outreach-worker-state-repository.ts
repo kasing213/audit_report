@@ -12,6 +12,10 @@ export interface WorkerStateDocument {
   // scripts/backfill-org-company.js.)
   _id: string;
   paused: boolean;
+  // Manual (false) vs Auto (true) approval for this workspace's 9AM scan.
+  // Absent on pre-toggle documents; getStatus() normalises that to false so the
+  // existing manual-approval behaviour is the default.
+  auto_approve: boolean;
   last_heartbeat_at: Date | null;
   worker_id: string | null;
   sent_today: number;
@@ -26,6 +30,7 @@ function defaultState(orgId: OrgId): WorkerStateDocument {
   return {
     _id: orgId,
     paused: false,
+    auto_approve: false,
     last_heartbeat_at: null,
     worker_id: null,
     sent_today: 0,
@@ -70,7 +75,8 @@ export class OutreachWorkerStateRepository {
   async getStatus(orgId: OrgId = DEFAULT_ORG): Promise<WorkerStateDocument> {
     const doc = await this.col.findOne({ _id: orgId });
     if (!doc) return defaultState(orgId);
-    return doc;
+    // Pre-toggle documents have no auto_approve field; absent means manual.
+    return { ...doc, auto_approve: doc.auto_approve === true };
   }
 
   async setPaused(orgId: OrgId, paused: boolean): Promise<void> {
@@ -78,6 +84,14 @@ export class OutreachWorkerStateRepository {
     await this.col.updateOne(
       { _id: orgId },
       { $set: { paused, updated_at: new Date() } }
+    );
+  }
+
+  async setAutoApprove(orgId: OrgId, autoApprove: boolean): Promise<void> {
+    await this.ensureOrg(orgId);
+    await this.col.updateOne(
+      { _id: orgId },
+      { $set: { auto_approve: autoApprove, updated_at: new Date() } }
     );
   }
 

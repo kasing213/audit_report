@@ -131,6 +131,7 @@ router.get('/worker-status', async (req: Request, res: Response) => {
     res.json({
       org,
       paused: state.paused,
+      auto_approve: state.auto_approve,
       last_heartbeat_at: state.last_heartbeat_at,
       worker_id: state.worker_id,
       sent_today: state.sent_today,
@@ -177,6 +178,23 @@ router.post('/pause', express.json(), async (req: Request, res: Response) => {
     res.json({ org, paused: target });
   } catch (err) {
     Logger.error('outreach pause failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/auto-approve — toggle or set this workspace's approval mode.
+// Isolated per org: flipping company does not touch personal.
+router.post('/auto-approve', express.json(), async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const repo = new OutreachWorkerStateRepository();
+    const current = await repo.getStatus(org);
+    const target = typeof req.body?.enabled === 'boolean' ? req.body.enabled : !current.auto_approve;
+    await repo.setAutoApprove(org, target);
+    Logger.info(`[outreach] auto_approve org=${org} -> ${target}`);
+    res.json({ org, auto_approve: target });
+  } catch (err) {
+    Logger.error('outreach auto-approve toggle failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
