@@ -8,8 +8,9 @@
 require('dotenv').config();
 const { MongoClient } = require('mongodb');
 const { OUTREACH_ORGS, orgMatch } = require('../dist/outreach/orgs');
+const { CONTACT_COOLDOWN_DAYS } = require('../dist/outreach/outreach-suppression-repository');
 
-const COOLDOWN_DAYS = 180;
+const COOLDOWN_DAYS = CONTACT_COOLDOWN_DAYS;
 const DAILY_CAP = Number(process.env.DAILY_CAP) || 15;
 
 (async () => {

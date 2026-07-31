@@ -46,15 +46,11 @@ const PHONE_PRIVACY = '+855977000005'; // pre-existing privacy suppression with 
 const ALL_PHONES = [PHONE_RECENT, PHONE_OLD, PHONE_PERSONAL, PHONE_LEGACY, PHONE_NOT_SENT, PHONE_PRIVACY];
 
 let failures = 0;
-let knownLimitationFailures = 0;
-function check(label, actual, expected, opts) {
+function check(label, actual, expected) {
   const a = actual instanceof Date ? actual.getTime() : actual;
   const e = expected instanceof Date ? expected.getTime() : expected;
   const ok = a === e;
-  if (!ok) {
-    if (opts && opts.knownLimitation) knownLimitationFailures++;
-    else failures++;
-  }
+  if (!ok) failures++;
   console.log(`${ok ? 'PASS' : 'FAIL'}  ${label} (got ${a}, want ${e})`);
 }
 
@@ -160,15 +156,11 @@ function baseProposal(overrides) {
   check('recent send: contacted doc exists (exactly one)', await suppressions.countDocuments({ customer_phone: PHONE_RECENT }), 1);
   check('recent send: failure_kind is contacted', recentDoc && recentDoc.failure_kind, 'contacted');
   check('recent send: latest sent_at wins (30d, not 60d)', recentDoc && recentDoc.contacted_at, daysAgo(30));
-  // KNOWN LIMITATION (reported, not fixed — script is used verbatim per brief):
-  // sent_at uses $max so it correctly reflects the latest send, but
-  // customer_name/follower use $first with no preceding $sort, so they take
-  // whichever document the aggregation happens to visit first (in practice,
-  // insertion order) rather than the document belonging to the latest send.
-  // These two checks are EXPECTED TO FAIL against the shipped script; they
-  // exist to make the discrepancy visible, not to gate a passing test.
-  check('recent send: customer_name from latest send (KNOWN LIMITATION, see comment above)', recentDoc && recentDoc.customer_name, 'Recent Co', { knownLimitation: true });
-  check('recent send: follower from latest send (KNOWN LIMITATION, see comment above)', recentDoc && recentDoc.follower, 'Alice', { knownLimitation: true });
+  // The aggregation sorts by effective sent date (desc) before $group, so
+  // $first on customer_name/follower picks the LATEST send's document, not
+  // an arbitrary one.
+  check('recent send: customer_name from latest send', recentDoc && recentDoc.customer_name, 'Recent Co');
+  check('recent send: follower from latest send', recentDoc && recentDoc.follower, 'Alice');
   check('recent send: eligible_again_at = sent_at + 180d',
     recentDoc && recentDoc.eligible_again_at,
     new Date(daysAgo(30).getTime() + 180 * DAY_MS));
@@ -221,10 +213,6 @@ function baseProposal(overrides) {
   await suppressions.deleteMany({ customer_phone: { $in: ALL_PHONES } });
 
   await client.close();
-  console.log(
-    failures === 0
-      ? `\nALL PASS${knownLimitationFailures ? ` (${knownLimitationFailures} known-limitation failure(s) — see comments)` : ''}`
-      : `\n${failures} FAILURE(S)${knownLimitationFailures ? ` + ${knownLimitationFailures} known-limitation failure(s)` : ''}`
-  );
+  console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
   process.exit(failures === 0 ? 0 : 1);
 })();

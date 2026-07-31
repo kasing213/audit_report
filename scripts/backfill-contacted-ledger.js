@@ -37,9 +37,14 @@ const DAY_MS = 24 * 60 * 60 * 1000;
   // 1. Contacted records from past sends. Latest send per (org, phone) wins.
   const sends = await db.collection('outreach_proposals').aggregate([
     { $match: { status: 'sent' } },
+    // Sort by the effective send date (descending) before grouping, so the
+    // $first below picks fields from the LATEST send for a phone with
+    // multiple past sends, not an arbitrary (natural-order) one.
+    { $addFields: { _effSentAt: { $ifNull: ['$sent_at', '$created_at'] } } },
+    { $sort: { _effSentAt: -1 } },
     { $group: {
       _id: { org: { $ifNull: ['$org_id', 'company'] }, phone: '$customer_phone' },
-      sent_at: { $max: { $ifNull: ['$sent_at', '$created_at'] } },
+      sent_at: { $max: '$_effSentAt' },
       name: { $first: '$customer_name' },
       follower: { $first: '$follower' },
     } },
