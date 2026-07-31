@@ -27,7 +27,7 @@ import { Logger } from '../utils/logger';
 import { toInternationalPhone } from '../utils/phone-utils';
 import { OrgId, DEFAULT_ORG, orgMatch } from './orgs';
 
-export type SuppressionKind = 'privacy' | 'invalid' | 'transient';
+export type SuppressionKind = 'privacy' | 'invalid' | 'transient' | 'contacted';
 export type SuppressionStatus = 'active' | 'exhausted' | 'resolved';
 
 export interface OutreachSuppressionDocument {
@@ -44,6 +44,11 @@ export interface OutreachSuppressionDocument {
   last_failed_reason: string;
   retries_used: number;            // backup re-attempts actually minted (0..MAX_RETRIES)
   next_retry_at: Date | null;      // privacy+active → scheduled; else null
+  // 'contacted' records only: when this phone becomes eligible for outreach
+  // again (contacted_at + CONTACT_COOLDOWN_DAYS). Null for failure records,
+  // which are governed by failure_kind instead of by a clock.
+  eligible_again_at?: Date | null;
+  contacted_at?: Date | null;
   last_proposal_id: ObjectId | null;
   customer_name: string | null;
   follower: string | null;
@@ -57,11 +62,19 @@ const RETRY_INTERVAL_DAYS = 60;
 const MAX_RETRIES = 3; // ~180 days ≈ 6 months
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How long a successfully-contacted number stays out of the pool. Replaces the
+ * old behaviour where OUTREACH_STALE_DAYS (45) governed re-contact.
+ */
+export const CONTACT_COOLDOWN_DAYS = 180;
+
 // Statuses/kinds that actively block a phone from normal generation.
 const SUPPRESSING_KINDS: SuppressionKind[] = ['privacy', 'invalid'];
 const SUPPRESSING_STATUSES: SuppressionStatus[] = ['active', 'exhausted'];
 
-const KIND_PRIORITY: Record<SuppressionKind, number> = { transient: 1, privacy: 2, invalid: 3 };
+// 'contacted' is lowest priority: it's not a failure at all, so any real
+// failure kind (even 'transient') on a formerly-contacted phone should win.
+const KIND_PRIORITY: Record<SuppressionKind, number> = { contacted: 0, transient: 1, privacy: 2, invalid: 3 };
 
 let indexesReady = false;
 
@@ -122,6 +135,7 @@ export class OutreachSuppressionRepository {
           { key: { org_id: 1, customer_phone: 1 }, name: 'org_phone_unique', unique: true },
           { key: { status: 1, next_retry_at: 1 }, name: 'retry_due_idx' },
           { key: { status: 1, last_failed_at: -1 }, name: 'list_idx' },
+          { key: { org_id: 1, failure_kind: 1, eligible_again_at: 1 }, name: 'cooldown_idx' },
         ])
         .catch((err) => Logger.error('outreach_suppressions index creation failed', err as Error));
     }
@@ -215,10 +229,70 @@ export class OutreachSuppressionRepository {
     return Boolean(doc);
   }
 
-  /** Set of all phones currently suppressing normal generation for this org. */
+  /**
+   * Record a successful send, starting this phone's 180-day cooldown for this
+   * workspace. Overwrites any prior failure record for the same (org, phone) —
+   * a number that finally delivered is contacted, not failed, so it also leaves
+   * the Failed list. `last_failed_at` is set alongside `contacted_at` purely so
+   * the existing `list_idx` sort and the failed-numbers UI have a non-null date
+   * to work with.
+   */
+  async recordContacted(input: {
+    phone: string;
+    orgId?: OrgId;
+    proposalId?: ObjectId | null;
+    customerName?: string | null;
+    follower?: string | null;
+    sentAt?: Date;
+  }): Promise<void> {
+    const phone = toInternationalPhone(input.phone.trim());
+    const orgId = input.orgId ?? DEFAULT_ORG;
+    const contactedAt = input.sentAt ?? new Date();
+    const eligibleAgainAt = new Date(contactedAt.getTime() + CONTACT_COOLDOWN_DAYS * DAY_MS);
+    const now = new Date();
+
+    await this.col.updateOne(
+      { org_id: orgId, customer_phone: phone },
+      {
+        $set: {
+          failure_kind: 'contacted' as SuppressionKind,
+          status: 'active' as SuppressionStatus,
+          contacted_at: contactedAt,
+          eligible_again_at: eligibleAgainAt,
+          last_failed_at: contactedAt,
+          last_failed_reason: `contacted — ${CONTACT_COOLDOWN_DAYS}d cooldown`,
+          next_retry_at: null,
+          last_proposal_id: input.proposalId ?? null,
+          customer_name: input.customerName ?? null,
+          follower: input.follower ?? null,
+          resolved_at: null,
+          updated_at: now,
+        },
+        $setOnInsert: {
+          first_failed_at: contactedAt,
+          retries_used: 0,
+          created_at: now,
+        },
+      },
+      { upsert: true }
+    );
+  }
+
+  /**
+   * Phones this workspace must not draft. Two independent reasons:
+   *   - a permanent failure (privacy / invalid), which never expires;
+   *   - an active contact cooldown, which expires at eligible_again_at.
+   */
   async getSuppressedPhones(orgId: OrgId = DEFAULT_ORG): Promise<Set<string>> {
+    const now = new Date();
     const cursor = this.col.find(
-      { org_id: orgMatch(orgId), failure_kind: { $in: SUPPRESSING_KINDS }, status: { $in: SUPPRESSING_STATUSES } },
+      {
+        org_id: orgMatch(orgId),
+        $or: [
+          { failure_kind: { $in: SUPPRESSING_KINDS }, status: { $in: SUPPRESSING_STATUSES } },
+          { failure_kind: 'contacted', eligible_again_at: { $gt: now } },
+        ],
+      },
       { projection: { customer_phone: 1, _id: 0 } }
     );
     const set = new Set<string>();
