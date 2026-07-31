@@ -249,6 +249,18 @@ export class OutreachRepository {
     return Boolean(existing);
   }
 
+  /**
+   * Proposals still awaiting action for this workspace — anything a human could
+   * approve or the worker could still send. Drives the scan's top-up rule so the
+   * queue never grows past its target.
+   */
+  async countOutstanding(orgId: OrgId): Promise<number> {
+    return this.col.countDocuments({
+      org_id: orgMatch(orgId),
+      status: { $in: ['pending', 'approved'] },
+    });
+  }
+
   async deleteAll(): Promise<number> {
     const result = await this.col.deleteMany({});
     return result.deletedCount;

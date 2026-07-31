@@ -1,11 +1,19 @@
 import * as cron from 'node-cron';
 import { Logger } from '../utils/logger';
 import { generateBatch } from '../outreach/outreach-agent';
+import { OutreachRepository } from '../outreach/outreach-repository';
+import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
+import { OUTREACH_ORGS, OrgId } from '../outreach/orgs';
 
 const DEFAULT_CRON = '0 9 * * *';
-const DEFAULT_BATCH_LIMIT = 20;
 const DEFAULT_STALE_DAYS = 45;
-const DEFAULT_DAILY_DRAFT_BUDGET = 30;
+/**
+ * Ceiling on outstanding (pending + approved) proposals per workspace. The scan
+ * tops the queue UP TO this number rather than adding this many, so a slow day
+ * cannot accumulate a backlog — which matters because drafting is 20/day while
+ * delivery is 15/day, and on Auto nobody is reviewing the pile.
+ */
+const DEFAULT_QUEUE_TARGET = 20;
 
 type SendMessage = (chatId: string, text: string, extra?: any) => Promise<void>;
 
@@ -15,10 +23,18 @@ export function getRegisteredOutreachScheduler(): OutreachScheduler | null {
   return registeredScheduler;
 }
 
+/**
+ * The scan's top-up rule, extracted as a pure function so it can be asserted
+ * directly (see scripts/check-scan-topup.js) instead of only through the
+ * scheduler's side-effecting runScanForOrg. Tops the queue UP TO `target`
+ * rather than adding `target` — with N outstanding it drafts max(0, target-N).
+ */
+export function computeDraftCount(outstanding: number, target: number): number {
+  return Math.max(0, target - outstanding);
+}
+
 export class OutreachScheduler {
   private sendMessageCallback?: SendMessage;
-  private draftsToday = 0;
-  private draftsToday_day: string | null = null;
 
   public setNotifyCallback(callback: SendMessage): void {
     this.sendMessageCallback = callback;
@@ -42,8 +58,7 @@ export class OutreachScheduler {
 
     cron.schedule(cronExpr, () => {
       Logger.info('Outreach scheduler tick');
-      this.runScan()
-        .catch((err) => Logger.error('outreach scan tick failed', err as Error));
+      this.runScan().catch((err) => Logger.error('outreach scan tick failed', err as Error));
     }, {
       scheduled: true,
       timezone: tz,
@@ -52,66 +67,75 @@ export class OutreachScheduler {
     Logger.info(`Outreach scheduler started (cron='${cronExpr}', tz='${tz}')`);
   }
 
-  private dailyBudget(): number {
-    const parsed = Number(process.env.OUTREACH_DAILY_DRAFT_BUDGET);
-    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_DRAFT_BUDGET;
+  private queueTarget(): number {
+    const parsed = Number(process.env.OUTREACH_QUEUE_TARGET);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_QUEUE_TARGET;
   }
 
-  private rollDayCounter(): void {
-    const today = new Date().toISOString().slice(0, 10);
-    if (today !== this.draftsToday_day) {
-      this.draftsToday_day = today;
-      this.draftsToday = 0;
-    }
+  private staleDays(): number {
+    const parsed = Number(process.env.OUTREACH_STALE_DAYS);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_STALE_DAYS;
   }
 
+  /**
+   * Scan every workspace. One org failing must not stop the others.
+   * NOTE: OUTREACH_ORGS is OrgDef[] ({ id, label }), not a string array — iterate
+   * the objects and pass `.id`.
+   */
   private async runScan(): Promise<void> {
-    this.rollDayCounter();
-
-    const budget = this.dailyBudget();
-    if (this.draftsToday >= budget) {
-      Logger.info(`Outreach scan: daily draft budget (${budget}) already reached, skipping`);
-      return;
-    }
-
-    const limitEnv = Number(process.env.OUTREACH_BATCH_LIMIT);
-    const limit = Number.isFinite(limitEnv) && limitEnv > 0 ? limitEnv : DEFAULT_BATCH_LIMIT;
-    const staleEnv = Number(process.env.OUTREACH_STALE_DAYS);
-    const staleDays = Number.isFinite(staleEnv) && staleEnv > 0 ? staleEnv : DEFAULT_STALE_DAYS;
-
-    const remaining = Math.max(0, budget - this.draftsToday);
-    const effectiveLimit = Math.min(limit, remaining);
-    if (effectiveLimit <= 0) {
-      Logger.info('Outreach scan: no remaining budget, skipping');
-      return;
-    }
-
-    try {
-      const result = await generateBatch({ limit: effectiveLimit, staleDays });
-      this.draftsToday += result.requested;
-
-      Logger.info(
-        `Outreach scan complete: requested=${result.requested} created=${result.created} skipped=${result.skipped} errored=${result.errored}`
-      );
-
-      const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
-      if (chatId && this.sendMessageCallback) {
-        const lines = [
-          '📡 *Outreach scan*',
-          '',
-          `Requested: ${result.requested}`,
-          `Created: ${result.created}`,
-          `Skipped: ${result.skipped}`,
-          `Errored: ${result.errored}`,
-        ];
-        try {
-          await this.sendMessageCallback(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
-        } catch (err) {
-          Logger.error('Outreach scan summary send failed', err as Error);
-        }
+    for (const org of OUTREACH_ORGS) {
+      try {
+        await this.runScanForOrg(org.id);
+      } catch (err) {
+        Logger.error(`Outreach scan failed for org=${org.id}`, err as Error);
       }
-    } catch (err) {
-      Logger.error('Outreach scan failed', err as Error);
+    }
+  }
+
+  private async runScanForOrg(orgId: OrgId): Promise<void> {
+    const target = this.queueTarget();
+    const outstanding = await new OutreachRepository().countOutstanding(orgId);
+    const draftCount = computeDraftCount(outstanding, target);
+
+    if (draftCount === 0) {
+      Logger.info(`Outreach scan org=${orgId}: queue already at ${outstanding}/${target}, drafting 0`);
+      return;
+    }
+
+    // Approval mode is per workspace and read fresh each tick, so flipping the
+    // dashboard switch takes effect on the very next scan.
+    const state = await new OutreachWorkerStateRepository().getStatus(orgId);
+    const autoApprove = state.auto_approve === true;
+
+    const result = await generateBatch({
+      limit: draftCount,
+      staleDays: this.staleDays(),
+      autoApprove,
+      orgId,
+    });
+
+    Logger.info(
+      `Outreach scan org=${orgId} mode=${autoApprove ? 'auto' : 'manual'}: ` +
+      `outstanding=${outstanding} target=${target} drafted=${draftCount} ` +
+      `created=${result.created} skipped=${result.skipped} errored=${result.errored}`
+    );
+
+    const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
+    if (chatId && this.sendMessageCallback) {
+      const lines = [
+        `📡 *Outreach scan* — ${orgId}`,
+        '',
+        `Mode: ${autoApprove ? 'AUTO approve' : 'manual approve'}`,
+        `Queue before: ${outstanding}/${target}`,
+        `Drafted: ${result.created}`,
+        `Skipped: ${result.skipped}`,
+        `Errored: ${result.errored}`,
+      ];
+      try {
+        await this.sendMessageCallback(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+      } catch (err) {
+        Logger.error('Outreach scan summary send failed', err as Error);
+      }
     }
   }
 }

@@ -106,7 +106,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       follower: customer.follower,
       message: staticMessage,
       reasoning: opts.autoApprove
-        ? 'static template (auto-approved backup retry)'
+        ? 'static template (auto-approved by workspace setting)'
         : 'static template (AI generation disabled)',
       status: opts.autoApprove ? 'approved' : 'pending',
       skipped_reason: null,
@@ -114,7 +114,7 @@ export async function generateBatch(opts: GenerateOptions): Promise<GenerateResu
       custom_image_id: null,
       created_at: now,
       approved_at: opts.autoApprove ? now : null,
-      approved_by: opts.autoApprove ? 'auto-retry' : null,
+      approved_by: opts.autoApprove ? 'auto-approve' : null,
       sent_at: null,
       lease_expires_at: null,
       model: 'static',
