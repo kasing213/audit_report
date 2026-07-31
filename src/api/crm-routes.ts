@@ -9,8 +9,10 @@ import { formatTelegramLink, formatPhoneDisplay, toInternationalPhone } from '..
 import { generateBatch } from '../outreach/outreach-agent';
 import { resolveOrg, ORG_COOKIE_NAME } from '../outreach/org-context';
 import { OUTREACH_ORGS, normalizeOrg } from '../outreach/orgs';
+import { OutreachSuppressionRepository } from '../outreach/outreach-suppression-repository';
 import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
+import { readHeaders, hasPhoneColumn, parsePhoneSheet } from './import-parser';
 
 const router = express.Router();
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } });
@@ -35,25 +37,6 @@ router.get('/set-org', (req: Request, res: Response) => {
   const referer = req.get('referer');
   res.redirect(referer || '/crm');
 });
-
-// Parse one QuickBook report line: "060-Pkarikkongsuon 092 462911"
-// → { name: "Pkarikkongsuon", phone: "+85592462911" }. Returns null if no phone → reject row.
-function extractQuickBookRecord(text: string): { name: string | null; phone: string } | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-  // strip leading sequence id like "060-" or "6." (1-3 digits + separator)
-  const idMatch = trimmed.match(/^\s*\d{1,3}\s*[-.]\s*/);
-  const body = idMatch ? trimmed.slice(idMatch[0].length) : trimmed;
-  // find first digit run that is a Cambodian phone (8-11 digits, spaces/dots/dashes allowed)
-  for (const m of body.matchAll(/\d[\d\s.\-]{5,}\d/g)) {
-    const digits = m[0].replace(/\D/g, '');
-    if (digits.length >= 8 && digits.length <= 11) {
-      const name = body.slice(0, m.index).trim();
-      return { name: name || null, phone: toInternationalPhone(digits) };
-    }
-  }
-  return null; // no number in the row → reject
-}
 
 // GET /crm — customers page
 router.get('/', async (req: Request, res: Response) => {
@@ -320,55 +303,37 @@ router.post('/api/import', upload.single('file'), async (req: Request, res: Resp
       return;
     }
 
-    // Get headers from first row
-    const headerRow = worksheet.getRow(1);
-    const headers: string[] = [];
-    headerRow.eachCell((cell, colNumber) => {
-      headers[colNumber - 1] = String(cell.value || '').toLowerCase().trim();
-    });
+    // These are often old leads (years old at export) with no real dates in the
+    // file. Backdate them to the outreach stale threshold (45 days) so they
+    // immediately count as stale and get staged into the outreach pipeline
+    // instead of looking brand-new.
+    const STALE_DAYS = 45; // matches DEFAULT_STALE_DAYS in outreach-agent.ts
+    const staleDate = new Date();
+    staleDate.setDate(staleDate.getDate() - STALE_DAYS);
+    const staleDateStr = staleDate.toISOString().slice(0, 10);
 
-    let responseHeaders = headers.filter(Boolean);
-    const hasPhoneHeader = headers.includes('phone');
-
-    if (hasPhoneHeader) {
-      // Standard CSV/Excel with a phone column
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return; // skip header
-        const record: any = {};
-        row.eachCell((cell, colNumber) => {
-          const header = headers[colNumber - 1];
-          if (header) {
-            record[header] = cell.value !== null && cell.value !== undefined ? String(cell.value).trim() : null;
-          }
-        });
-        if (record.phone) {
-          rows.push(record);
-        }
-      });
-    } else {
-      // QuickBook report export: no header, "ID-Name Phone" jammed into one text column.
-      // Extract name + phone from each row's text; reject rows with no phone number.
-      //
-      // These are old leads (years old at export) with no real dates in the file. Backdate
-      // them to the outreach stale threshold (45 days) so they immediately count as stale
-      // and get staged into the outreach pipeline instead of looking brand-new.
-      const STALE_DAYS = 45; // matches DEFAULT_STALE_DAYS in outreach-agent.ts
-      const staleDate = new Date();
-      staleDate.setDate(staleDate.getDate() - STALE_DAYS);
-      const staleDateStr = staleDate.toISOString().slice(0, 10);
-      worksheet.eachRow((row, rowNumber) => {
-        if (rowNumber === 1) return; // skip potential header/title row
-        const parts: string[] = [];
-        row.eachCell({ includeEmpty: false }, (cell) => {
-          if (cell.value !== null && cell.value !== undefined) parts.push(String(cell.value).trim());
-        });
-        const record = extractQuickBookRecord(parts.join(' '));
-        if (record) {
-          rows.push({ ...record, date: staleDateStr });
-        }
-      });
-      responseHeaders = ['name', 'phone', 'date'];
+    // Cross-row DB concerns (already imported / in cooldown) only matter for the
+    // structured phone-column path — the header-less fallback never checked
+    // these, so skip the queries entirely when they won't be used.
+    let existingPhones = new Set<string>();
+    let suppressedPhones = new Set<string>();
+    if (hasPhoneColumn(readHeaders(worksheet))) {
+      const org = resolveOrg(req);
+      const repository = getRepository();
+      suppressedPhones = await new OutreachSuppressionRepository().getSuppressedPhones(org);
+      existingPhones = new Set(
+        (await repository.getAllCustomers(undefined, org))
+          .filter((c) => c.phone)
+          .map((c) => toInternationalPhone(c.phone!.trim()))
+      );
     }
+
+    const { rows: parsedRows, buckets, headers: responseHeaders } = parsePhoneSheet(worksheet, {
+      staleDateStr,
+      existingPhones,
+      suppressedPhones,
+    });
+    rows = parsedRows;
 
     // Return preview
     res.json({
@@ -376,6 +341,7 @@ router.post('/api/import', upload.single('file'), async (req: Request, res: Resp
       total: rows.length,
       sample: rows.slice(0, 5),
       headers: responseHeaders,
+      buckets,
       rows
     });
   } catch (error) {
