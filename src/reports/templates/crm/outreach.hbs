@@ -171,6 +171,22 @@
     font-size: 0.78rem;
   }
   .worker-bar .pause-btn:hover { border-color: var(--accent); }
+  .worker-bar .mode-btn {
+    padding: 0.3rem 0.7rem;
+    border-radius: 6px;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: var(--font-body);
+    cursor: pointer;
+    font-size: 0.78rem;
+    margin-right: 0.4rem;
+  }
+  .worker-bar .mode-btn:hover { border-color: var(--accent); }
+  .worker-bar .mode-btn.auto {
+    border-color: var(--yellow);
+    color: var(--yellow);
+  }
   .pause-banner {
     display: none;
     background: var(--yellow-dim);
@@ -330,6 +346,7 @@
     <span class="worker-dot" id="worker-dot"></span>
     <span id="worker-summary">Worker: checking…</span>
     <span class="spacer"></span>
+    <button class="mode-btn" id="mode-btn" onclick="toggleAutoApprove()">Approve: Manual</button>
     <button class="pause-btn" id="pause-btn" onclick="togglePause()">Pause</button>
   </div>
   <div class="outreach-top">
@@ -559,6 +576,7 @@
   let pollTimer = null;
   let workerStatusTimer = null;
   let workerPaused = false;
+  let autoApprove = false;
   const focusId = (new URL(window.location.href)).searchParams.get('focus');
 
   document.querySelectorAll('#status-tabs .status-tab').forEach(tab => {
@@ -870,6 +888,7 @@
       if (!resp.ok) return;
       const data = await resp.json();
       workerPaused = !!data.paused;
+      autoApprove = !!data.auto_approve;
 
       const dot = document.getElementById('worker-dot');
       const summary = document.getElementById('worker-summary');
@@ -891,6 +910,12 @@
 
       banner.classList.toggle('show', workerPaused);
       btn.textContent = workerPaused ? 'Resume' : 'Pause';
+      const modeBtn = document.getElementById('mode-btn');
+      modeBtn.textContent = autoApprove ? 'Approve: Auto' : 'Approve: Manual';
+      modeBtn.classList.toggle('auto', autoApprove);
+      modeBtn.title = autoApprove
+        ? 'This workspace approves its daily batch automatically. Messages send with no human review.'
+        : 'Drafts wait in Pending until you approve them.';
     } catch {
       // ignore — next tick
     }
@@ -907,6 +932,27 @@
       if (resp.ok) refreshWorkerStatus();
       else showToast('Pause toggle failed', 'error');
     } catch { showToast('Pause toggle failed', 'error'); }
+  }
+
+  async function toggleAutoApprove() {
+    const turningOn = !autoApprove;
+    if (turningOn && !confirm(
+      'Switch this workspace to AUTO approve?\n\n' +
+      'The daily batch will be approved and sent with no human review. ' +
+      'Only this workspace is affected.'
+    )) return;
+    try {
+      const resp = await fetch(API + '/auto-approve', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: turningOn }),
+      });
+      if (resp.ok) {
+        showToast(turningOn ? 'Auto approve ON for this workspace' : 'Manual approve restored', 'success');
+        refreshWorkerStatus();
+      } else showToast('Auto-approve toggle failed', 'error');
+    } catch { showToast('Auto-approve toggle failed', 'error'); }
   }
 
   function startWorkerStatusPoll() {
