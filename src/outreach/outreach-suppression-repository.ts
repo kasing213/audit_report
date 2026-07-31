@@ -1,6 +1,6 @@
 // src/outreach/outreach-suppression-repository.ts
 /**
- * Phone-level suppression + backup-retry ledger for outreach.
+ * Phone-level suppression ledger for outreach.
  *
  * Problem it solves: a number that fails to send (typically "not on Telegram /
  * hidden by privacy") was previously re-selected into every subsequent batch
@@ -11,13 +11,16 @@
  *
  * Kinds:
  *   privacy   — not reachable via ImportContacts (privacy-hidden or not-yet-on-
- *               Telegram). Recoverable: retried ~every 60d, up to 3 times, then
- *               'exhausted'. Suppresses normal generation the whole time.
+ *               Telegram). The recipient's own privacy setting blocks delivery
+ *               and does not change on a timer, so this is PERMANENT — no retry
+ *               clock, next_retry_at is always null. Suppresses generation forever.
  *   invalid   — permanently bad number (PHONE_NUMBER_INVALID). Suppressed
  *               forever, never retried.
- *   transient — system/temporary error (timeout, mtproto blip, lease expiry,
- *               partial send). Recorded for visibility ONLY; does NOT suppress
- *               (the phone re-enters normal generation on the next scan).
+ *   transient — system/temporary error (worker crash, mtproto blip, lease
+ *               expiry) where the message never reached the customer. Does NOT
+ *               suppress the phone here — instead the proposal itself is
+ *               re-queued (see OutreachRepository.requeueTransient), bounded at
+ *               MAX_TRANSIENT_RETRIES so a broken send can't loop forever.
  *
  * Collection: `outreach_suppressions`, unique on `customer_phone`.
  */
@@ -42,8 +45,8 @@ export interface OutreachSuppressionDocument {
   first_failed_at: Date;
   last_failed_at: Date;
   last_failed_reason: string;
-  retries_used: number;            // backup re-attempts actually minted (0..MAX_RETRIES)
-  next_retry_at: Date | null;      // privacy+active → scheduled; else null
+  retries_used: number;            // vestigial — retry ladder removed; always 0
+  next_retry_at: Date | null;      // vestigial — privacy/invalid are permanent; always null
   // 'contacted' records only: when this phone becomes eligible for outreach
   // again (contacted_at + CONTACT_COOLDOWN_DAYS). Null for failure records,
   // which are governed by failure_kind instead of by a clock.
@@ -58,8 +61,6 @@ export interface OutreachSuppressionDocument {
 }
 
 const COLLECTION = 'outreach_suppressions';
-const RETRY_INTERVAL_DAYS = 60;
-const MAX_RETRIES = 3; // ~180 days ≈ 6 months
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -95,10 +96,6 @@ export function classifyFailure(reason: string): SuppressionKind {
 
 function higherKind(a: SuppressionKind, b: SuppressionKind): SuppressionKind {
   return KIND_PRIORITY[a] >= KIND_PRIORITY[b] ? a : b;
-}
-
-function daysFromNow(days: number): Date {
-  return new Date(Date.now() + days * DAY_MS);
 }
 
 export interface RecordFailureInput {
@@ -142,12 +139,10 @@ export class OutreachSuppressionRepository {
   }
 
   /**
-   * Record a send failure for a phone. Classifies the reason, upserts the
-   * per-phone doc, and (for a brand-new privacy failure) schedules the first
-   * backup retry. Ongoing retry scheduling/counting is owned by bumpRetry — this
-   * method never touches retries_used/next_retry_at for an in-progress privacy
-   * doc, only refreshing last-failed metadata. Returns the classified kind and
-   * whether the phone is now suppressed.
+   * Record a send failure for a phone. Classifies the reason and upserts the
+   * per-phone doc. Privacy and invalid failures are permanent — next_retry_at
+   * is always null, there is no retry clock or retry ladder. Returns the
+   * classified kind and whether the phone is now suppressed.
    */
   async recordFailure(input: RecordFailureInput): Promise<{ kind: SuppressionKind; suppressed: boolean }> {
     const phone = toInternationalPhone(input.phone.trim());
@@ -168,7 +163,9 @@ export class OutreachSuppressionRepository {
         last_failed_at: now,
         last_failed_reason: input.reason,
         retries_used: 0,
-        next_retry_at: kind === 'privacy' ? daysFromNow(RETRY_INTERVAL_DAYS) : null,
+        // Privacy failures are permanent: the recipient's own privacy setting is
+        // what blocks delivery, and that does not change on a timer. No retry clock.
+        next_retry_at: null,
         last_proposal_id: input.proposalId ?? null,
         customer_name: input.customerName ?? null,
         follower: input.follower ?? null,
@@ -220,20 +217,21 @@ export class OutreachSuppressionRepository {
     if (input.proposalId) set.last_proposal_id = input.proposalId;
 
     if (prev && prev.status === 'resolved') {
-      // A previously-resolved phone failed again — new episode, reset the clock.
+      // A previously-resolved phone failed again — new episode. Privacy/invalid
+      // are permanent, so there is no clock to reset — next_retry_at stays null.
       set.status = 'active';
       set.retries_used = 0;
       set.resolved_at = null;
-      set.next_retry_at = effectiveKind === 'privacy' ? daysFromNow(RETRY_INTERVAL_DAYS) : null;
+      set.next_retry_at = null;
     } else if (effectiveKind === 'invalid') {
       // Upgraded to (or already) permanently invalid — never retry.
       set.next_retry_at = null;
     } else if (effectiveKind === 'privacy' && prev && prev.failure_kind === 'transient') {
-      // A transient-only doc is now a real privacy failure — start the retry clock.
+      // A transient-only doc is now a real privacy failure — permanently closed.
       set.status = 'active';
-      set.next_retry_at = daysFromNow(RETRY_INTERVAL_DAYS);
+      set.next_retry_at = null;
     }
-    // privacy-staying-privacy: leave retries_used / next_retry_at to bumpRetry.
+    // privacy-staying-privacy: nothing further to schedule — permanent, no retry ladder.
 
     await this.col.updateOne({ org_id: org, customer_phone: phone }, { $set: set });
     return { kind: effectiveKind, suppressed: effectiveKind !== 'transient' };
@@ -329,55 +327,6 @@ export class OutreachSuppressionRepository {
     return set;
   }
 
-  /** Privacy suppressions whose next backup retry is due, oldest first, capped. */
-  async listForRetry(now: Date, budget: number, orgId: OrgId = DEFAULT_ORG): Promise<OutreachSuppressionDocument[]> {
-    return this.col
-      .find({ org_id: orgMatch(orgId), failure_kind: 'privacy', status: 'active', next_retry_at: { $lte: now } })
-      .sort({ next_retry_at: 1 })
-      .limit(Math.max(0, budget))
-      .toArray();
-  }
-
-  /**
-   * Count a backup retry as spent (called when a fresh proposal is actually
-   * minted for the phone). Atomically increments retries_used and reschedules
-   * +60d, or marks the phone 'exhausted' once MAX_RETRIES is reached. This is
-   * the SOLE owner of retries_used/next_retry_at for an in-progress privacy doc.
-   */
-  async bumpRetry(phone: string, proposalId: ObjectId | null, orgId: OrgId = DEFAULT_ORG): Promise<void> {
-    const normalized = toInternationalPhone(phone.trim());
-    const org = orgMatch(orgId);
-    const now = new Date();
-    const updated = await this.col.findOneAndUpdate(
-      { org_id: org, customer_phone: normalized, failure_kind: 'privacy', status: 'active' },
-      {
-        $inc: { retries_used: 1 },
-        $set: { last_proposal_id: proposalId, next_retry_at: daysFromNow(RETRY_INTERVAL_DAYS), updated_at: now },
-      },
-      { returnDocument: 'after' }
-    );
-    const doc = updated as OutreachSuppressionDocument | null;
-    if (doc && doc.retries_used >= MAX_RETRIES) {
-      await this.col.updateOne(
-        { org_id: org, customer_phone: doc.customer_phone },
-        { $set: { status: 'exhausted', next_retry_at: null, updated_at: new Date() } }
-      );
-    }
-  }
-
-  /**
-   * Push a due privacy retry out by another interval WITHOUT counting it as a
-   * spent attempt. Used when a due phone couldn't actually be re-minted (already
-   * has a live proposal, or has no customer record) so it doesn't monopolize the
-   * daily retry budget on every scan.
-   */
-  async deferRetry(phone: string, orgId: OrgId = DEFAULT_ORG): Promise<void> {
-    await this.col.updateOne(
-      { org_id: orgMatch(orgId), customer_phone: toInternationalPhone(phone.trim()), failure_kind: 'privacy', status: 'active' },
-      { $set: { next_retry_at: daysFromNow(RETRY_INTERVAL_DAYS), updated_at: new Date() } }
-    );
-  }
-
   /** Clear suppression after a confirmed successful send. Idempotent. */
   async resolve(phone: string, orgId: OrgId = DEFAULT_ORG): Promise<void> {
     const now = new Date();
@@ -422,8 +371,8 @@ export class OutreachSuppressionRepository {
 
   /**
    * One-time migration: seed suppression docs from existing `status:'failed'`
-   * proposals, one per phone (latest reason wins). Privacy retries are staggered
-   * so the first post-backfill retry day doesn't clump against the daily cap.
+   * proposals, one per phone (latest reason wins). Privacy/invalid are permanent
+   * — next_retry_at is always null, there is no retry ladder to stagger.
    * Idempotent — phones already having a doc are skipped.
    */
   async backfillFromFailedProposals(): Promise<{ scanned: number; created: number; skipped: number }> {
@@ -472,9 +421,8 @@ export class OutreachSuppressionRepository {
 
       const reason = g.last_reason || 'unspecified worker failure';
       const kind = classifyFailure(reason);
-      // Stagger privacy retries across a 30-day spread so a big cohort doesn't
-      // all come due on the same day (interacts with OUTREACH_RETRY_DAILY_BUDGET).
-      const stagger = kind === 'privacy' ? daysFromNow(RETRY_INTERVAL_DAYS + (i % 30)) : null;
+      // Privacy/invalid are permanent — no retry clock to stagger.
+      const stagger = null;
 
       const doc: OutreachSuppressionDocument = {
         org_id: orgId,

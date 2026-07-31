@@ -3,6 +3,7 @@ import { OutreachProposalDocument } from './outreach-repository';
 
 export type AlertKind =
   | 'mark-failed'
+  | 'transient-requeue'
   | 'lease-expired'
   | 'worker-offline'
   | 'session-expired'
@@ -64,6 +65,9 @@ function formatProposalAlert(
   switch (kind) {
     case 'mark-failed':
       lines.push('🚨 *Outreach send FAILED*');
+      break;
+    case 'transient-requeue':
+      lines.push('🔁 *Outreach send failed transiently — re-queued*');
       break;
     case 'lease-expired':
       lines.push('⚠️ *Outreach lease expired (3rd attempt)*');
