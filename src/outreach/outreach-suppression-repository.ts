@@ -187,6 +187,27 @@ export class OutreachSuppressionRepository {
 
     // Existing doc (or lost an insert race): merge.
     const prev = existing ?? (await this.col.findOne({ org_id: org, customer_phone: phone }));
+
+    // A phone still inside an active contact cooldown must not have that cooldown
+    // silently cancelled by an incidental failure — e.g. a manual/explicit-phones
+    // generate path that bypasses getSuppressedPhones and mints a proposal for a
+    // number 14 days into its 180-day cooldown, which then fails transiently.
+    // KIND_PRIORITY alone can't gate this: it's static and can't tell "cooldown
+    // active" from "cooldown expired" apart, so a table-only fix either lets a
+    // stray failure cancel a live cooldown (contacted low-priority) or lets an
+    // expired cooldown block real failures forever (contacted high-priority).
+    // Consult the clock instead — record the failure for audit visibility
+    // (last_failed_at/last_failed_reason) but leave failure_kind/eligible_again_at/
+    // contacted_at untouched while the cooldown is still running. Once
+    // eligible_again_at has passed, fall through to the normal higherKind merge.
+    if (prev && prev.failure_kind === 'contacted' && prev.eligible_again_at && prev.eligible_again_at > now) {
+      await this.col.updateOne(
+        { org_id: org, customer_phone: phone },
+        { $set: { last_failed_at: now, last_failed_reason: input.reason, updated_at: now } }
+      );
+      return { kind: 'contacted', suppressed: true };
+    }
+
     const effectiveKind = prev ? higherKind(prev.failure_kind, kind) : kind;
     const set: Partial<OutreachSuppressionDocument> = {
       last_failed_at: now,
@@ -252,7 +273,12 @@ export class OutreachSuppressionRepository {
     const now = new Date();
 
     await this.col.updateOne(
-      { org_id: orgId, customer_phone: phone },
+      // orgMatch, not a bare equality, so this also catches legacy pre-multi-org
+      // docs (org_id: null) for the default org — matching resolve()/every other
+      // reader/writer in this file. Without it, a legacy privacy/invalid doc for
+      // this phone would be left in place (still permanently suppressing) while
+      // this upsert inserted a second, unrelated 'contacted' doc.
+      { org_id: orgMatch(orgId), customer_phone: phone },
       {
         $set: {
           failure_kind: 'contacted' as SuppressionKind,
@@ -269,6 +295,9 @@ export class OutreachSuppressionRepository {
           updated_at: now,
         },
         $setOnInsert: {
+          // orgMatch() widens the filter to an $in for the default org, so a
+          // genuine insert must still pin down a concrete org_id explicitly.
+          org_id: orgId,
           first_failed_at: contactedAt,
           retries_used: 0,
           created_at: now,

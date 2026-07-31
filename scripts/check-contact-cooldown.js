@@ -3,7 +3,10 @@ require('./check-db').useScratchDb();
 /**
  * Verifies the 180-day contact cooldown: recordContacted writes an expiry,
  * an in-cooldown number is suppressed, an expired one is not, and the rule
- * is scoped per workspace.
+ * is scoped per workspace. Also verifies the clock-guard in recordFailure
+ * (an active cooldown survives a stray failure; an expired one doesn't block
+ * a genuine new failure) and that recordContacted dedupes against legacy
+ * (org_id: null) docs instead of inserting a second document.
  *
  * Usage: node scripts/check-contact-cooldown.js
  *
@@ -13,6 +16,7 @@ require('./check-db').useScratchDb();
 const { MongoClient } = require('mongodb');
 
 const PHONE = '+855999000111';
+const PHONE_LEGACY = '+855999000222';
 let failures = 0;
 function check(label, actual, expected) {
   const ok = actual === expected;
@@ -33,7 +37,7 @@ function check(label, actual, expected) {
     process.exit(1);
   }
   const col = db.collection('outreach_suppressions');
-  await col.deleteMany({ customer_phone: PHONE });
+  await col.deleteMany({ customer_phone: { $in: [PHONE, PHONE_LEGACY] } });
 
   const DatabaseConnection = require('../dist/database/connection').default;
   await DatabaseConnection.getInstance().connect();
@@ -56,6 +60,22 @@ function check(label, actual, expected) {
   check('in cooldown → suppressed in company', compSet.has(PHONE), true);
   check('cooldown is per workspace', persSet.has(PHONE), false);
 
+  // --- Clock guard, half 1: an ACTIVE cooldown must survive a stray failure. ---
+  // The phone from above still has ~180d left on its cooldown. A failure
+  // recorded against it now (e.g. from a manual/explicit-phones generate path
+  // that bypassed getSuppressedPhones) must not cancel the cooldown.
+  const eligibleBeforeFailure = doc.eligible_again_at.getTime();
+  await repo.recordFailure({ phone: PHONE, reason: 'timeout contacting worker', orgId: 'company' });
+  const afterStrayFailure = await col.findOne({ customer_phone: PHONE, org_id: 'company' });
+  check('active cooldown survives stray failure: kind still contacted', afterStrayFailure.failure_kind, 'contacted');
+  check(
+    'active cooldown survives stray failure: eligible_again_at unchanged',
+    new Date(afterStrayFailure.eligible_again_at).getTime(),
+    eligibleBeforeFailure
+  );
+  const suppressedAfterStrayFailure = await repo.getSuppressedPhones('company');
+  check('active cooldown survives stray failure: still suppressed', suppressedAfterStrayFailure.has(PHONE), true);
+
   // Expired cooldown → no longer suppressed.
   await col.updateOne(
     { customer_phone: PHONE, org_id: 'company' },
@@ -64,7 +84,15 @@ function check(label, actual, expected) {
   const afterExpiry = await repo.getSuppressedPhones('company');
   check('expired cooldown → eligible again', afterExpiry.has(PHONE), false);
 
-  // A privacy record is still permanently suppressed regardless of cooldown.
+  // --- Clock guard, half 2: an EXPIRED cooldown must not block a genuine new failure. ---
+  await repo.recordFailure({ phone: PHONE, reason: 'hidden by privacy', orgId: 'company' });
+  const afterExpiredFailure = await col.findOne({ customer_phone: PHONE, org_id: 'company' });
+  check('expired cooldown lets new failure through: kind becomes privacy', afterExpiredFailure.failure_kind, 'privacy');
+  const permSet = await repo.getSuppressedPhones('company');
+  check('expired cooldown lets new failure through: now permanently suppressed', permSet.has(PHONE), true);
+
+  // A privacy record is still permanently suppressed regardless of cooldown
+  // (belt-and-braces: force eligible_again_at null and re-check).
   await col.updateOne(
     { customer_phone: PHONE, org_id: 'company' },
     { $set: { failure_kind: 'privacy', status: 'active', eligible_again_at: null } }
@@ -72,7 +100,50 @@ function check(label, actual, expected) {
   const privacySet = await repo.getSuppressedPhones('company');
   check('privacy still permanently suppressed', privacySet.has(PHONE), true);
 
-  await col.deleteMany({ customer_phone: PHONE });
+  // --- recordContacted dedupes against a legacy (org_id: null) doc instead of
+  // inserting a second document, so a delivered send actually clears an old
+  // permanent privacy suppression written before multi-org existed. ---
+  await col.insertOne({
+    org_id: null,
+    customer_phone: PHONE_LEGACY,
+    failure_kind: 'privacy',
+    status: 'active',
+    first_failed_at: new Date(),
+    last_failed_at: new Date(),
+    last_failed_reason: 'legacy pre-multi-org privacy failure',
+    retries_used: 0,
+    next_retry_at: null,
+    last_proposal_id: null,
+    customer_name: null,
+    follower: null,
+    created_at: new Date(),
+    updated_at: new Date(),
+    resolved_at: null,
+  });
+  await repo.recordContacted({ phone: PHONE_LEGACY, orgId: 'company' });
+  const legacyDocs = await col.find({ customer_phone: PHONE_LEGACY }).toArray();
+  // The legacy doc is matched (not duplicated) via orgMatch, same as every other
+  // reader/writer in this file — consistent with resolve()/recordFailure(), its
+  // org_id is left as null (still correctly matched by orgMatch('company') on
+  // every future read) rather than being rewritten in place.
+  check('recordContacted dedupes legacy doc: exactly one document', legacyDocs.length, 1);
+  check('recordContacted dedupes legacy doc: kind is contacted', legacyDocs[0] && legacyDocs[0].failure_kind, 'contacted');
+
+  // Insert path (brand-new phone, no existing doc of any org_id): the upsert's
+  // $setOnInsert must still pin a concrete org_id, not leave it absent/null.
+  const PHONE_FRESH = '+855999000333';
+  await col.deleteMany({ customer_phone: PHONE_FRESH });
+  await repo.recordContacted({ phone: PHONE_FRESH, orgId: 'company' });
+  const freshDocs = await col.find({ customer_phone: PHONE_FRESH }).toArray();
+  check('recordContacted insert path: exactly one document', freshDocs.length, 1);
+  check('recordContacted insert path: org_id is concrete company', freshDocs[0] && freshDocs[0].org_id, 'company');
+  await col.deleteMany({ customer_phone: PHONE_FRESH });
+  const legacySuppressedCompany = await repo.getSuppressedPhones('company');
+  const legacySuppressedPersonal = await repo.getSuppressedPhones('personal');
+  check('recordContacted dedupes legacy doc: suppressed in company (cooldown)', legacySuppressedCompany.has(PHONE_LEGACY), true);
+  check('recordContacted dedupes legacy doc: not suppressed in personal', legacySuppressedPersonal.has(PHONE_LEGACY), false);
+
+  await col.deleteMany({ customer_phone: { $in: [PHONE, PHONE_LEGACY] } });
   await client.close();
   await DatabaseConnection.getInstance().disconnect();
   console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
