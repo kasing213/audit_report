@@ -724,12 +724,19 @@ router.post('/:id/mark-sent', async (req: Request, res: Response) => {
       Logger.warn(`recordDelivery on mark-sent: ${(e as Error).message}`);
     }
 
-    // Clear any suppression for this phone — a previously-failed number that
-    // finally delivered (e.g. via a backup retry) should leave the Failed list.
+    // Start this phone's contact cooldown for the proposal's own workspace. This
+    // also overwrites any prior failure record, so a number that finally
+    // delivered leaves the Failed list — the same effect the old resolve() had.
     try {
-      await new OutreachSuppressionRepository().resolve(proposal.customer_phone, normalizeOrg(proposal.org_id));
+      await new OutreachSuppressionRepository().recordContacted({
+        phone: proposal.customer_phone,
+        orgId: normalizeOrg(proposal.org_id),
+        proposalId: proposal._id ?? null,
+        customerName: proposal.customer_name,
+        follower: proposal.follower,
+      });
     } catch (e) {
-      Logger.warn(`resolve suppression on mark-sent: ${(e as Error).message}`);
+      Logger.warn(`recordContacted on mark-sent: ${(e as Error).message}`);
     }
 
     // Record a lead event for the outbound message.
