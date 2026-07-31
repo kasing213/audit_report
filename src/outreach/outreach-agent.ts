@@ -18,7 +18,7 @@ export interface GenerateOptions {
   staleDays?: number;
   /** Skip the suppression filter (used by the explicit backup-retry path). */
   bypassSuppression?: boolean;
-  /** Create proposals as 'approved' (auto-retry) instead of 'pending'. */
+  /** Create proposals as 'approved' (workspace auto-approve is on) instead of 'pending'. */
   autoApprove?: boolean;
   /** Outreach workspace to draft for. Defaults to 'company'. */
   orgId?: OrgId;

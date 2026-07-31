@@ -153,9 +153,9 @@ router.get('/worker-status', async (req: Request, res: Response) => {
 });
 
 // POST /crm/api/outreach/scheduler/run-once — fire the daily scan synchronously
-// for testing. Same code path the cron tick uses (rolls the draft-budget counter
-// and posts the audit-chat summary), so it exercises the end-to-end flow without
-// waiting for 9 AM.
+// for testing. Same code path the cron tick uses (per-org top-up against each
+// workspace's queue target and auto-approve setting, then posts the audit-chat
+// summary), so it exercises the end-to-end flow without waiting for 9 AM.
 router.post('/scheduler/run-once', async (_req: Request, res: Response) => {
   const sched = getRegisteredOutreachScheduler();
   if (!sched) {
