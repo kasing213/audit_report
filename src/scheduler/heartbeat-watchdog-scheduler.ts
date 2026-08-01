@@ -28,7 +28,7 @@ export class HeartbeatWatchdogScheduler {
     }
 
     const cronExpr = process.env.HEARTBEAT_WATCHDOG_CRON || DEFAULT_CRON;
-    const tz = process.env.TIMEZONE || 'Asia/Kuala_Lumpur';
+    const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
 
     cron.schedule(cronExpr, () => {
       this.check().catch((err) => Logger.error('heartbeat watchdog tick failed', err as Error));

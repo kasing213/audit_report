@@ -54,7 +54,7 @@ export class OutreachScheduler {
     }
 
     const cronExpr = process.env.OUTREACH_CRON || DEFAULT_CRON;
-    const tz = process.env.TIMEZONE || 'Asia/Kuala_Lumpur';
+    const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
 
     cron.schedule(cronExpr, () => {
       Logger.info('Outreach scheduler tick');

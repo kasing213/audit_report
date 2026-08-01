@@ -73,11 +73,11 @@ export class MonthlyScheduler {
       this.generateAndSendMonthlyReport();
     }, {
       scheduled: true,
-      timezone: process.env.TIMEZONE || 'Asia/Kuala_Lumpur'
+      timezone: process.env.TIMEZONE || 'Asia/Phnom_Penh'
     });
 
     Logger.info('Monthly report scheduler started - will send reports on 1st day at 12:01 AM');
-    Logger.info(`Timezone: ${process.env.TIMEZONE || 'Asia/Kuala_Lumpur'}`);
+    Logger.info(`Timezone: ${process.env.TIMEZONE || 'Asia/Phnom_Penh'}`);
     Logger.info(`Target audit chat ID: ${this.auditChatId}`);
   }
 

@@ -35,7 +35,7 @@ export class AdScannerScheduler {
       this.scanAndProcess();
     }, {
       scheduled: true,
-      timezone: process.env.TIMEZONE || 'Asia/Kuala_Lumpur',
+      timezone: process.env.TIMEZONE || 'Asia/Phnom_Penh',
     });
 
     Logger.info('Ad scanner scheduler started - will scan at 9:30 AM daily');

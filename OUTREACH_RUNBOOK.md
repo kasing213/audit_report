@@ -208,7 +208,7 @@ per-kind throttle, so at most one ping per half hour.
 | `WORKER_ALERT_CHAT_ID` | falls back to `AUDIT_CHAT_ID` | DM target (operator's numeric Telegram id; DM the bot once first) |
 | `HEARTBEAT_STALE_MINUTES` | `15` | Heartbeat age that counts as "offline" |
 | `HEARTBEAT_WATCHDOG_CRON` | `*/5 9-21 * * *` | Tick cadence + work-hours window (the `9-21` range never ticks overnight, so a sleeping laptop never false-alarms) |
-| `TIMEZONE` | `Asia/Kuala_Lumpur` | Timezone the watchdog cron runs in |
+| `TIMEZONE` | `Asia/Phnom_Penh` | Timezone the watchdog cron runs in |
 
 To test: during the day, `pm2 stop outreach-worker`, wait > `HEARTBEAT_STALE_MINUTES`,
 expect one DM; `pm2 start outreach-worker` to clear.
@@ -287,7 +287,7 @@ The outreach scheduler is cron-driven, not write-driven.
 |---|---|---|
 | `OUTREACH_AUTO_SCAN` | unset (treated as off) | If not `true`, the cron is registered but never fires |
 | `OUTREACH_CRON` | `0 9 * * *` | When the scan runs |
-| `TIMEZONE` | `Asia/Kuala_Lumpur` | Cron timezone |
+| `TIMEZONE` | `Asia/Phnom_Penh` | Cron timezone. Cambodia local — `0 9 * * *` means 09:00 in Phnom Penh. Setting this to a UTC+8 zone silently moves every scan an hour early. |
 | `OUTREACH_STALE_DAYS` | `45` | A customer must be silent this long to qualify |
 | `OUTREACH_DAILY_DRAFT_BUDGET` | `30` | Cap on drafts per UTC day |
 | `OUTREACH_BATCH_LIMIT` | `10` | Cap per scan tick |

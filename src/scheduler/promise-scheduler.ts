@@ -23,7 +23,7 @@ export class PromiseScheduler {
       this.sendDailyReminders();
     }, {
       scheduled: true,
-      timezone: process.env.TIMEZONE || 'Asia/Kuala_Lumpur'
+      timezone: process.env.TIMEZONE || 'Asia/Phnom_Penh'
     });
 
     Logger.info('Promise reminder scheduler started - will send reminders at 8:00 AM daily');

@@ -237,7 +237,7 @@ DATABASE_URL=mongodb+srv://...           # MongoDB connection
 TELEGRAM_BOT_TOKEN=123456:ABC...         # Telegram bot token
 OPENAI_API_KEY=sk-proj-...              # OpenAI API key (optional)
 OPENAI_MODEL=gpt-4o-mini                # AI model for parsing
-TIMEZONE=Asia/Kuala_Lumpur              # Timezone for scheduling
+TIMEZONE=Asia/Phnom_Penh                # Timezone for scheduling (Cambodia)
 
 # Chat Configuration (Required)
 AUDIT_CHAT_ID=-1002345678901            # Automated reports destination

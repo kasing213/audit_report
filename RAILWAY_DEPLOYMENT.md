@@ -36,7 +36,7 @@ DATABASE_URL=mongodb+srv://...
 TELEGRAM_BOT_TOKEN=your_bot_token
 OPENAI_API_KEY=your_openai_key
 OPENAI_MODEL=gpt-4o-mini
-TIMEZONE=Asia/Kuala_Lumpur
+TIMEZONE=Asia/Phnom_Penh
 
 # Chat Configuration (Required)
 AUDIT_CHAT_ID=-1002345678901
