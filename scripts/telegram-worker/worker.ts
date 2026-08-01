@@ -286,17 +286,34 @@ function isSessionExpiredError(err: Error): boolean {
   return /AUTH_KEY_UNREGISTERED|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|AUTH_KEY_INVALID/i.test(m);
 }
 
+// Wording matters: the server's classifyFailure() decides permanence by regex
+// on these strings. ABSENT must match its privacy pattern (permanent, never
+// retried); DEFERRED must NOT, so it falls through to 'transient' and the lead
+// is re-queued instead of blacklisted. check-import-outcome.ts guards both.
+export const DEFERRED_IMPORT_REASON = 'contact import deferred by Telegram (retry later)';
+export const ABSENT_PEER_REASON = 'phone number not on Telegram (or hidden by privacy)';
+
+export type ImportOutcome =
+  | { kind: 'user'; user: Api.User }
+  | { kind: 'deferred' }
+  | { kind: 'absent' };
+
 // Resolve a raw phone number to a Telegram user. gramjs's getEntity(phone)
 // only works for numbers already in the account's contacts/dialogs; a fresh
 // lead's number throws "Cannot find any entity corresponding to …". The
-// documented path for an arbitrary number is contacts.ImportContacts, which
-// returns the user IFF the number is on Telegram AND their privacy settings
-// permit phone lookup. Returns null (not throwing) when unreachable.
+// documented path for an arbitrary number is contacts.ImportContacts.
+//
+// Its response distinguishes three cases, and conflating the last two is what
+// permanently blacklisted ~68 reachable leads on 2026-07-30..08-01:
+//   users=[u]            -> resolved.
+//   users=[] retry=[id]  -> Telegram DEFERRED the import (throttle/quota). This
+//                           says nothing about the number; treat as transient.
+//   users=[] retry=[]    -> genuinely not on Telegram, or privacy hides it.
 async function importPhoneAsPeer(
   client: TelegramClient,
   phoneDigits: string,
   firstName: string
-): Promise<Api.User | null> {
+): Promise<ImportOutcome> {
   const imported = await client.invoke(new Api.contacts.ImportContacts({
     contacts: [new Api.InputPhoneContact({
       clientId: bigInt(0),
@@ -306,8 +323,11 @@ async function importPhoneAsPeer(
     })],
   }));
   const user = imported.users.find((u): u is Api.User => u instanceof Api.User);
-  return user || null;
+  if (user) return { kind: 'user', user };
+  if (imported.retryContacts && imported.retryContacts.length > 0) return { kind: 'deferred' };
+  return { kind: 'absent' };
 }
+export { importPhoneAsPeer };
 
 // Remove a contact we imported only to reach it, so the account's address
 // book doesn't balloon with every lead. Best-effort — a failure here never
@@ -335,10 +355,16 @@ async function sendViaMTProto(
   let imageTmpPath: string | null = null;
   let videoTmpPath: string | null = null;
   try {
-    importedPeer = await importPhoneAsPeer(client, phoneDigits, customerName || '');
-    if (!importedPeer) {
-      return { ok: false, reason: 'phone number not on Telegram (or hidden by privacy)' };
+    const outcome = await importPhoneAsPeer(client, phoneDigits, customerName || '');
+    if (outcome.kind === 'deferred') {
+      // Telegram refused the import, not the number. Reported as transient so
+      // the server re-queues and refunds the attempt — never a suppression.
+      return { ok: false, reason: DEFERRED_IMPORT_REASON };
     }
+    if (outcome.kind === 'absent') {
+      return { ok: false, reason: ABSENT_PEER_REASON };
+    }
+    importedPeer = outcome.user;
     const peer = importedPeer;
 
     // Cache the phone now, before any cleanup, so inbound replies from this
@@ -601,8 +627,13 @@ function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   });
 }
 
-main().catch(async (err) => {
-  console.error('worker crash:', err);
-  try { await postAlert('worker-fatal', (err as Error).message || 'unknown'); } catch {}
-  process.exit(1);
-});
+// Only run the worker when executed directly (`npm start` / pm2). Guarding this
+// lets check-*.ts harnesses import the pure helpers above without booting a
+// Telegram session.
+if (require.main === module) {
+  main().catch(async (err) => {
+    console.error('worker crash:', err);
+    try { await postAlert('worker-fatal', (err as Error).message || 'unknown'); } catch {}
+    process.exit(1);
+  });
+}
