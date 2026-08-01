@@ -132,9 +132,21 @@ the gap. Dry-run by default; `--confirm` to apply; idempotent.
 The laptop worker runs under **pm2** (`scripts/telegram-worker/ecosystem.config.js`).
 Since the multi-org split there are **two apps** — `outreach-worker-company` and
 `outreach-worker-personal` (see [Multi-org](#multi-org-company--personal)). pm2
-restarts each on crash and bounces them nightly at **10pm laptop-local**
-(`cron_restart: '0 22 * * *'`). Commands below use `<app>` — substitute either
-app name, or omit it to act on all.
+restarts each on crash and bounces them daily at **08:30 laptop-local**
+(`cron_restart: '30 8 * * *'`) — 30 minutes ahead of the 09:00 Cambodia outreach
+scan, and before the watchdog window opens at 09:00 so the restart's heartbeat
+gap can't raise a false `worker-offline` alert. A sleeping laptop simply misses
+the bounce; pm2 does not catch up a missed `cron_restart`, and the worker still
+serves the batch because it polls `/claim` every 60s regardless of process age.
+
+Changing that schedule needs more than a file edit — pm2 reads `cron_restart`
+from its saved dump, so run
+`pm2 delete ecosystem.config.js && pm2 start ecosystem.config.js && pm2 save`
+after editing. `node scripts/check-bounce-precedes-scan.js` asserts the bounce
+still precedes the scan.
+
+Commands below use `<app>` — substitute either app name, or omit it to act on
+all.
 
 | Command | What it does |
 |---|---|

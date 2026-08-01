@@ -88,7 +88,7 @@ npm run start
 ```
 
 For an unattended laptop, run it under **pm2** instead so it auto-restarts on
-crash and bounces nightly. See "Run under pm2" below.
+crash and bounces each morning before the day's scan. See "Run under pm2" below.
 
 The worker:
 
@@ -104,8 +104,13 @@ The worker:
 
 `ecosystem.config.js` defines TWO pm2 apps — `outreach-worker-company` and
 `outreach-worker-personal` — one per sending number. pm2 auto-restarts each on
-crash and bounces them nightly at 10pm (laptop-local time) via
-`cron_restart: '0 22 * * *'`.
+crash and bounces them daily at 08:30 laptop-local via
+`cron_restart: '30 8 * * *'` — 30 minutes ahead of the 09:00 Cambodia outreach
+scan, so each day's batch is drafted for a freshly restarted worker.
+
+Editing `cron_restart` in the file is **not** enough on its own: pm2 serves the
+schedule from its saved dump, so the change only takes after
+`pm2 delete ecosystem.config.js && pm2 start ecosystem.config.js && pm2 save`.
 
 ```bash
 pm2 start scripts/telegram-worker/ecosystem.config.js   # starts BOTH workers
