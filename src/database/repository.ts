@@ -198,8 +198,13 @@ export class SalesCaseRepository {
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 
-  async getStaleCustomers(days: number, follower?: string, orgId: OrgId = DEFAULT_ORG): Promise<CustomerCase[]> {
-    const pipeline = buildStaleCustomersPipeline(days, follower, orgId);
+  async getStaleCustomers(
+    days: number,
+    follower?: string,
+    orgId: OrgId = DEFAULT_ORG,
+    opts: { quickBookOnly?: boolean } = {}
+  ): Promise<CustomerCase[]> {
+    const pipeline = buildStaleCustomersPipeline(days, follower, orgId, opts.quickBookOnly ?? false);
     return await this.leadsEventsCollection.aggregate<CustomerCase>(pipeline).toArray();
   }
 

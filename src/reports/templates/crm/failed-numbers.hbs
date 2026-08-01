@@ -16,6 +16,14 @@
   .fn-pill b { color: var(--text); font-family: var(--font-mono); }
   .fn-note { color: var(--text-muted); font-size: 0.75rem; margin-left: auto; align-self: center; }
   .fn-kind, .fn-status { text-transform: capitalize; }
+  /* 'deferred' is a temporary park (Telegram refused the import, or the send
+     timed out) — deliberately cooler than the yellow/red permanent kinds so a
+     number that will come back on its own doesn't read as written off. */
+  .tag-stale-blue {
+    background: color-mix(in srgb, #3b82f6 18%, transparent);
+    border-color: color-mix(in srgb, #3b82f6 45%, transparent);
+    color: #93c5fd;
+  }
   .reason-text {
     color: var(--text-muted); font-size: 0.8rem;
     max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -27,7 +35,7 @@
   <span class="fn-pill">Active <b id="c-active">—</b></span>
   <span class="fn-pill">Exhausted <b id="c-exhausted">—</b></span>
   <span class="fn-pill">Resolved <b id="c-resolved">—</b></span>
-  <span class="fn-note">Numbers are never deleted. Privacy failures are retried every 60 days, up to 3 times.</span>
+  <span class="fn-note">Numbers are never deleted. Privacy/invalid are parked permanently; deferred returns on its own date; transient is our own outage and never parks a number.</span>
 </div>
 
 <div class="filters">
@@ -46,6 +54,7 @@
       <option value="">All</option>
       <option value="privacy">Privacy</option>
       <option value="invalid">Invalid</option>
+      <option value="deferred">Deferred</option>
       <option value="transient">Transient</option>
     </select>
   </div>
@@ -67,7 +76,10 @@
 {{> footer}}
 
 <script>
-  const KIND_CLASS = { privacy: 'tag-stale-yellow', invalid: 'tag-stale-red', transient: 'tag' };
+  const KIND_CLASS = {
+    privacy: 'tag-stale-yellow', invalid: 'tag-stale-red',
+    deferred: 'tag-stale-blue', transient: 'tag',
+  };
   const STATUS_CLASS = { active: 'tag-stale-yellow', exhausted: 'tag-stale-red', resolved: 'tag-stale-green' };
 
   function fmtDate(v) {
@@ -87,8 +99,11 @@
     const phone = r.telegram_link
       ? '<a class="phone-link" href="' + esc(r.telegram_link) + '" target="_blank" rel="noopener">' + esc(r.phone_display) + '</a>'
       : esc(r.phone_display);
+    // Only 'deferred' has a return date. Privacy/invalid are permanent parks
+    // (next_retry_at is null), and transient never parks the number at all.
     const retries = r.failure_kind === 'privacy' ? (r.retries_used + '/3') : '—';
-    const nextRetry = r.failure_kind === 'privacy' && r.status === 'active' ? fmtDate(r.next_retry_at) : '—';
+    const nextRetry = r.failure_kind === 'deferred' && r.status === 'active'
+      ? fmtDate(r.next_retry_at) : '—';
     return '<tr>'
       + '<td>' + phone + '</td>'
       + '<td class="customer-name">' + esc(r.customer_name || 'Unknown') + '</td>'

@@ -56,7 +56,11 @@ async function selectCandidates(
   }
 
   const staleDays = opts.staleDays ?? DEFAULT_STALE_DAYS;
-  const candidates = await salesRepo.getStaleCustomers(staleDays, opts.followerFilter, orgId);
+  // quickBookOnly: outreach targets only numbers that came from the QuickBook
+  // spreadsheet import. The CRM's own stale reports deliberately do not pass
+  // this — they still cover every customer.
+  const candidates = await salesRepo.getStaleCustomers(
+    staleDays, opts.followerFilter, orgId, { quickBookOnly: true });
   if (opts.bypassSuppression) {
     return candidates.slice(0, opts.limit ?? DEFAULT_BATCH_LIMIT);
   }

@@ -2,9 +2,11 @@ require('./check-db').useScratchDb();
 
 /**
  * Verifies failure routing: privacy/invalid are permanently closed (no retry
- * clock), a transient failure re-queues the proposal at most 3 times, and a
- * stray transient failure never defeats an active contact-cooldown (Task 3's
- * clock guard in recordFailure).
+ * clock), a transient failure re-queues the proposal at most 3 times, a stray
+ * transient/deferred failure never defeats an active contact-cooldown (Task
+ * 3's clock guard in recordFailure), and the 'deferred' kind (2026-08-01
+ * outreach-failure-taxonomy spec) parks a phone on a temporary
+ * DEFERRED_COOLDOWN_DAYS clock instead of a permanent one.
  *
  * Usage: node scripts/check-failure-routing.js
  *
@@ -15,6 +17,14 @@ const { MongoClient, ObjectId } = require('mongodb');
 
 const PHONE = '+855999000222';
 const PHONE_COOLDOWN = '+855999000444';
+const PHONE_DEFERRED = '+855999000666';
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// Kept in sync with DEFERRED_IMPORT_REASON in scripts/telegram-worker/worker.ts
+// (that file is ts-node-only, not part of the tsc build this harness requires
+// from dist/, so the literal is duplicated here — same convention as
+// scripts/check-deferred-import-routing.js).
+const DEFERRED_IMPORT_REASON = 'contact import deferred by Telegram (retry later)';
 let failures = 0;
 function check(label, actual, expected) {
   const ok = actual === expected;
@@ -40,7 +50,7 @@ function check(label, actual, expected) {
 
   const DatabaseConnection = require('../dist/database/connection').default;
   await DatabaseConnection.getInstance().connect();
-  const { OutreachSuppressionRepository, classifyFailure } =
+  const { OutreachSuppressionRepository, classifyFailure, deferredCooldownDays } =
     require('../dist/outreach/outreach-suppression-repository');
   const { OutreachRepository } = require('../dist/outreach/outreach-repository');
   const suppRepo = new OutreachSuppressionRepository();
@@ -125,7 +135,59 @@ function check(label, actual, expected) {
   check('active cooldown survives stray transient failure: still suppressed',
     (await suppRepo.getSuppressedPhones('company')).has(PHONE_COOLDOWN), true);
 
-  await db.collection('outreach_suppressions').deleteMany({ customer_phone: { $in: [PHONE, PHONE_COOLDOWN] } });
+  // --- Deferred failure taxonomy (2026-08-01 spec: outreach failure taxonomy
+  // + QuickBook-only targeting). 'deferred' covers a Telegram-refused import
+  // or a timed-out send: real signal about the number, but not proof it's
+  // dead, so it gets a temporary park instead of privacy/invalid's permanent one.
+  check('classifyFailure(DEFERRED_IMPORT_REASON) -> deferred',
+    classifyFailure(DEFERRED_IMPORT_REASON), 'deferred');
+  check('send-timeout exception classifies as deferred',
+    classifyFailure('exception: send timed out after 240s'), 'deferred');
+  check('lease-expired (unrecognised) reason still falls through to transient',
+    classifyFailure('lease expired without resolution (3rd attempt)'), 'transient');
+
+  await db.collection('outreach_suppressions').deleteMany({ customer_phone: PHONE_DEFERRED });
+  await suppRepo.recordFailure({ phone: PHONE_DEFERRED, reason: DEFERRED_IMPORT_REASON, orgId: 'company' });
+  const deferredDoc = await db.collection('outreach_suppressions').findOne({ customer_phone: PHONE_DEFERRED, org_id: 'company' });
+  check('deferred failure: failure_kind is deferred', deferredDoc && deferredDoc.failure_kind, 'deferred');
+  const expectedEligible = deferredDoc && new Date(deferredDoc.last_failed_at.getTime() + deferredCooldownDays() * DAY_MS);
+  const eligibleWithinTolerance = Boolean(
+    deferredDoc && deferredDoc.eligible_again_at &&
+    Math.abs(deferredDoc.eligible_again_at.getTime() - expectedEligible.getTime()) < 5000
+  );
+  check('deferred failure: eligible_again_at ~= now + DEFERRED_COOLDOWN_DAYS', eligibleWithinTolerance, true);
+  check('deferred failure: next_retry_at is NOT null (not a permanent park)',
+    Boolean(deferredDoc && deferredDoc.next_retry_at !== null), true);
+
+  check('deferred failure: phone excluded from pool while inside the window',
+    (await suppRepo.getSuppressedPhones('company')).has(PHONE_DEFERRED), true);
+
+  // Simulate the cooldown elapsing.
+  await db.collection('outreach_suppressions').updateOne(
+    { customer_phone: PHONE_DEFERRED, org_id: 'company' },
+    { $set: { eligible_again_at: new Date(Date.now() - DAY_MS) } }
+  );
+  check('deferred failure: phone included again once eligible_again_at has passed',
+    (await suppRepo.getSuppressedPhones('company')).has(PHONE_DEFERRED), false);
+
+  // A transient failure (our own outage) sets no eligible_again_at — pm2
+  // downtime must never park a customer, even temporarily.
+  await db.collection('outreach_suppressions').deleteMany({ customer_phone: PHONE_DEFERRED });
+  await suppRepo.recordFailure({ phone: PHONE_DEFERRED, reason: 'lease expired', orgId: 'company' });
+  const transientDoc = await db.collection('outreach_suppressions').findOne({ customer_phone: PHONE_DEFERRED, org_id: 'company' });
+  check('transient failure: failure_kind is transient', transientDoc && transientDoc.failure_kind, 'transient');
+  check('transient failure: sets no eligible_again_at', Boolean(transientDoc && transientDoc.eligible_again_at), false);
+
+  // Amendment: an active 'contacted' cooldown must also survive a stray
+  // 'deferred' failure, not just a stray 'transient' one (same clock guard).
+  await db.collection('outreach_suppressions').deleteMany({ customer_phone: PHONE_DEFERRED });
+  await suppRepo.recordContacted({ phone: PHONE_DEFERRED, orgId: 'company' });
+  await suppRepo.recordFailure({ phone: PHONE_DEFERRED, reason: DEFERRED_IMPORT_REASON, orgId: 'company' });
+  const survivedDoc = await db.collection('outreach_suppressions').findOne({ customer_phone: PHONE_DEFERRED, org_id: 'company' });
+  check('active cooldown survives a stray deferred failure: kind still contacted',
+    survivedDoc && survivedDoc.failure_kind, 'contacted');
+
+  await db.collection('outreach_suppressions').deleteMany({ customer_phone: { $in: [PHONE, PHONE_COOLDOWN, PHONE_DEFERRED] } });
   await db.collection('outreach_proposals').deleteMany({ customer_phone: PHONE });
   await client.close();
   await DatabaseConnection.getInstance().disconnect();

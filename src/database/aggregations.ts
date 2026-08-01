@@ -244,8 +244,21 @@ export function buildQuickBookCustomersPipeline(page: number, pageSize: number, 
 
 /**
  * Build aggregation pipeline for stale customers — those not contacted in X days.
+ *
+ * `quickBookOnly` (2026-08-01 outreach-failure-taxonomy spec) restricts the
+ * result to phones with at least one spreadsheet-import event (source.model ===
+ * 'csv-import'), the same filter buildQuickBookCustomersPipeline uses, so
+ * Telegram-decoded and worker-written leads can never be targeted by outreach.
+ * It defaults to false: this pipeline also backs the /crm bot command and the
+ * CRM dashboard's stale view, which must keep reporting on every customer.
+ * Only outreach candidate selection passes true.
  */
-export function buildStaleCustomersPipeline(daysThreshold: number, follower?: string, orgId: OrgId = DEFAULT_ORG): Document[] {
+export function buildStaleCustomersPipeline(
+  daysThreshold: number,
+  follower?: string,
+  orgId: OrgId = DEFAULT_ORG,
+  quickBookOnly = false
+): Document[] {
   const cutoffDate = new Date();
   cutoffDate.setDate(cutoffDate.getDate() - daysThreshold);
   const cutoffStr = cutoffDate.toISOString().slice(0, 10);
@@ -284,7 +297,8 @@ export function buildStaleCustomersPipeline(daysThreshold: number, follower?: st
             created_at: '$created_at'
           }
         },
-        total_events: { $sum: 1 }
+        total_events: { $sum: 1 },
+        import_models: { $addToSet: '$source.model' }
       }
     },
     {
@@ -292,6 +306,11 @@ export function buildStaleCustomersPipeline(daysThreshold: number, follower?: st
         last_update_date: { $lte: cutoffStr }
       }
     },
+    // Outreach only: keep customers with at least one spreadsheet-import event
+    // (the QuickBook lists). Opt-in because this pipeline also backs the /crm
+    // bot command and the CRM dashboard's stale view, and those must keep
+    // showing every customer regardless of where the lead came from.
+    ...(quickBookOnly ? [{ $match: { import_models: 'csv-import' } }] : []),
     {
       $project: {
         _id: 0,
