@@ -78,6 +78,38 @@ function check(label, actual, expected) {
   }
   check('4th requeue refused', await outreachRepo.requeueTransient(id, 3), false);
 
+  // --- A re-queued proposal must go to the BACK of the queue, not the front.
+  // claimNextApproved sorts by approved_at ascending, so leaving approved_at
+  // untouched made the worker re-claim the number it had just failed on,
+  // hammering one phone 4x in a row (observed live 2026-08-01 12:07-12:19)
+  // while the rest of the queue sat idle.
+  await db.collection('outreach_proposals').deleteMany({ generation_id: 'order-check' });
+  const older = new Date('2026-01-01T00:00:00Z');
+  const newer = new Date('2026-01-02T00:00:00Z');
+  const base = {
+    org_id: 'company', generation_id: 'order-check', customer_name: null, reason_code: null,
+    days_since_contact: null, follower: null, message: 'x', reasoning: 'check',
+    skipped_reason: null, failed_reason: null, custom_image_id: null, created_at: older,
+    approved_by: 'check', sent_at: null, lease_expires_at: null, model: 'static',
+  };
+  const a = await db.collection('outreach_proposals').insertOne({
+    ...base, customer_phone: '+855999000777', status: 'in_flight', approved_at: older });
+  await db.collection('outreach_proposals').insertOne({
+    ...base, customer_phone: '+855999000888', status: 'approved', approved_at: newer });
+
+  const beforeReq = await db.collection('outreach_proposals').findOne({ _id: a.insertedId });
+  await outreachRepo.requeueTransient(String(a.insertedId), 3);
+  const afterReq = await db.collection('outreach_proposals').findOne({ _id: a.insertedId });
+  check('requeue advances approved_at',
+    afterReq.approved_at > beforeReq.approved_at, true);
+
+  // With both approved, the next claim must be the OTHER phone.
+  const claimed = await outreachRepo.claimNextApproved('company', 60000);
+  check('next claim is a different phone, not the one just re-queued',
+    claimed && claimed.customer_phone, '+855999000888');
+
+  await db.collection('outreach_proposals').deleteMany({ generation_id: 'order-check' });
+
   // --- Amendment 3: a phone inside an ACTIVE contact cooldown must not have
   // its failure_kind flipped by a stray transient failure (Task 3's clock
   // guard in recordFailure). Seed a fresh 'contacted' record with an

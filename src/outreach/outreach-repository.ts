@@ -227,7 +227,17 @@ export class OutreachRepository {
           ],
         },
         {
-          $set: { status: 'approved', failed_reason: null, lease_expires_at: null },
+          // approved_at is the claim queue's sort key (claimNextApproved sorts
+          // it ascending), so it must be refreshed here. Leaving it alone left
+          // the just-failed proposal at the head of the queue and the worker
+          // re-claimed the same phone immediately, retrying one number 4x while
+          // the rest of the queue waited. Re-queue means back of the line.
+          $set: {
+            status: 'approved',
+            failed_reason: null,
+            lease_expires_at: null,
+            approved_at: new Date(),
+          },
           $inc: { transient_retries: 1 },
         },
         { returnDocument: 'after' }
