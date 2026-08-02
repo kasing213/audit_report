@@ -197,9 +197,14 @@ router.post('/auto-approve', express.json(), async (req: Request, res: Response)
     await repo.setAutoApprove(org, target);
 
     let approvedCount = 0;
-    if (target && !current.auto_approve) {
-      // Turning Auto ON: clear whatever this workspace already has pending,
-      // so the switch doesn't silently strand today's drafted batch.
+    if (target) {
+      // Resulting state is Auto: clear whatever this workspace currently has
+      // pending, so the switch never leaves a drafted batch stranded. Runs on
+      // every ON request, not just an observed false->true transition — a
+      // transition-only check is racy against concurrent toggles/requests and
+      // silently no-ops if auto_approve was already true when new pending
+      // proposals showed up. Re-approving an already-empty pending set is a
+      // harmless no-op.
       const approver = getSessionUser(req) || 'auto-approve';
       approvedCount = await new OutreachRepository().approveAllPending(org, approver);
     }
