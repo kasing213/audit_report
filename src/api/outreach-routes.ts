@@ -195,8 +195,17 @@ router.post('/auto-approve', express.json(), async (req: Request, res: Response)
     const current = await repo.getStatus(org);
     const target = typeof req.body?.enabled === 'boolean' ? req.body.enabled : !current.auto_approve;
     await repo.setAutoApprove(org, target);
-    Logger.info(`[outreach] auto_approve org=${org} -> ${target}`);
-    res.json({ org, auto_approve: target });
+
+    let approvedCount = 0;
+    if (target && !current.auto_approve) {
+      // Turning Auto ON: clear whatever this workspace already has pending,
+      // so the switch doesn't silently strand today's drafted batch.
+      const approver = getSessionUser(req) || 'auto-approve';
+      approvedCount = await new OutreachRepository().approveAllPending(org, approver);
+    }
+
+    Logger.info(`[outreach] auto_approve org=${org} -> ${target}${approvedCount ? ` (${approvedCount} pending approved)` : ''}`);
+    res.json({ org, auto_approve: target, approved_count: approvedCount });
   } catch (err) {
     Logger.error('outreach auto-approve toggle failed', err as Error);
     res.status(500).json({ error: (err as Error).message });

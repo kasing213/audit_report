@@ -939,6 +939,7 @@
     if (turningOn && !confirm(
       'Switch this workspace to AUTO approve?\n\n' +
       'The daily batch will be approved and sent with no human review. ' +
+      'Any proposals currently pending for this workspace will be approved immediately. ' +
       'Only this workspace is affected.'
     )) return;
     try {
@@ -949,7 +950,11 @@
         body: JSON.stringify({ enabled: turningOn }),
       });
       if (resp.ok) {
-        showToast(turningOn ? 'Auto approve ON for this workspace' : 'Manual approve restored', 'success');
+        const data = await resp.json();
+        const onMsg = data.approved_count > 0
+          ? `Auto approve ON — ${data.approved_count} pending approved`
+          : 'Auto approve ON for this workspace';
+        showToast(turningOn ? onMsg : 'Manual approve restored', 'success');
         refreshWorkerStatus();
       } else showToast('Auto-approve toggle failed', 'error');
     } catch { showToast('Auto-approve toggle failed', 'error'); }

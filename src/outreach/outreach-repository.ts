@@ -113,6 +113,20 @@ export class OutreachRepository {
     }
   }
 
+  /**
+   * Approve every currently-pending proposal for a workspace in one shot.
+   * Used when a workspace switches to Auto so the batch already drafted under
+   * Manual doesn't get stranded — only future drafts are otherwise affected by
+   * the auto_approve flag.
+   */
+  async approveAllPending(orgId: OrgId, approvedBy: string): Promise<number> {
+    const result = await this.col.updateMany(
+      { org_id: orgMatch(orgId), status: 'pending' },
+      { $set: { status: 'approved', approved_at: new Date(), approved_by: approvedBy } }
+    );
+    return result.modifiedCount;
+  }
+
   async skip(id: string, reason: string): Promise<boolean> {
     try {
       const result = await this.col.updateOne(
