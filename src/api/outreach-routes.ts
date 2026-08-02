@@ -171,6 +171,23 @@ router.post('/scheduler/run-once', async (_req: Request, res: Response) => {
   }
 });
 
+// POST /crm/api/outreach/scheduler/topup-once — fire the mid-day top-up check
+// synchronously for testing. Same code path the half-hourly cron tick uses.
+router.post('/scheduler/topup-once', async (_req: Request, res: Response) => {
+  const sched = getRegisteredOutreachScheduler();
+  if (!sched) {
+    res.status(503).json({ error: 'scheduler not registered yet' });
+    return;
+  }
+  try {
+    await sched.triggerTopUpNow();
+    res.json({ ok: true });
+  } catch (err) {
+    Logger.error('outreach scheduler topup-once failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // POST /crm/api/outreach/pause — toggle or set pause state
 router.post('/pause', express.json(), async (req: Request, res: Response) => {
   try {

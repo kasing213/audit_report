@@ -14,6 +14,26 @@ const DEFAULT_STALE_DAYS = 45;
  * delivery is 15/day, and on Auto nobody is reviewing the pile.
  */
 const DEFAULT_QUEUE_TARGET = 20;
+// Mirrors DEFAULT_DAILY_CAP / DEFAULT_ATTEMPT_CAP in outreach-routes.ts — kept
+// as separate local constants (same pattern as queueTarget/staleDays below)
+// rather than imported, since both files read the same DAILY_CAP /
+// DAILY_ATTEMPT_CAP env vars independently.
+const DEFAULT_DAILY_CAP = 15;
+const DEFAULT_ATTEMPT_CAP = 40;
+/**
+ * How many more proposals to draft+auto-approve when an Auto workspace has
+ * exhausted its approved queue without reaching the day's delivery cap —
+ * e.g. the day's 20 drafted at 9am mostly bounced (privacy/invalid), so the
+ * worker ran dry at 6/15 delivered. Deliberately smaller than the initial
+ * queue target so a bad-luck day escalates gradually rather than dumping
+ * another 20 at once.
+ */
+const DEFAULT_TOPUP_INCREMENT = 10;
+// Every 30 min across the same 09:00-21:55 Cambodia window the heartbeat
+// watchdog uses, so top-ups only fire during hours the worker is actually
+// sending. Overlapping the 9:00 daily scan tick is harmless: the top-up
+// no-ops whenever the scan already left something in 'approved'.
+const DEFAULT_TOPUP_CRON = '*/30 9-21 * * *';
 
 type SendMessage = (chatId: string, text: string, extra?: any) => Promise<void>;
 
@@ -45,6 +65,11 @@ export class OutreachScheduler {
     await this.runScan();
   }
 
+  /** Force a top-up check now (used by /scheduler/topup-once for testing). */
+  public async triggerTopUpNow(): Promise<void> {
+    await this.runTopUpCheck();
+  }
+
   public startScheduler(): void {
     registeredScheduler = this;
 
@@ -64,7 +89,15 @@ export class OutreachScheduler {
       timezone: tz,
     });
 
-    Logger.info(`Outreach scheduler started (cron='${cronExpr}', tz='${tz}')`);
+    const topupCronExpr = process.env.OUTREACH_TOPUP_CRON || DEFAULT_TOPUP_CRON;
+    cron.schedule(topupCronExpr, () => {
+      this.runTopUpCheck().catch((err) => Logger.error('outreach top-up tick failed', err as Error));
+    }, {
+      scheduled: true,
+      timezone: tz,
+    });
+
+    Logger.info(`Outreach scheduler started (cron='${cronExpr}', topup_cron='${topupCronExpr}', tz='${tz}')`);
   }
 
   private queueTarget(): number {
@@ -75,6 +108,22 @@ export class OutreachScheduler {
   private staleDays(): number {
     const parsed = Number(process.env.OUTREACH_STALE_DAYS);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_STALE_DAYS;
+  }
+
+  private dailyCap(): number {
+    const parsed = Number(process.env.DAILY_CAP);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_CAP;
+  }
+
+  private attemptCap(): number {
+    const parsed = Number(process.env.DAILY_ATTEMPT_CAP);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+    return Math.max(DEFAULT_ATTEMPT_CAP, this.dailyCap());
+  }
+
+  private topupIncrement(): number {
+    const parsed = Number(process.env.OUTREACH_TOPUP_INCREMENT);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOPUP_INCREMENT;
   }
 
   /**
@@ -135,6 +184,71 @@ export class OutreachScheduler {
         await this.sendMessageCallback(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
       } catch (err) {
         Logger.error('Outreach scan summary send failed', err as Error);
+      }
+    }
+  }
+
+  /**
+   * Mid-day self-heal for Auto workspaces: if the day's delivery cap hasn't
+   * been reached AND the approved queue has run dry (e.g. most of the 9am
+   * batch bounced as privacy/invalid), draft+auto-approve another
+   * topupIncrement() so the worker has something to keep sending. Repeats on
+   * every tick — each call only adds once the previous increment is fully
+   * consumed — so a bad day escalates 20 -> 30 -> 40 rather than dumping a
+   * huge batch at once. One org failing must not stop the others.
+   */
+  private async runTopUpCheck(): Promise<void> {
+    for (const org of OUTREACH_ORGS) {
+      try {
+        await this.runTopUpCheckForOrg(org.id);
+      } catch (err) {
+        Logger.error(`Outreach top-up check failed for org=${org.id}`, err as Error);
+      }
+    }
+  }
+
+  private async runTopUpCheckForOrg(orgId: OrgId): Promise<void> {
+    const state = await new OutreachWorkerStateRepository().getStatus(orgId);
+    // Manual workspaces are intentionally excluded: piling another batch of
+    // pending onto the dashboard every 30 minutes would spam the operator
+    // instead of helping them. Only Auto workspaces self-heal mid-day.
+    if (!state.auto_approve || state.paused) return;
+
+    const dCap = this.dailyCap();
+    const aCap = this.attemptCap();
+    if (state.deliveries_today >= dCap) return; // day's target already met
+    if (state.claims_today >= aCap) return; // no attempt budget left today
+
+    const counts = await new OutreachRepository().counts(orgId);
+    if (counts.approved > 0) return; // worker still has something to claim
+
+    const draftCount = Math.min(this.topupIncrement(), aCap - state.claims_today);
+    if (draftCount <= 0) return;
+
+    const result = await generateBatch({
+      limit: draftCount,
+      staleDays: this.staleDays(),
+      autoApprove: true,
+      orgId,
+    });
+
+    Logger.info(
+      `Outreach top-up org=${orgId}: deliveries=${state.deliveries_today}/${dCap} ` +
+      `claims=${state.claims_today}/${aCap} drafted=${draftCount} created=${result.created}`
+    );
+
+    const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
+    if (result.created > 0 && chatId && this.sendMessageCallback) {
+      const lines = [
+        `🔁 *Outreach top-up* — ${orgId}`,
+        '',
+        `Delivered so far: ${state.deliveries_today}/${dCap}`,
+        `Approved queue ran dry — drafted ${result.created} more (auto-approved)`,
+      ];
+      try {
+        await this.sendMessageCallback(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
+      } catch (err) {
+        Logger.error('Outreach top-up summary send failed', err as Error);
       }
     }
   }
