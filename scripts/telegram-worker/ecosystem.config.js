@@ -23,15 +23,15 @@ const shared = {
   script: './node_modules/ts-node/dist/bin.js',
   args: 'worker.ts',
   interpreter: 'node',
-  autorestart: true, // restart on crash — pm2's core job
-  // Daily pre-run bounce at 08:30 laptop-LOCAL time (pm2's cron_restart has no
-  // timezone option). The outreach scan drafts the day's batch at 09:00
-  // Cambodia — the same clock, since the laptop is UTC+7 — so this hands each
-  // day's work a fresh process 30 min ahead of it. Kept strictly before 09:00
-  // on purpose: that is when the heartbeat-watchdog window opens, and a restart
-  // inside it can raise a false worker-offline alert.
-  // Guarded by scripts/check-bounce-precedes-scan.js.
-  cron_restart: '30 8 * * *',
+  autorestart: true, // restart on crash — pm2's core job, and also what brings
+  // the process back after its own daily self-bounce (see worker.ts
+  // checkDailyBounce) — pm2's cron_restart is deliberately NOT used here
+  // anymore: it has no way to read the dashboard-editable bounce time from
+  // outreach_schedule_settings, so worker.ts polls that itself and exits
+  // cleanly once the configured time arrives. Default bounce is 08:30
+  // Cambodia, strictly before the 09:00 scan/watchdog-window open — see
+  // OutreachScheduleSettingsRepository. Guarded by
+  // scripts/check-bounce-precedes-scan.js.
   max_restarts: 10,
   restart_delay: 5000,
   exp_backoff_restart_delay: 200,

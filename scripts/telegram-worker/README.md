@@ -104,13 +104,13 @@ The worker:
 
 `ecosystem.config.js` defines TWO pm2 apps — `outreach-worker-company` and
 `outreach-worker-personal` — one per sending number. pm2 auto-restarts each on
-crash and bounces them daily at 08:30 laptop-local via
-`cron_restart: '30 8 * * *'` — 30 minutes ahead of the 09:00 Cambodia outreach
-scan, so each day's batch is drafted for a freshly restarted worker.
-
-Editing `cron_restart` in the file is **not** enough on its own: pm2 serves the
-schedule from its saved dump, so the change only takes after
-`pm2 delete ecosystem.config.js && pm2 start ecosystem.config.js && pm2 save`.
+crash (`autorestart: true`). The daily pre-run bounce (default 08:30 local,
+30 minutes ahead of the 09:00 Cambodia outreach scan) is no longer a pm2
+`cron_restart` — the worker itself polls `GET
+/crm/api/outreach/schedule-settings` every 5 min and calls `process.exit(0)`
+once the configured bounce time arrives; pm2's `autorestart` then brings it
+back up fresh. This is what makes the bounce time editable from the
+dashboard's Schedule panel without any local file edit or `pm2` command.
 
 ```bash
 pm2 start scripts/telegram-worker/ecosystem.config.js   # starts BOTH workers

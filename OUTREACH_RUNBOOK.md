@@ -132,18 +132,21 @@ the gap. Dry-run by default; `--confirm` to apply; idempotent.
 The laptop worker runs under **pm2** (`scripts/telegram-worker/ecosystem.config.js`).
 Since the multi-org split there are **two apps** — `outreach-worker-company` and
 `outreach-worker-personal` (see [Multi-org](#multi-org-company--personal)). pm2
-restarts each on crash and bounces them daily at **08:30 laptop-local**
-(`cron_restart: '30 8 * * *'`) — 30 minutes ahead of the 09:00 Cambodia outreach
+restarts each on crash (`autorestart: true`). The daily pre-run bounce
+(default **08:30 local**, 30 minutes ahead of the 09:00 Cambodia outreach
 scan, and before the watchdog window opens at 09:00 so the restart's heartbeat
-gap can't raise a false `worker-offline` alert. A sleeping laptop simply misses
-the bounce; pm2 does not catch up a missed `cron_restart`, and the worker still
-serves the batch because it polls `/claim` every 60s regardless of process age.
+gap can't raise a false `worker-offline` alert) is handled by the worker
+itself, not pm2's `cron_restart`: it polls
+`GET /crm/api/outreach/schedule-settings` every 5 min and exits cleanly once
+the configured `bounce_time` arrives, and pm2's `autorestart` brings it back
+up fresh. A sleeping laptop simply misses the bounce; the worker still serves
+the batch because it polls `/claim` every 60s regardless of process age.
 
-Changing that schedule needs more than a file edit — pm2 reads `cron_restart`
-from its saved dump, so run
-`pm2 delete ecosystem.config.js && pm2 start ecosystem.config.js && pm2 save`
-after editing. `node scripts/check-bounce-precedes-scan.js` asserts the bounce
-still precedes the scan.
+The bounce/scan/active-hours times are editable live from the dashboard's
+Schedule panel (`/crm/outreach`) — no file edit or `pm2` command needed;
+changes apply on the worker's next 5-min poll and reschedule the Railway-side
+crons immediately. `node scripts/check-bounce-precedes-scan.js` asserts the
+*defaults* still keep the bounce before the scan.
 
 Commands below use `<app>` — substitute either app name, or omit it to act on
 all.

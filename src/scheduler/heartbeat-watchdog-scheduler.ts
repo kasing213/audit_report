@@ -3,11 +3,17 @@ import { Logger } from '../utils/logger';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { notifyOutreachFailure } from '../outreach/outreach-alerts';
 import { OUTREACH_ORGS } from '../outreach/orgs';
+import { OutreachScheduleSettingsRepository } from '../outreach/outreach-schedule-settings-repository';
+import { hourRangeCron } from '../utils/cron-time';
 
-// Every 5 min, but only 09:00–21:59 — the hour range encodes the work-hours
-// window so a laptop asleep overnight never produces a false "offline" alert.
-const DEFAULT_CRON = '*/5 9-21 * * *';
+const DEFAULT_WATCHDOG_INTERVAL_MIN = 5;
 const DEFAULT_STALE_MINUTES = 15;
+
+let registeredWatchdog: HeartbeatWatchdogScheduler | null = null;
+
+export function getRegisteredHeartbeatWatchdogScheduler(): HeartbeatWatchdogScheduler | null {
+  return registeredWatchdog;
+}
 
 /**
  * Watches the outreach worker's heartbeat (written to `outreach_worker_state`
@@ -15,29 +21,58 @@ const DEFAULT_STALE_MINUTES = 15;
  * goes silent. Runs on the always-on Railway app because a laptop-side checker
  * can't detect its own death (asleep = checker asleep).
  *
+ * Only checks within the dashboard-editable active-hours window (shared with
+ * OutreachScheduler's top-up check — see OutreachScheduleSettingsRepository),
+ * so a laptop asleep overnight never produces a false "offline" alert.
+ *
  * Gated on HEARTBEAT_WATCHDOG_ENABLED=true. Reuses the existing alert sender
  * and its 30-min per-kind throttle, so at most one ping lands per half hour.
  */
 export class HeartbeatWatchdogScheduler {
   private repo = new OutreachWorkerStateRepository();
+  private task: cron.ScheduledTask | null = null;
+  private enabled = false;
 
   public startScheduler(): void {
+    registeredWatchdog = this;
+
     if (process.env.HEARTBEAT_WATCHDOG_ENABLED !== 'true') {
       Logger.warn('Heartbeat watchdog disabled (set HEARTBEAT_WATCHDOG_ENABLED=true to enable)');
       return;
     }
 
-    const cronExpr = process.env.HEARTBEAT_WATCHDOG_CRON || DEFAULT_CRON;
+    this.enabled = true;
+    new OutreachScheduleSettingsRepository()
+      .getEffective()
+      .then((settings) => this.applySchedule(settings.active_start_hour, settings.active_end_hour))
+      .catch((err) => Logger.error('heartbeat watchdog initial settings load failed', err as Error));
+  }
+
+  /**
+   * (Re)builds the watchdog cron job from the active-hours window. Called at
+   * startup and again whenever the dashboard saves a schedule change. No-op
+   * if HEARTBEAT_WATCHDOG_ENABLED never turned this scheduler on.
+   */
+  public applySchedule(activeStartHour: number, activeEndHour: number): void {
+    if (!this.enabled) return;
+    this.task?.stop();
+
+    const cronExpr = hourRangeCron(activeStartHour, activeEndHour, this.watchdogInterval());
     const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
 
-    cron.schedule(cronExpr, () => {
+    this.task = cron.schedule(cronExpr, () => {
       this.check().catch((err) => Logger.error('heartbeat watchdog tick failed', err as Error));
     }, {
       scheduled: true,
       timezone: tz,
     });
 
-    Logger.info(`Heartbeat watchdog started (cron='${cronExpr}', tz='${tz}')`);
+    Logger.info(`Heartbeat watchdog (re)scheduled (cron='${cronExpr}', tz='${tz}')`);
+  }
+
+  private watchdogInterval(): number {
+    const parsed = Number(process.env.HEARTBEAT_WATCHDOG_INTERVAL_MIN);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_WATCHDOG_INTERVAL_MIN;
   }
 
   private staleMinutes(): number {

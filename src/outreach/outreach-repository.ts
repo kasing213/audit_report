@@ -127,6 +127,29 @@ export class OutreachRepository {
     return result.modifiedCount;
   }
 
+  /**
+   * Resurrect today's timeout / import-deferred failures back into the
+   * approved queue. These are our own MTProto/network blips (send timeout,
+   * Telegram throttling the contact import), not proof the number is dead —
+   * classifyFailure() in outreach-suppression-repository.ts already treats
+   * them as 'deferred' rather than permanent, but the default park is 30
+   * days. This bypasses that park for a same/next-day retry when the
+   * failures are known to be our infra crashing, not the recipient. Pattern
+   * mirrors classifyFailure's 'deferred' branch — keep both in sync.
+   */
+  async reapproveDeferredToday(orgId: OrgId, approvedBy: string, since: Date): Promise<number> {
+    const result = await this.col.updateMany(
+      {
+        org_id: orgMatch(orgId),
+        status: 'failed',
+        created_at: { $gte: since },
+        failed_reason: { $regex: /send timed out after \d+s|contact import deferred by telegram/i },
+      },
+      { $set: { status: 'approved', approved_at: new Date(), approved_by: approvedBy } }
+    );
+    return result.modifiedCount;
+  }
+
   async skip(id: string, reason: string): Promise<boolean> {
     try {
       const result = await this.col.updateOne(

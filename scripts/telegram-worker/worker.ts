@@ -57,6 +57,16 @@ const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-s
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
 const EFFECTIVE_IMAGE_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-image`;
 const DEFAULT_VIDEO_URL = `${BASE_URL}/crm/api/outreach/default-video-url`;
+const SCHEDULE_URL = `${BASE_URL}/crm/api/outreach/schedule-settings`;
+// How often to poll the dashboard-configured bounce time. Cheap GET, and the
+// only thing that matters is catching the target minute within this window,
+// so 5 min is generous margin without hammering the API.
+const SCHEDULE_POLL_INTERVAL_MS = 5 * 60 * 1000;
+// Captured once at process start. Bounce logic below only fires once per
+// process lifetime — a process that was born AFTER today's bounce time is by
+// definition already the fresh post-bounce process, so it must not re-exit
+// and loop forever.
+const PROCESS_STARTED_AT = new Date();
 
 if (!API_ID || !API_HASH) {
   console.error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env. Get them from https://my.telegram.org/apps.');
@@ -175,6 +185,40 @@ async function postHeartbeat(): Promise<void> {
     }
   } catch (err) {
     console.error('heartbeat err', err);
+  }
+}
+
+// 'HH:MM' (dashboard-configured, Cambodia local) -> today's instant for that
+// clock time on THIS machine. Assumes the Mac's local clock is already
+// Cambodia time (UTC+7) — same assumption the old pm2 cron_restart made,
+// since cron_restart has no timezone option either.
+function todayInstantAt(hhmm: string): Date | null {
+  const m = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(hhmm);
+  if (!m) return null;
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate(), Number(m[1]), Number(m[2]), 0, 0);
+}
+
+/**
+ * Replaces pm2's cron_restart: once today's dashboard-configured bounce time
+ * arrives, exit cleanly so pm2's autorestart brings up a fresh process before
+ * the day's scan/send window. Self-limiting via PROCESS_STARTED_AT — only the
+ * stale pre-bounce process (started before today's target) ever exits here,
+ * so this can't loop.
+ */
+async function checkDailyBounce(): Promise<void> {
+  try {
+    const resp = await authedFetch(SCHEDULE_URL, { method: 'GET' });
+    if (!resp.ok) return;
+    const settings = (await resp.json()) as { bounce_time?: string };
+    const target = settings.bounce_time ? todayInstantAt(settings.bounce_time) : null;
+    if (!target) return;
+    if (new Date() >= target && PROCESS_STARTED_AT < target) {
+      console.log(`Daily bounce time (${settings.bounce_time}) reached — restarting for a fresh process.`);
+      process.exit(0);
+    }
+  } catch (err) {
+    console.error('schedule-settings poll err', err);
   }
 }
 
@@ -535,9 +579,15 @@ async function main(): Promise<void> {
   }, HEARTBEAT_INTERVAL_MS);
   await postHeartbeat();
 
+  const bounceTimer = setInterval(() => {
+    checkDailyBounce().catch(() => undefined);
+  }, SCHEDULE_POLL_INTERVAL_MS);
+  checkDailyBounce().catch(() => undefined);
+
   const stop = async (reason: string, code = 0) => {
     console.log(`Stopping: ${reason}`);
     clearInterval(heartbeatTimer);
+    clearInterval(bounceTimer);
     await client.disconnect().catch(() => undefined);
     process.exit(code);
   };

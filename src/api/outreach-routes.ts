@@ -13,7 +13,10 @@ import { normalizeOrg } from '../outreach/orgs';
 import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery, classifyFailure } from '../outreach/outreach-suppression-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { formatPhoneDisplay, formatTelegramLink } from '../utils/phone-utils';
+import { getTodayDate, getZonedDayRangeUtc } from '../utils/time';
 import { getRegisteredOutreachScheduler } from '../scheduler/outreach-scheduler';
+import { getRegisteredHeartbeatWatchdogScheduler } from '../scheduler/heartbeat-watchdog-scheduler';
+import { OutreachScheduleSettingsRepository } from '../outreach/outreach-schedule-settings-repository';
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument } from '../database/models';
 import { Logger } from '../utils/logger';
@@ -185,6 +188,47 @@ router.post('/scheduler/topup-once', async (_req: Request, res: Response) => {
   } catch (err) {
     Logger.error('outreach scheduler topup-once failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/schedule-settings — the dashboard-editable schedule
+// times (scan/bounce/active-hours). Agent-readable too: the Mac worker polls
+// bounce_time here to self-restart at the configured time instead of relying
+// on a local pm2 cron_restart it has no way to update.
+router.get('/schedule-settings', async (_req: Request, res: Response) => {
+  try {
+    const settings = await new OutreachScheduleSettingsRepository().getEffective();
+    res.json(settings);
+  } catch (err) {
+    Logger.error('outreach schedule-settings get failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/schedule-settings — update one or more schedule
+// times and immediately reschedule the live cron jobs (no redeploy). Global,
+// not per-org: the scan/top-up/watchdog crons already loop over every org on
+// one shared tick, and the Mac serves both org workers.
+router.post('/schedule-settings', express.json(), async (req: Request, res: Response) => {
+  try {
+    const body = req.body || {};
+    const update: Record<string, unknown> = {};
+    if (body.scan_time !== undefined) update.scan_time = body.scan_time;
+    if (body.bounce_time !== undefined) update.bounce_time = body.bounce_time;
+    if (body.active_start_hour !== undefined) update.active_start_hour = Number(body.active_start_hour);
+    if (body.active_end_hour !== undefined) update.active_end_hour = Number(body.active_end_hour);
+
+    const approver = getSessionUser(req) || 'schedule-settings';
+    const settings = await new OutreachScheduleSettingsRepository().set(update, approver);
+
+    getRegisteredOutreachScheduler()?.applySchedule(settings);
+    getRegisteredHeartbeatWatchdogScheduler()?.applySchedule(settings.active_start_hour, settings.active_end_hour);
+
+    Logger.info(`[outreach] schedule-settings updated by=${approver}: ${JSON.stringify(settings)}`);
+    res.json({ ok: true, settings });
+  } catch (err) {
+    Logger.error('outreach schedule-settings post failed', err as Error);
+    res.status(400).json({ error: (err as Error).message });
   }
 });
 
@@ -959,6 +1003,28 @@ router.get('/failed-numbers', async (req: Request, res: Response) => {
     res.json({ rows: enriched, total, counts });
   } catch (err) {
     Logger.error('failed-numbers list failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/reapprove-deferred-today — bring today's send-timeout
+// and import-deferred failures back into the approved queue instead of
+// waiting out the 30-day deferred park. These reasons mean our own MTProto/
+// network connection failed mid-send, not that the number is unreachable
+// (see OutreachRepository.reapproveDeferredToday). Scoped to proposals
+// drafted today (Cambodia calendar day) so a stale backlog isn't dumped back
+// in all at once.
+router.post('/reapprove-deferred-today', express.json(), async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const range = getZonedDayRangeUtc(getTodayDate('Asia/Phnom_Penh'), 'Asia/Phnom_Penh');
+    if (!range) { res.status(500).json({ error: 'failed to compute today\'s date range' }); return; }
+    const approver = getSessionUser(req) || 'reapprove-deferred';
+    const count = await new OutreachRepository().reapproveDeferredToday(org, approver, range.start);
+    Logger.info(`[outreach] reapprove-deferred-today org=${org} -> ${count} reapproved`);
+    res.json({ org, reapproved_count: count });
+  } catch (err) {
+    Logger.error('outreach reapprove-deferred-today failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });

@@ -1,12 +1,17 @@
 /**
- * Guards the schedule invariants that actually broke in production:
+ * Guards the schedule invariants that actually broke in production, checked
+ * against the DEFAULT_SCHEDULE_SETTINGS fallback (the live, dashboard-edited
+ * schedule lives in the DB — see OutreachScheduleSettingsRepository — and is
+ * not something a static file check can see; this guards the values every
+ * deploy falls back to when nothing has been configured yet):
  *
  *   1. Every server scheduler falls back to Cambodia time. A stray
  *      'Asia/Kuala_Lumpur' (UTC+8) makes a cron labelled '0 9 * * *' fire at
  *      08:00 Cambodia — which is exactly how the outreach scan drifted an
  *      hour early.
- *   2. The pm2 worker bounce lands BEFORE the outreach scan, so each day's
- *      batch is drafted for a freshly restarted worker.
+ *   2. The worker's daily self-bounce (worker.ts checkDailyBounce, formerly
+ *      pm2 cron_restart) lands BEFORE the outreach scan, so each day's batch
+ *      is drafted for a freshly restarted worker.
  *   3. The bounce lands before the heartbeat watchdog's window opens, so the
  *      restart's heartbeat gap can't raise a false `worker-offline` alert.
  *
@@ -19,15 +24,15 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * pm2's cron_restart has no timezone option — it always fires in the clock of
- * the laptop running pm2, which is UTC+7. Comparing it against a node-cron
- * expression is therefore only meaningful when that cron's timezone is also
- * UTC+7. Hence check 1 gates checks 2 and 3.
+ * The worker's bounce clock has no timezone option — it always compares
+ * against the Mac's local clock, which is UTC+7. Comparing it against a
+ * node-cron expression is therefore only meaningful when that cron's
+ * timezone is also UTC+7. Hence check 1 gates checks 2 and 3.
  */
 const HOST_TZ = 'Asia/Phnom_Penh';
 
 const ROOT = path.join(__dirname, '..');
-const ECOSYSTEM = path.join(__dirname, 'telegram-worker', 'ecosystem.config.js');
+const SCHEDULE_SETTINGS = path.join(ROOT, 'src', 'outreach', 'outreach-schedule-settings-repository.ts');
 const OUTREACH = path.join(ROOT, 'src', 'scheduler', 'outreach-scheduler.ts');
 const WATCHDOG = path.join(ROOT, 'src', 'scheduler', 'heartbeat-watchdog-scheduler.ts');
 
@@ -65,19 +70,6 @@ function extract(text, re, what, file) {
   return m[1];
 }
 
-/**
- * '30 8 * * *' -> 510 minutes since midnight. Rejects anything that isn't a
- * single numeric minute and hour, so a list like '30 8,22 * * *' fails loudly
- * rather than being silently half-checked.
- */
-function minutesOfDay(expr, what) {
-  const [min, hour] = expr.trim().split(/\s+/);
-  if (!/^\d{1,2}$/.test(min) || !/^\d{1,2}$/.test(hour)) {
-    throw new Error(`${what} cron '${expr}' is not a single daily time; this check cannot compare it`);
-  }
-  return Number(hour) * 60 + Number(min);
-}
-
 function fmt(m) {
   return `${String(Math.floor(m / 60)).padStart(2, '0')}:${String(m % 60).padStart(2, '0')}`;
 }
@@ -101,28 +93,32 @@ for (const file of TZ_FILES) {
 }
 
 // --- checks 2 & 3: the bounce precedes the scan and the watchdog window -----
-const bounceExpr = extract(read(ECOSYSTEM), /cron_restart:\s*'([^']+)'/, 'cron_restart', ECOSYSTEM);
-const scanExpr = extract(read(OUTREACH), /const DEFAULT_CRON = '([^']+)'/, 'DEFAULT_CRON', OUTREACH);
-const watchdogExpr = extract(read(WATCHDOG), /const DEFAULT_CRON = '([^']+)'/, 'DEFAULT_CRON', WATCHDOG);
+// All three now live in one object (DEFAULT_SCHEDULE_SETTINGS) instead of
+// three separate cron expressions, since the live schedule is DB-driven and
+// this can only check the fallback every deploy starts from.
+const settingsSrc = read(SCHEDULE_SETTINGS);
+const bounceTime = extract(settingsSrc, /bounce_time:\s*'([^']+)'/, 'bounce_time', SCHEDULE_SETTINGS);
+const scanTime = extract(settingsSrc, /scan_time:\s*'([^']+)'/, 'scan_time', SCHEDULE_SETTINGS);
+const activeStartHour = extract(settingsSrc, /active_start_hour:\s*(\d{1,2})/, 'active_start_hour', SCHEDULE_SETTINGS);
 
-const bounce = minutesOfDay(bounceExpr, 'pm2 cron_restart');
-const scan = minutesOfDay(scanExpr, 'outreach DEFAULT_CRON');
-
-// '*/5 9-21 * * *' -> the hour field '9-21' opens at 09:00.
-const watchdogHourField = watchdogExpr.trim().split(/\s+/)[1];
-if (!/^\d{1,2}-\d{1,2}$/.test(watchdogHourField)) {
-  throw new Error(`watchdog cron '${watchdogExpr}' hour field '${watchdogHourField}' is not an H-H range`);
+function timeStrMinutes(hhmm, what) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m) throw new Error(`${what} '${hhmm}' is not an HH:MM time; this check cannot compare it`);
+  return Number(m[1]) * 60 + Number(m[2]);
 }
-const watchdogOpens = Number(watchdogHourField.split('-')[0]) * 60;
+
+const bounce = timeStrMinutes(bounceTime, 'bounce_time');
+const scan = timeStrMinutes(scanTime, 'scan_time');
+const watchdogOpens = Number(activeStartHour) * 60;
 
 console.log('');
-console.log(`pm2 bounce      ${bounceExpr.padEnd(16)} ${fmt(bounce)} laptop-local`);
-console.log(`outreach scan   ${scanExpr.padEnd(16)} ${fmt(scan)} scheduler-tz`);
-console.log(`watchdog opens  ${watchdogExpr.padEnd(16)} ${fmt(watchdogOpens)} scheduler-tz`);
+console.log(`worker bounce   ${bounceTime.padEnd(16)} ${fmt(bounce)} laptop-local`);
+console.log(`outreach scan   ${scanTime.padEnd(16)} ${fmt(scan)} scheduler-tz`);
+console.log(`watchdog opens  ${String(activeStartHour).padEnd(16)} ${fmt(watchdogOpens)} scheduler-tz`);
 console.log('');
 
-checkThat('pm2 bounce precedes the outreach scan', bounce < scan, `${fmt(bounce)} < ${fmt(scan)}`);
-checkThat('pm2 bounce precedes the watchdog window', bounce < watchdogOpens, `${fmt(bounce)} < ${fmt(watchdogOpens)}`);
+checkThat('worker bounce precedes the outreach scan', bounce < scan, `${fmt(bounce)} < ${fmt(scan)}`);
+checkThat('worker bounce precedes the watchdog window', bounce < watchdogOpens, `${fmt(bounce)} < ${fmt(watchdogOpens)}`);
 
 console.log('');
 if (failures) {

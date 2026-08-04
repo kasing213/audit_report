@@ -4,8 +4,9 @@ import { generateBatch } from '../outreach/outreach-agent';
 import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { OUTREACH_ORGS, OrgId } from '../outreach/orgs';
+import { OutreachScheduleSettingsRepository, ScheduleSettings, DEFAULT_SCHEDULE_SETTINGS } from '../outreach/outreach-schedule-settings-repository';
+import { dailyCronAt, hourRangeCron } from '../utils/cron-time';
 
-const DEFAULT_CRON = '0 9 * * *';
 const DEFAULT_STALE_DAYS = 45;
 /**
  * Ceiling on outstanding (pending + approved) proposals per workspace. The scan
@@ -29,11 +30,11 @@ const DEFAULT_ATTEMPT_CAP = 40;
  * another 20 at once.
  */
 const DEFAULT_TOPUP_INCREMENT = 10;
-// Every 30 min across the same 09:00-21:55 Cambodia window the heartbeat
-// watchdog uses, so top-ups only fire during hours the worker is actually
-// sending. Overlapping the 9:00 daily scan tick is harmless: the top-up
-// no-ops whenever the scan already left something in 'approved'.
-const DEFAULT_TOPUP_CRON = '*/30 9-21 * * *';
+// How often the top-up check runs within the active-hours window (itself
+// dashboard-editable — see OutreachScheduleSettingsRepository). Overlapping
+// the daily scan tick is harmless: the top-up no-ops whenever the scan
+// already left something in 'approved'.
+const DEFAULT_TOPUP_INTERVAL_MIN = 30;
 
 type SendMessage = (chatId: string, text: string, extra?: any) => Promise<void>;
 
@@ -55,9 +56,18 @@ export function computeDraftCount(outstanding: number, target: number): number {
 
 export class OutreachScheduler {
   private sendMessageCallback?: SendMessage;
+  private scanTask: cron.ScheduledTask | null = null;
+  private topupTask: cron.ScheduledTask | null = null;
+  private enabled = false;
+  private currentSettings: ScheduleSettings = DEFAULT_SCHEDULE_SETTINGS;
 
   public setNotifyCallback(callback: SendMessage): void {
     this.sendMessageCallback = callback;
+  }
+
+  /** The schedule settings currently driving the live cron jobs. */
+  public getCurrentSettings(): ScheduleSettings {
+    return this.currentSettings;
   }
 
   /** Force a scan tick now (used by /scheduler/run-once for testing). */
@@ -78,10 +88,32 @@ export class OutreachScheduler {
       return;
     }
 
-    const cronExpr = process.env.OUTREACH_CRON || DEFAULT_CRON;
-    const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
+    this.enabled = true;
+    new OutreachScheduleSettingsRepository()
+      .getEffective()
+      .then((settings) => this.applySchedule(settings))
+      .catch((err) => Logger.error('outreach scheduler initial settings load failed', err as Error));
+  }
 
-    cron.schedule(cronExpr, () => {
+  /**
+   * (Re)builds the scan + top-up cron jobs from the given settings, replacing
+   * whatever was previously scheduled. Called once at startup and again every
+   * time the dashboard saves a schedule change (POST
+   * /crm/api/outreach/schedule-settings) — no redeploy needed to move times.
+   * No-ops if OUTREACH_AUTO_SCAN never enabled the scheduler in the first
+   * place, since there is nothing running to reschedule.
+   */
+  public applySchedule(settings: ScheduleSettings): void {
+    if (!this.enabled) return;
+    this.currentSettings = settings;
+    this.scanTask?.stop();
+    this.topupTask?.stop();
+
+    const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
+    const cronExpr = dailyCronAt(settings.scan_time);
+    const topupCronExpr = hourRangeCron(settings.active_start_hour, settings.active_end_hour, this.topupInterval());
+
+    this.scanTask = cron.schedule(cronExpr, () => {
       Logger.info('Outreach scheduler tick');
       this.runScan().catch((err) => Logger.error('outreach scan tick failed', err as Error));
     }, {
@@ -89,15 +121,19 @@ export class OutreachScheduler {
       timezone: tz,
     });
 
-    const topupCronExpr = process.env.OUTREACH_TOPUP_CRON || DEFAULT_TOPUP_CRON;
-    cron.schedule(topupCronExpr, () => {
+    this.topupTask = cron.schedule(topupCronExpr, () => {
       this.runTopUpCheck().catch((err) => Logger.error('outreach top-up tick failed', err as Error));
     }, {
       scheduled: true,
       timezone: tz,
     });
 
-    Logger.info(`Outreach scheduler started (cron='${cronExpr}', topup_cron='${topupCronExpr}', tz='${tz}')`);
+    Logger.info(`Outreach scheduler (re)scheduled (cron='${cronExpr}', topup_cron='${topupCronExpr}', tz='${tz}')`);
+  }
+
+  private topupInterval(): number {
+    const parsed = Number(process.env.OUTREACH_TOPUP_INTERVAL_MIN);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOPUP_INTERVAL_MIN;
   }
 
   private queueTarget(): number {

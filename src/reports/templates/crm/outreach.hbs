@@ -338,6 +338,34 @@
       </div>
     </div>
   </div>
+  <div class="default-image-card" id="schedule-card" style="align-items:flex-start">
+    <div class="default-image-meta" style="flex:1 1 100%">
+      <div class="name">Schedule (Cambodia time)</div>
+      <div class="sub">Applies to every workspace. Changes take effect immediately — no redeploy or restart needed.</div>
+      <div class="image-bar" style="margin-top:0.5rem;flex-wrap:wrap;align-items:flex-end">
+        <label style="display:flex;flex-direction:column;gap:0.2rem;font-size:0.78rem;color:var(--text-muted)">
+          Scan / draft time
+          <input type="time" id="sched-scan-time" style="font-family:var(--font-mono)">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.2rem;font-size:0.78rem;color:var(--text-muted)">
+          Worker bounce time
+          <input type="time" id="sched-bounce-time" style="font-family:var(--font-mono)">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.2rem;font-size:0.78rem;color:var(--text-muted)">
+          Active hours from
+          <input type="number" id="sched-active-start" min="0" max="23" style="width:4rem;font-family:var(--font-mono)">
+        </label>
+        <label style="display:flex;flex-direction:column;gap:0.2rem;font-size:0.78rem;color:var(--text-muted)">
+          to (inclusive)
+          <input type="number" id="sched-active-end" min="0" max="23" style="width:4rem;font-family:var(--font-mono)">
+        </label>
+        <div class="actions" style="margin-left:auto">
+          <button class="btn btn-primary" id="schedule-save" onclick="saveScheduleSettings()">Save</button>
+        </div>
+      </div>
+      <div class="sub" id="schedule-status" style="margin-top:0.4rem"></div>
+    </div>
+  </div>
   <div class="lightbox-backdrop" id="lightbox" onclick="closeLightbox()">
     <img id="lightbox-img" alt="Full size">
   </div>
@@ -348,6 +376,7 @@
     <span class="spacer"></span>
     <button class="mode-btn" id="mode-btn" onclick="toggleAutoApprove()">Approve: Manual</button>
     <button class="pause-btn" id="pause-btn" onclick="togglePause()">Pause</button>
+    <button class="btn btn-ghost" id="retry-deferred-btn" onclick="reapproveDeferredToday()" title="Re-approve today's send-timeout / import-deferred failures for this workspace so they retry once the daily cap resets. Skips genuinely bad numbers (privacy/invalid) — only our own crashes.">Retry deferred</button>
   </div>
   <div class="outreach-top">
     <div class="status-tabs" id="status-tabs">
@@ -934,6 +963,25 @@
     } catch { showToast('Pause toggle failed', 'error'); }
   }
 
+  async function reapproveDeferredToday() {
+    if (!confirm(
+      "Re-approve today's send-timeout / import-deferred failures for this workspace?\n\n" +
+      'These will retry once the daily cap resets. Numbers that failed for a real ' +
+      'reason (privacy/invalid) are not touched.'
+    )) return;
+    try {
+      const resp = await fetch(API + '/reapprove-deferred-today', { method: 'POST', credentials: 'same-origin' });
+      if (resp.ok) {
+        const data = await resp.json();
+        showToast(
+          data.reapproved_count > 0 ? `Re-approved ${data.reapproved_count} for retry` : 'No deferred failures to retry today',
+          'success'
+        );
+        loadList();
+      } else showToast('Retry failed', 'error');
+    } catch { showToast('Retry failed', 'error'); }
+  }
+
   async function toggleAutoApprove() {
     const turningOn = !autoApprove;
     if (turningOn && !confirm(
@@ -960,6 +1008,44 @@
     } catch { showToast('Auto-approve toggle failed', 'error'); }
   }
 
+  async function loadScheduleSettings() {
+    try {
+      const resp = await fetch(API + '/schedule-settings', { credentials: 'same-origin' });
+      if (!resp.ok) return;
+      const s = await resp.json();
+      document.getElementById('sched-scan-time').value = s.scan_time;
+      document.getElementById('sched-bounce-time').value = s.bounce_time;
+      document.getElementById('sched-active-start').value = s.active_start_hour;
+      document.getElementById('sched-active-end').value = s.active_end_hour;
+      document.getElementById('schedule-status').textContent = '';
+    } catch { /* leave fields blank — inputs show their last-known/placeholder state */ }
+  }
+
+  async function saveScheduleSettings() {
+    const body = {
+      scan_time: document.getElementById('sched-scan-time').value,
+      bounce_time: document.getElementById('sched-bounce-time').value,
+      active_start_hour: Number(document.getElementById('sched-active-start').value),
+      active_end_hour: Number(document.getElementById('sched-active-end').value),
+    };
+    try {
+      const resp = await fetch(API + '/schedule-settings', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        showToast('Schedule updated', 'success');
+        document.getElementById('schedule-status').textContent = '';
+      } else {
+        showToast(data.error || 'Schedule update failed', 'error');
+        document.getElementById('schedule-status').textContent = data.error || '';
+      }
+    } catch { showToast('Schedule update failed', 'error'); }
+  }
+
   function startWorkerStatusPoll() {
     refreshWorkerStatus();
     if (workerStatusTimer) clearInterval(workerStatusTimer);
@@ -970,6 +1056,7 @@
   refreshDefaultImage();
   refreshDefaultVideo();
   refreshDefaultText();
+  loadScheduleSettings();
   startWorkerStatusPoll();
   loadList();
 </script>
