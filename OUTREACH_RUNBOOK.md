@@ -148,6 +148,18 @@ changes apply on the worker's next 5-min poll and reschedule the Railway-side
 crons immediately. `node scripts/check-bounce-precedes-scan.js` asserts the
 *defaults* still keep the bounce before the scan.
 
+**`active_start_hour`/`active_end_hour` is NOT a sending window.** This is the
+detail that trips people up: the worker sends any `approved` proposal the
+moment it finds one, at any hour, with no time-of-day gate at all — active
+hours only bound the mid-day top-up check and the offline-watchdog alert.
+Sending starts shortly after `scan_time` (within its ~60–180s claim delay) if
+the workspace is Auto, not at whatever later hour `active_start_hour` says.
+To move *when sending actually begins*, move `scan_time` itself (and set
+`active_start_hour` to roughly match it, so the watchdog doesn't treat the
+hours before it as a false "worker offline" window) — there is currently no
+way to draft early and hold the send for a later hour without adding a real
+send-time gate to the claim endpoint, which does not exist yet.
+
 Commands below use `<app>` — substitute either app name, or omit it to act on
 all.
 
