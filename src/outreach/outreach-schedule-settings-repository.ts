@@ -39,7 +39,7 @@ const DOC_ID = 'schedule';
 // window open (09:00), so a restart's heartbeat gap never raises a false
 // worker-offline alert. Guarded by scripts/check-bounce-precedes-scan.js.
 export const DEFAULT_SCHEDULE_SETTINGS: ScheduleSettings = {
-  scan_time: '09:00',
+  scan_time: '12:55',
   bounce_time: '08:30',
   active_start_hour: 9,
   active_end_hour: 21,

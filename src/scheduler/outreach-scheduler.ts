@@ -5,7 +5,7 @@ import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { OUTREACH_ORGS, OrgId } from '../outreach/orgs';
 import { OutreachScheduleSettingsRepository, ScheduleSettings, DEFAULT_SCHEDULE_SETTINGS } from '../outreach/outreach-schedule-settings-repository';
-import { dailyCronAt, hourRangeCron } from '../utils/cron-time';
+import { dailyCronAt, hourRangeCron, timeStrToMinutes } from '../utils/cron-time';
 
 const DEFAULT_STALE_DAYS = 45;
 /**
@@ -136,6 +136,25 @@ export class OutreachScheduler {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOPUP_INTERVAL_MIN;
   }
 
+  /**
+   * Whether today's scan_time has already passed, in the scheduler's
+   * timezone. Uses formatToParts rather than a locale-formatted hour string —
+   * some ICU locales render midnight as "24:00" under hour12:false, which
+   * would corrupt the HH:MM parse below.
+   */
+  private isPastScanTimeToday(): boolean {
+    const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
+    const parts = new Intl.DateTimeFormat('en-US', {
+      timeZone: tz,
+      hour: '2-digit',
+      minute: '2-digit',
+      hourCycle: 'h23',
+    }).formatToParts(new Date());
+    const hour = parts.find((p) => p.type === 'hour')?.value ?? '00';
+    const minute = parts.find((p) => p.type === 'minute')?.value ?? '00';
+    return timeStrToMinutes(`${hour}:${minute}`) >= timeStrToMinutes(this.currentSettings.scan_time);
+  }
+
   private queueTarget(): number {
     const parsed = Number(process.env.OUTREACH_QUEUE_TARGET);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_QUEUE_TARGET;
@@ -244,6 +263,14 @@ export class OutreachScheduler {
   }
 
   private async runTopUpCheckForOrg(orgId: OrgId): Promise<void> {
+    // The top-up window can open before scan_time (e.g. scan moved to 12:55
+    // but active_start_hour is still 9) — without this, an empty queue before
+    // today's scan has even run would read as "ran dry" and draft early,
+    // defeating a deliberately-delayed scan_time. Only self-heal AFTER the
+    // scan that was supposed to seed the day's queue has actually had its
+    // chance to run.
+    if (!this.isPastScanTimeToday()) return;
+
     const state = await new OutreachWorkerStateRepository().getStatus(orgId);
     // Manual workspaces are intentionally excluded: piling another batch of
     // pending onto the dashboard every 30 minutes would spam the operator
