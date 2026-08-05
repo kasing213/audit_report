@@ -15,12 +15,10 @@ const DEFAULT_STALE_DAYS = 45;
  * delivery is 15/day, and on Auto nobody is reviewing the pile.
  */
 const DEFAULT_QUEUE_TARGET = 20;
-// Mirrors DEFAULT_DAILY_CAP / DEFAULT_ATTEMPT_CAP in outreach-routes.ts — kept
-// as separate local constants (same pattern as queueTarget/staleDays below)
-// rather than imported, since both files read the same DAILY_CAP /
-// DAILY_ATTEMPT_CAP env vars independently.
+// Mirrors DEFAULT_DAILY_CAP in outreach-routes.ts — kept as a separate local
+// constant (same pattern as queueTarget/staleDays below) rather than
+// imported, since both files read the same DAILY_CAP env var independently.
 const DEFAULT_DAILY_CAP = 15;
-const DEFAULT_ATTEMPT_CAP = 40;
 /**
  * How many more proposals to draft+auto-approve when an Auto workspace has
  * exhausted its approved queue without reaching the day's delivery cap —
@@ -157,12 +155,6 @@ export class OutreachScheduler {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_CAP;
   }
 
-  private attemptCap(): number {
-    const parsed = Number(process.env.DAILY_ATTEMPT_CAP);
-    if (Number.isFinite(parsed) && parsed > 0) return parsed;
-    return Math.max(DEFAULT_ATTEMPT_CAP, this.dailyCap());
-  }
-
   private topupIncrement(): number {
     const parsed = Number(process.env.OUTREACH_TOPUP_INCREMENT);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOPUP_INCREMENT;
@@ -265,15 +257,12 @@ export class OutreachScheduler {
     if (!state.auto_approve || state.paused) return;
 
     const dCap = this.dailyCap();
-    const aCap = this.attemptCap();
     if (state.deliveries_today >= dCap) return; // day's target already met
-    if (state.claims_today >= aCap) return; // no attempt budget left today
 
     const counts = await new OutreachRepository().counts(orgId);
     if (counts.approved > 0) return; // worker still has something to claim
 
-    const draftCount = Math.min(this.topupIncrement(), aCap - state.claims_today);
-    if (draftCount <= 0) return;
+    const draftCount = this.topupIncrement();
 
     const result = await generateBatch({
       limit: draftCount,
@@ -284,7 +273,7 @@ export class OutreachScheduler {
 
     Logger.info(
       `Outreach top-up org=${orgId}: deliveries=${state.deliveries_today}/${dCap} ` +
-      `claims=${state.claims_today}/${aCap} drafted=${draftCount} created=${result.created}`
+      `claims=${state.claims_today} drafted=${draftCount} created=${result.created}`
     );
 
     const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;

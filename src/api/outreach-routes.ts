@@ -29,11 +29,6 @@ import { ObjectId } from 'mongodb';
 const router = express.Router();
 const LEASE_MS = 5 * 60 * 1000; // 5 min
 const DEFAULT_DAILY_CAP = 15;
-// Anti-ban ceiling on total send attempts (ImportContacts lookups) per day.
-// Unreachable numbers (privacy-hidden / not on Telegram) no longer consume a
-// delivery slot, so this bounds how many dead numbers the worker will try
-// before giving up for the day, even if it never reaches DAILY_CAP deliveries.
-const DEFAULT_ATTEMPT_CAP = 40;
 const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
@@ -71,14 +66,6 @@ function videoUploadErrorHandler(err: any, _req: Request, res: Response, next: N
 function dailyCap(): number {
   const parsed = Number(process.env.DAILY_CAP);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_CAP;
-}
-
-function attemptCap(): number {
-  const parsed = Number(process.env.DAILY_ATTEMPT_CAP);
-  if (Number.isFinite(parsed) && parsed > 0) return parsed;
-  // Never let the attempt ceiling fall below the delivery target, or the worker
-  // could hit the attempt cap before it can possibly deliver DAILY_CAP.
-  return Math.max(DEFAULT_ATTEMPT_CAP, dailyCap());
 }
 
 router.use(authMiddleware);
@@ -144,7 +131,6 @@ router.get('/worker-status', async (req: Request, res: Response) => {
       claims_today_day: state.claims_today_day,
       last_error: state.last_error,
       daily_cap: dailyCap(),
-      attempt_cap: attemptCap(),
     });
   } catch (err) {
     Logger.error('outreach worker-status failed', err as Error);
@@ -754,7 +740,7 @@ router.post('/claim', async (req: Request, res: Response) => {
     // configured scan/active-hours time) gets claimed and sent the instant
     // it becomes claimable again, regardless of scan_time or active hours.
     // Checked before reserving a claim slot so an outside-hours poll doesn't
-    // burn any of the day's attempt budget.
+    // waste a wake-up.
     const schedule = await new OutreachScheduleSettingsRepository().getEffective();
     const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
     const nowMinutes = currentMinutesInTz(tz);
@@ -763,7 +749,9 @@ router.post('/claim', async (req: Request, res: Response) => {
       return;
     }
 
-    const reserved = await stateRepo.tryReserveClaim(org, dailyCap(), attemptCap());
+    // Only gate on deliveries — no separate attempt ceiling as of 2026-08, so
+    // "cap reached" means exactly what it says: dailyCap deliveries landed.
+    const reserved = await stateRepo.tryReserveClaim(org, dailyCap());
     if (reserved === null) {
       res.json({ proposal: null, daily_cap_reached: true });
       return;
@@ -898,11 +886,12 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
       Logger.warn(`recordFailure on mark-failed: ${(e as Error).message}`);
     }
 
-    // Refund the attempt reservation ONLY for transient/system failures (they
-    // never reached Telegram). Privacy/invalid failures consumed a real
-    // ImportContacts round-trip, so they still count toward the daily ATTEMPT
-    // ceiling — this is what stops a batch of unreachable numbers from churning
-    // unlimited Telegram lookups now that they no longer consume a delivery slot.
+    // claims_today no longer gates anything (2026-08), but it's still the only
+    // record of how many real Telegram round-trips happened today (useful for
+    // spotting a throttle event, e.g. N deferred out of M attempts). Refund it
+    // ONLY for transient/system failures — they never reached Telegram at all,
+    // so counting them would overstate real attempts. Privacy/invalid/deferred
+    // consumed a genuine ImportContacts round-trip and stay counted.
     // Unknown kind → refund (preserves prior behavior).
     if (failureKind === undefined || failureKind === 'transient') {
       try { await new OutreachWorkerStateRepository().releaseClaim(normalizeOrg(proposal.org_id)); } catch (e) { Logger.warn(`releaseClaim on mark-failed: ${(e as Error).message}`); }

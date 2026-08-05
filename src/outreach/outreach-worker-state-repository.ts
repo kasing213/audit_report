@@ -138,21 +138,23 @@ export class OutreachWorkerStateRepository {
 
   /**
    * Atomically reserve one send slot for this org, rolling over at UTC midnight.
-   * Grants the slot only when BOTH caps have room: deliveries_today < deliveryCap
-   * (the real "N delivered per day" target) AND claims_today < attemptCap (the
-   * anti-ban ceiling on total Telegram ImportContacts lookups). Increments
-   * claims_today (attempts); deliveries_today is bumped separately via
+   * Grants the slot only when deliveries_today < deliveryCap (the real "N
+   * delivered per day" target) — as of 2026-08 there is no separate ceiling on
+   * attempts, so a bad-luck/throttled run can burn through many failures
+   * chasing the delivery target rather than giving up early. claims_today is
+   * still tracked and incremented here purely as an observability counter (how
+   * many attempts it took); deliveries_today is bumped separately via
    * recordDelivery() when a send actually lands, so unreachable numbers never
-   * consume a delivery slot. Returns the post-increment attempt count, or null if
-   * either cap is reached.
+   * consume a delivery slot. Returns the post-increment attempt count, or null
+   * if the delivery cap is reached.
    */
-  async tryReserveClaim(orgId: OrgId, deliveryCap: number, attemptCap: number): Promise<number | null> {
+  async tryReserveClaim(orgId: OrgId, deliveryCap: number): Promise<number | null> {
     await this.ensureOrg(orgId);
     const today = utcDayKey();
     await this.rollDayIfNeeded(orgId, today);
 
     const result = await this.col.findOneAndUpdate(
-      { _id: orgId, claims_today: { $lt: attemptCap }, deliveries_today: { $lt: deliveryCap } },
+      { _id: orgId, deliveries_today: { $lt: deliveryCap } },
       { $inc: { claims_today: 1 }, $set: { updated_at: new Date() } },
       { returnDocument: 'after' }
     );
