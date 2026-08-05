@@ -332,11 +332,13 @@ function isSessionExpiredError(err: Error): boolean {
   return /AUTH_KEY_UNREGISTERED|SESSION_REVOKED|SESSION_EXPIRED|USER_DEACTIVATED|AUTH_KEY_INVALID/i.test(m);
 }
 
-// Wording matters: the server's classifyFailure() decides permanence by regex
-// on these strings. ABSENT must match its privacy pattern (permanent, never
-// retried); DEFERRED must NOT, so it falls through to 'transient' and the lead
-// is re-queued instead of blacklisted. check-import-outcome.ts guards both.
-export const DEFERRED_IMPORT_REASON = 'contact import deferred by Telegram (retry later)';
+// Wording matters: the server's classifyFailure() decides which suppression
+// kind a reason gets by regex on these strings. ABSENT matches the privacy
+// pattern; DEFERRED matches its own separate pattern — both kinds are
+// permanent (no auto-retry as of 2026-08), but kept distinct for audit
+// visibility (genuinely unreachable vs. Telegram-throttled-us).
+// check-import-outcome.ts guards DEFERRED never accidentally matching privacy.
+export const DEFERRED_IMPORT_REASON = 'contact import deferred by Telegram';
 export const ABSENT_PEER_REASON = 'phone number not on Telegram (or hidden by privacy)';
 
 export type ImportOutcome =

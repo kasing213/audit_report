@@ -116,8 +116,9 @@ export function classifyFailure(reason: string): SuppressionKind {
     return 'privacy';
   }
   // Telegram refused the import (DEFERRED_IMPORT_REASON, worker.ts), or the
-  // send itself timed out — real signal, but not proof of a dead number, so
-  // it gets a temporary park, not a permanent one.
+  // send itself timed out — real signal, but not proof of a dead number.
+  // Tracked as its own kind (see SUPPRESSING_KINDS) rather than folded into
+  // 'privacy', purely for audit visibility.
   if (/contact import deferred by telegram|send timed out after \d+s/.test(r)) {
     return 'deferred';
   }
