@@ -6,13 +6,14 @@ export type AlertKind =
   | 'lease-expired'
   | 'worker-offline'
   | 'session-expired'
-  | 'worker-fatal';
+  | 'worker-fatal'
+  | 'deferral-backoff';
 
 type SendMessage = (chatId: string, text: string, extra?: any) => Promise<void>;
 
 const PER_PHONE_THROTTLE_MS = 6 * 60 * 60 * 1000; // 6h
 const PER_KIND_THROTTLE_MS = 30 * 60 * 1000; // 30m for worker-level alerts
-const WORKER_LEVEL_KINDS = new Set<AlertKind>(['worker-offline', 'session-expired', 'worker-fatal']);
+const WORKER_LEVEL_KINDS = new Set<AlertKind>(['worker-offline', 'session-expired', 'worker-fatal', 'deferral-backoff']);
 
 let sender: SendMessage | null = null;
 const recentAlerts = new Map<string, number>();
@@ -76,6 +77,9 @@ function formatProposalAlert(
       break;
     case 'worker-fatal':
       lines.push(`🚨 *Outreach worker fatal error*${orgTag}`);
+      break;
+    case 'deferral-backoff':
+      lines.push(`⚠️ *Outreach worker throttled — backing off*${orgTag}`);
       break;
   }
 
