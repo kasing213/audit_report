@@ -14,6 +14,7 @@ import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, Supp
 import { generateBatch } from '../outreach/outreach-agent';
 import { formatPhoneDisplay, formatTelegramLink } from '../utils/phone-utils';
 import { getTodayDate, getZonedDayRangeUtc } from '../utils/time';
+import { currentMinutesInTz, isWithinHourRange } from '../utils/cron-time';
 import { getRegisteredOutreachScheduler } from '../scheduler/outreach-scheduler';
 import { getRegisteredHeartbeatWatchdogScheduler } from '../scheduler/heartbeat-watchdog-scheduler';
 import { OutreachScheduleSettingsRepository } from '../outreach/outreach-schedule-settings-repository';
@@ -748,6 +749,21 @@ router.post('/claim', async (req: Request, res: Response) => {
     const state = await stateRepo.getStatus(org);
     if (state.paused) {
       res.json({ proposal: null, paused: true });
+      return;
+    }
+
+    // Real send-time gate: without this, an `approved` proposal left over
+    // from a prior day (e.g. a manual re-approve, or the daily claim/delivery
+    // caps resetting at UTC midnight — 07:00 Cambodia — well before any
+    // configured scan/active-hours time) gets claimed and sent the instant
+    // it becomes claimable again, regardless of scan_time or active hours.
+    // Checked before reserving a claim slot so an outside-hours poll doesn't
+    // burn any of the day's attempt budget.
+    const schedule = await new OutreachScheduleSettingsRepository().getEffective();
+    const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
+    const nowMinutes = currentMinutesInTz(tz);
+    if (!isWithinHourRange(nowMinutes, schedule.active_start_hour, schedule.active_end_hour)) {
+      res.json({ proposal: null, outside_active_hours: true });
       return;
     }
 

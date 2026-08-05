@@ -119,6 +119,7 @@ interface ClaimResponse {
   proposal: ProposalClaim | null;
   paused?: boolean;
   daily_cap_reached?: boolean;
+  outside_active_hours?: boolean;
 }
 
 interface StatusResponse {
@@ -618,6 +619,7 @@ async function main(): Promise<void> {
 
     if (!claimResp || !claimResp.proposal) {
       if (claimResp?.daily_cap_reached) console.log('Server daily cap reached.');
+      else if (claimResp?.outside_active_hours) console.log('Outside active-hours window — waiting.');
       await sleep(POLL_INTERVAL_MS);
       continue;
     }

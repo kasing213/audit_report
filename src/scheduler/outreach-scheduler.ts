@@ -5,7 +5,7 @@ import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { OUTREACH_ORGS, OrgId } from '../outreach/orgs';
 import { OutreachScheduleSettingsRepository, ScheduleSettings, DEFAULT_SCHEDULE_SETTINGS } from '../outreach/outreach-schedule-settings-repository';
-import { dailyCronAt, hourRangeCron, timeStrToMinutes } from '../utils/cron-time';
+import { dailyCronAt, hourRangeCron, timeStrToMinutes, currentMinutesInTz } from '../utils/cron-time';
 
 const DEFAULT_STALE_DAYS = 45;
 /**
@@ -136,23 +136,10 @@ export class OutreachScheduler {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOPUP_INTERVAL_MIN;
   }
 
-  /**
-   * Whether today's scan_time has already passed, in the scheduler's
-   * timezone. Uses formatToParts rather than a locale-formatted hour string —
-   * some ICU locales render midnight as "24:00" under hour12:false, which
-   * would corrupt the HH:MM parse below.
-   */
+  /** Whether today's scan_time has already passed, in the scheduler's timezone. */
   private isPastScanTimeToday(): boolean {
     const tz = process.env.TIMEZONE || 'Asia/Phnom_Penh';
-    const parts = new Intl.DateTimeFormat('en-US', {
-      timeZone: tz,
-      hour: '2-digit',
-      minute: '2-digit',
-      hourCycle: 'h23',
-    }).formatToParts(new Date());
-    const hour = parts.find((p) => p.type === 'hour')?.value ?? '00';
-    const minute = parts.find((p) => p.type === 'minute')?.value ?? '00';
-    return timeStrToMinutes(`${hour}:${minute}`) >= timeStrToMinutes(this.currentSettings.scan_time);
+    return currentMinutesInTz(tz) >= timeStrToMinutes(this.currentSettings.scan_time);
   }
 
   private queueTarget(): number {

@@ -34,3 +34,30 @@ export function timeStrToMinutes(hhmm: string): number {
   const [hour, minute] = hhmm.split(':').map(Number);
   return hour * 60 + minute;
 }
+
+/**
+ * Current minutes-since-midnight in the given IANA timezone. Uses
+ * formatToParts with hourCycle 'h23' rather than a locale-formatted string —
+ * some ICU locales render midnight as "24:00" under hour12:false, which
+ * would corrupt a naive HH:MM parse.
+ */
+export function currentMinutesInTz(tz: string): number {
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz,
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).formatToParts(new Date());
+  const hour = Number(parts.find((p) => p.type === 'hour')?.value ?? '0');
+  const minute = Number(parts.find((p) => p.type === 'minute')?.value ?? '0');
+  return hour * 60 + minute;
+}
+
+/**
+ * Whether `nowMinutes` falls within [startHour, endHour] inclusive of the
+ * whole endHour (e.g. startHour=9, endHour=21 covers 09:00 through 21:59) —
+ * matches the hour-range semantics of the cron built by hourRangeCron.
+ */
+export function isWithinHourRange(nowMinutes: number, startHour: number, endHour: number): boolean {
+  return nowMinutes >= startHour * 60 && nowMinutes < (endHour + 1) * 60;
+}
