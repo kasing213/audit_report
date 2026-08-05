@@ -18,17 +18,18 @@
  *               forever, never retried.
  *   deferred  — Telegram refused the contact import (`retryContacts`), or the
  *               send itself timed out. Real signal about this attempt, but NOT
- *               proof the number is dead the way privacy/invalid are — a pm2
- *               throttle window on 2026-07-30..08-01 wrongly permanently
- *               blacklisted ~68 reachable leads this way. Parked on a temporary
- *               DEFERRED_COOLDOWN_DAYS clock (reuses the eligible_again_at field
- *               that already backs the `contacted` cooldown), then eligible again.
+ *               proof the number is dead the way privacy/invalid are. Previously
+ *               parked on a temporary cooldown clock and auto-reselected once it
+ *               elapsed; 2026-08 dropped all automatic retry, so this is now
+ *               PERMANENT like privacy/invalid — no clock, no auto-reselection.
+ *               A human can still bring a specific proposal back via the
+ *               reapprove-deferred-today route (OutreachRepository.reapproveDeferredToday).
  *   transient — our own infrastructure error (worker crash, mtproto blip, lease
  *               expiry) where the message never reached the customer and nothing
  *               about the number's reachability was learned. Does NOT suppress
- *               the phone here — instead the proposal itself is re-queued (see
- *               OutreachRepository.requeueTransient), bounded at
- *               MAX_TRANSIENT_RETRIES so a broken send can't loop forever.
+ *               the phone — the failed proposal is simply left `failed` (no
+ *               auto-requeue since 2026-08); the phone stays open to normal
+ *               candidate generation.
  *
  * Collection: `outreach_suppressions`, unique on `customer_phone`.
  */
@@ -54,15 +55,13 @@ export interface OutreachSuppressionDocument {
   last_failed_at: Date;
   last_failed_reason: string;
   retries_used: number;            // vestigial — retry ladder removed; always 0
-  // Null for the permanent kinds (privacy/invalid — no retry ladder) and for
-  // 'transient'. Mirrors eligible_again_at for 'deferred', so a permanent park
-  // (null) is distinguishable at a glance from a scheduled one (non-null).
+  // Null for the permanent kinds (privacy/invalid/deferred — no retry ladder)
+  // and for 'transient'.
   next_retry_at: Date | null;
-  // When this phone becomes eligible for outreach again. Set for 'contacted'
-  // (contacted_at + CONTACT_COOLDOWN_DAYS) and 'deferred'
-  // (last_failed_at + DEFERRED_COOLDOWN_DAYS) records. Null for the permanent
-  // kinds (privacy/invalid) and for 'transient', which are governed by
-  // failure_kind alone, not by a clock.
+  // When this phone becomes eligible for outreach again. Set only for
+  // 'contacted' (contacted_at + CONTACT_COOLDOWN_DAYS). Null for the permanent
+  // kinds (privacy/invalid/deferred) and for 'transient', which are governed
+  // by failure_kind alone, not by a clock.
   eligible_again_at?: Date | null;
   contacted_at?: Date | null;
   last_proposal_id: ObjectId | null;
@@ -82,24 +81,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export const CONTACT_COOLDOWN_DAYS = 180;
 
-const DEFAULT_DEFERRED_COOLDOWN_DAYS = 30;
-
-/**
- * How long a 'deferred' failure sets a phone aside before it's eligible again.
- * Unlike CONTACT_COOLDOWN_DAYS this is overridable via env — it's an ops lever
- * for tuning the throttle-recovery window without a redeploy, matching the
- * getTimeoutMs()/attemptCap() pattern used elsewhere in outreach.
- */
-export function deferredCooldownDays(): number {
-  const parsed = Number(process.env.DEFERRED_COOLDOWN_DAYS);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DEFERRED_COOLDOWN_DAYS;
-}
-
-// Statuses/kinds that ALWAYS block a phone from normal generation, regardless
-// of any clock. 'deferred' is deliberately absent — it only suppresses while
-// eligible_again_at is still in the future (see getSuppressedPhones), the same
-// way 'contacted' does.
-const SUPPRESSING_KINDS: SuppressionKind[] = ['privacy', 'invalid'];
+// Statuses/kinds that ALWAYS block a phone from normal generation. 'deferred'
+// used to be a temporary park that expired on its own; as of 2026-08 there is
+// no automatic retry for anything, so it's permanent like privacy/invalid.
+const SUPPRESSING_KINDS: SuppressionKind[] = ['privacy', 'invalid', 'deferred'];
 const SUPPRESSING_STATUSES: SuppressionStatus[] = ['active', 'exhausted'];
 
 // 'contacted' is lowest priority: it's not a failure at all, so any real
@@ -198,13 +183,6 @@ export class OutreachSuppressionRepository {
 
     const existing = await this.col.findOne({ org_id: org, customer_phone: phone });
 
-    // 'deferred' gets a temporary park (mirrors the 'contacted' cooldown);
-    // privacy/invalid/transient carry no clock — next_retry_at/eligible_again_at
-    // stay null for them (permanent for the first two, N/A for the third).
-    const deferredEligibleAgainAt = kind === 'deferred'
-      ? new Date(now.getTime() + deferredCooldownDays() * DAY_MS)
-      : null;
-
     if (!existing) {
       const doc: OutreachSuppressionDocument = {
         org_id: orgId,
@@ -215,11 +193,10 @@ export class OutreachSuppressionRepository {
         last_failed_at: now,
         last_failed_reason: input.reason,
         retries_used: 0,
-        // Privacy/invalid failures are permanent: nothing about them changes on
-        // a timer, so there is no retry clock. 'deferred' is the one failure
-        // kind that DOES get one — see deferredEligibleAgainAt above.
-        next_retry_at: deferredEligibleAgainAt,
-        eligible_again_at: deferredEligibleAgainAt,
+        // privacy/invalid/deferred are all permanent — no retry clock. transient
+        // carries no clock either (governed by failure_kind alone).
+        next_retry_at: null,
+        eligible_again_at: null,
         last_proposal_id: input.proposalId ?? null,
         customer_name: input.customerName ?? null,
         follower: input.follower ?? null,
@@ -277,24 +254,13 @@ export class OutreachSuppressionRepository {
       set.resolved_at = null;
     }
 
-    if (effectiveKind === 'invalid') {
-      // Upgraded to (or already) permanently invalid — never retry. Also clears
-      // any leftover deferred-cooldown clock from a milder earlier failure.
-      set.next_retry_at = null;
-      set.eligible_again_at = null;
-    } else if (effectiveKind === 'privacy') {
-      // Upgraded to (or already) a genuine privacy refusal — permanently closed.
-      // Unconditional, not just from a prior 'transient': a 'deferred' doc that
-      // escalates to 'privacy' must also lose its temporary-park clock rather
-      // than keep it ticking underneath a now-permanent record.
+    if (effectiveKind === 'invalid' || effectiveKind === 'privacy' || effectiveKind === 'deferred') {
+      // All three are permanent — no retry clock. Unconditional, not just from
+      // a prior 'transient': a doc escalating into one of these must also lose
+      // any leftover cooldown clock from a milder earlier failure.
       set.status = 'active';
       set.next_retry_at = null;
       set.eligible_again_at = null;
-    } else if (effectiveKind === 'deferred') {
-      // Fresh or repeated deferral — (re)start the temporary-park clock.
-      const eligibleAgainAt = new Date(now.getTime() + deferredCooldownDays() * DAY_MS);
-      set.next_retry_at = eligibleAgainAt;
-      set.eligible_again_at = eligibleAgainAt;
     }
     // transient: nothing to schedule — no clock, no permanence.
 
@@ -371,10 +337,9 @@ export class OutreachSuppressionRepository {
   }
 
   /**
-   * Phones this workspace must not draft. Three independent reasons:
-   *   - a permanent failure (privacy / invalid), which never expires;
-   *   - an active contact cooldown, which expires at eligible_again_at;
-   *   - an active deferred-import park, which also expires at eligible_again_at.
+   * Phones this workspace must not draft. Two independent reasons:
+   *   - a permanent failure (privacy / invalid / deferred), which never expires;
+   *   - an active contact cooldown, which expires at eligible_again_at.
    */
   async getSuppressedPhones(orgId: OrgId = DEFAULT_ORG): Promise<Set<string>> {
     const now = new Date();
@@ -384,7 +349,6 @@ export class OutreachSuppressionRepository {
         $or: [
           { failure_kind: { $in: SUPPRESSING_KINDS }, status: { $in: SUPPRESSING_STATUSES } },
           { failure_kind: 'contacted', eligible_again_at: { $gt: now } },
-          { failure_kind: 'deferred', eligible_again_at: { $gt: now } },
         ],
       },
       { projection: { customer_phone: 1, _id: 0 } }

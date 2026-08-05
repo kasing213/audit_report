@@ -10,7 +10,7 @@ import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { resolveOrg } from '../outreach/org-context';
 import { normalizeOrg } from '../outreach/orgs';
-import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery, classifyFailure } from '../outreach/outreach-suppression-repository';
+import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery } from '../outreach/outreach-suppression-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { formatPhoneDisplay, formatTelegramLink } from '../utils/phone-utils';
 import { getTodayDate, getZonedDayRangeUtc } from '../utils/time';
@@ -34,10 +34,6 @@ const DEFAULT_DAILY_CAP = 15;
 // delivery slot, so this bounds how many dead numbers the worker will try
 // before giving up for the day, even if it never reaches DAILY_CAP deliveries.
 const DEFAULT_ATTEMPT_CAP = 40;
-// A transient failure (pm2 crash, lease expiry, mtproto blip) means the message
-// never left, so the proposal is re-queued rather than failed. Bounded so a
-// genuinely broken send cannot loop forever.
-const MAX_TRANSIENT_RETRIES = 3;
 const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
@@ -877,31 +873,11 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
     const proposal = await outreachRepo.getById(req.params.id);
     if (!proposal) { res.status(404).json({ error: 'not found' }); return; }
 
-    // Transient failures never reached the customer. Re-queue instead of failing,
-    // refund the attempt slot, and alert — these are almost always a worker crash,
-    // not a bad number, and letting one through would burn the phone's single
-    // contact on a send that never happened.
-    if (classifyFailure(reason) === 'transient') {
-      const requeued = await outreachRepo.requeueTransient(req.params.id, MAX_TRANSIENT_RETRIES);
-      if (requeued) {
-        try {
-          await new OutreachWorkerStateRepository().releaseClaim(normalizeOrg(proposal.org_id));
-        } catch (e) {
-          Logger.warn(`releaseClaim on transient requeue: ${(e as Error).message}`);
-        }
-        Logger.warn(`[outreach] transient failure re-queued proposal=${req.params.id} reason=${reason}`);
-        notifyOutreachFailure(proposal, 'transient-requeue', { reason }).catch((err) => {
-          Logger.error('transient-requeue alert dispatch errored', err as Error);
-        });
-        res.json({ success: true, requeued: true });
-        return;
-      }
-      Logger.error(
-        `[outreach] proposal=${req.params.id} exhausted ${MAX_TRANSIENT_RETRIES} transient retries — failing for real`,
-        new Error(reason)
-      );
-    }
-
+    // No auto-retry of any kind (2026-08): every failure — transient worker/
+    // network blips included — is left `failed` as-is. New leads keep flowing
+    // in via the normal claim queue; a failed proposal is never resurrected
+    // automatically. (A human can still bring one back explicitly via
+    // /reapprove-deferred-today.)
     const ok = await outreachRepo.markFailed(req.params.id, reason);
     if (!ok) { res.status(404).json({ error: 'not found' }); return; }
 

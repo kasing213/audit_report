@@ -28,10 +28,6 @@ export interface OutreachProposalDocument {
   sent_at: Date | null;
   lease_expires_at: Date | null;
   claim_attempts?: number;
-  // How many times a transient (crash / lease-expiry) failure has re-queued this
-  // proposal. Bounded by MAX_TRANSIENT_RETRIES so a genuinely broken send cannot
-  // loop forever. Absent on proposals created before this field existed.
-  transient_retries?: number;
   model: string;
 }
 
@@ -131,11 +127,11 @@ export class OutreachRepository {
    * Resurrect today's timeout / import-deferred failures back into the
    * approved queue. These are our own MTProto/network blips (send timeout,
    * Telegram throttling the contact import), not proof the number is dead —
-   * classifyFailure() in outreach-suppression-repository.ts already treats
-   * them as 'deferred' rather than permanent, but the default park is 30
-   * days. This bypasses that park for a same/next-day retry when the
-   * failures are known to be our infra crashing, not the recipient. Pattern
-   * mirrors classifyFailure's 'deferred' branch — keep both in sync.
+   * but since 2026-08 'deferred' is a permanent suppression kind with no auto
+   * retry (see outreach-suppression-repository.ts), this manual action is the
+   * ONLY way such a proposal gets another attempt. Operates on the proposal
+   * document directly (status only), bypassing the phone-level suppression
+   * ledger entirely — claimNextApproved doesn't consult it either.
    */
   async reapproveDeferredToday(orgId: OrgId, approvedBy: string, since: Date): Promise<number> {
     const result = await this.col.updateMany(
@@ -242,44 +238,6 @@ export class OutreachRepository {
         }
       );
       return result.modifiedCount > 0;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Return a proposal to the approved queue after a transient failure, so the
-   * worker retries it. A transient failure means the message never reached the
-   * customer, so the number must NOT be treated as contacted. Refuses once
-   * maxRetries is reached, at which point the caller should fail it for real.
-   */
-  async requeueTransient(id: string, maxRetries: number): Promise<boolean> {
-    try {
-      const result = await this.col.findOneAndUpdate(
-        {
-          _id: new ObjectId(id),
-          $or: [
-            { transient_retries: { $lt: maxRetries } },
-            { transient_retries: { $exists: false } },
-          ],
-        },
-        {
-          // approved_at is the claim queue's sort key (claimNextApproved sorts
-          // it ascending), so it must be refreshed here. Leaving it alone left
-          // the just-failed proposal at the head of the queue and the worker
-          // re-claimed the same phone immediately, retrying one number 4x while
-          // the rest of the queue waited. Re-queue means back of the line.
-          $set: {
-            status: 'approved',
-            failed_reason: null,
-            lease_expires_at: null,
-            approved_at: new Date(),
-          },
-          $inc: { transient_retries: 1 },
-        },
-        { returnDocument: 'after' }
-      );
-      return Boolean(result);
     } catch {
       return false;
     }

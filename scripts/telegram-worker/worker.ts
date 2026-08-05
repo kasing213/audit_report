@@ -19,6 +19,7 @@ import bigInt from 'big-integer';
 import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
+import { LogLevel } from 'telegram/extensions/Logger';
 
 dotenv.config();
 
@@ -46,17 +47,6 @@ const HEARTBEAT_INTERVAL_MS = 30_000;
 // because a send now downloads a ~50MB video from R2 and uploads it to
 // Telegram, which is slow on a home connection.
 const SEND_TIMEOUT_MS = intEnv('SEND_TIMEOUT_SEC', 240) * 1000;
-// After this many CONSECUTIVE 'deferred' ImportContacts outcomes, stop
-// hammering the API and cool down for real instead of just doing the normal
-// randomDelay() and trying the next lead. Mirrors the 2026-08 company-account
-// incident: 23 deferred vs 3 sent in one day, each deferral separated only by
-// the usual 60-180s gap — never giving Telegram's throttle a chance to lift.
-const DEFERRAL_BACKOFF_THRESHOLD = intEnv('DEFERRAL_BACKOFF_THRESHOLD', 5);
-// Cooldown length once the threshold is hit, in minutes. Ops-tunable via env
-// without a redeploy, same lever pattern as deferredCooldownDays() on the
-// server side (outreach-suppression-repository.ts).
-const DEFERRAL_BACKOFF_MIN = intEnv('DEFERRAL_BACKOFF_MIN', 45);
-const DEFERRAL_BACKOFF_MS = DEFERRAL_BACKOFF_MIN * 60_000;
 const INBOUND_DISABLED = String(process.env.INBOUND_DISABLED || '').toLowerCase() === 'true';
 const WORKER_ID = process.env.WORKER_ID || `${os.hostname()}-${process.pid}`;
 const CLAIM_URL = `${BASE_URL}/crm/api/outreach/claim`;
@@ -143,14 +133,6 @@ const workerState = {
   sentToday: 0,
   lastError: null as string | null,
   paused: false,
-  // Consecutive 'deferred' ImportContacts outcomes in a row this process.
-  // Reset to 0 on any non-deferred outcome (success or a different failure
-  // kind). In-memory only — a fresh process is a fresh chance for Telegram to
-  // reconsider, no need to persist across restarts.
-  consecutiveDeferrals: 0,
-  // Set once the backoff threshold is hit; cleared when the pause elapses.
-  // While non-null and in the future, the main loop skips claim() entirely.
-  deferralPauseUntil: null as Date | null,
 };
 
 // userId → phone, populated during send so inbound events can recover the
@@ -203,8 +185,8 @@ async function postHeartbeat(): Promise<void> {
       const data = await resp.json() as { paused?: boolean };
       if (typeof data.paused === 'boolean') workerState.paused = data.paused;
     }
-  } catch (err) {
-    console.error('heartbeat err', err);
+  } catch {
+    // Transient connection blip to our own backend — next heartbeat retries.
   }
 }
 
@@ -237,8 +219,8 @@ async function checkDailyBounce(): Promise<void> {
       console.log(`Daily bounce time (${settings.bounce_time}) reached — restarting for a fresh process.`);
       process.exit(0);
     }
-  } catch (err) {
-    console.error('schedule-settings poll err', err);
+  } catch {
+    // Transient connection blip to our own backend — next poll retries.
   }
 }
 
@@ -249,8 +231,8 @@ async function postAlert(kind: string, reason: string): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ kind, reason, worker_id: WORKER_ID }),
     });
-  } catch (err) {
-    console.error('alert err', err);
+  } catch {
+    // Transient connection blip to our own backend — nothing to retry here.
   }
 }
 
@@ -558,6 +540,11 @@ async function main(): Promise<void> {
   const client = new TelegramClient(new StringSession(sessionStr), API_ID, API_HASH, {
     connectionRetries: 5,
   });
+  // gramjs logs every reconnect/ping-timeout blip to console at INFO/WARN/ERROR
+  // (it already retries these internally) — pure noise on an unstable
+  // connection. Real failures still surface: they're thrown exceptions caught
+  // and reported by our own code, not dependent on this logger.
+  client.setLogLevel(LogLevel.NONE);
   await client.connect();
 
   // Verify the session is still valid before the loop starts.
@@ -614,19 +601,8 @@ async function main(): Promise<void> {
       await sleep(POLL_INTERVAL_MS);
       continue;
     }
-    if (workerState.deferralPauseUntil) {
-      const remainingMs = workerState.deferralPauseUntil.getTime() - Date.now();
-      if (remainingMs > 0) {
-        console.log(`Deferral backoff active — ~${Math.ceil(remainingMs / 60000)}min remaining. Idle.`);
-        await sleep(Math.min(POLL_INTERVAL_MS, remainingMs));
-        continue;
-      }
-      console.log('Deferral backoff window elapsed — resuming normal sending.');
-      workerState.deferralPauseUntil = null;
-    }
-
     let claimResp: ClaimResponse | null = null;
-    try { claimResp = await claim(); } catch (e) { console.error('claim err', e); }
+    try { claimResp = await claim(); } catch { /* transient connection blip — retries next poll */ }
 
     if (!claimResp || !claimResp.proposal) {
       if (claimResp?.daily_cap_reached) console.log('Server daily cap reached.');
@@ -660,26 +636,6 @@ async function main(): Promise<void> {
       if (isSessionExpiredError(new Error(result.reason))) {
         await postAlert('session-expired', result.reason);
         await stop('Telegram session invalid. Re-run `npm run login`.', 2);
-      }
-    }
-
-    // Deferral-streak tracking: reset on success or any non-deferred failure,
-    // increment only on DEFERRED_IMPORT_REASON specifically so a run of
-    // unrelated errors doesn't falsely trip the backoff.
-    if (result.ok || result.reason !== DEFERRED_IMPORT_REASON) {
-      if (workerState.consecutiveDeferrals > 0) {
-        console.log(`  (deferral streak broken at ${workerState.consecutiveDeferrals})`);
-      }
-      workerState.consecutiveDeferrals = 0;
-    } else {
-      workerState.consecutiveDeferrals++;
-      console.log(`  consecutive deferrals: ${workerState.consecutiveDeferrals}/${DEFERRAL_BACKOFF_THRESHOLD}`);
-      if (workerState.consecutiveDeferrals >= DEFERRAL_BACKOFF_THRESHOLD) {
-        workerState.deferralPauseUntil = new Date(Date.now() + DEFERRAL_BACKOFF_MS);
-        workerState.consecutiveDeferrals = 0;
-        console.warn(`Telegram deferred ${DEFERRAL_BACKOFF_THRESHOLD} imports in a row — pausing sends for ${DEFERRAL_BACKOFF_MIN}min (until ${workerState.deferralPauseUntil.toISOString()}) to let the throttle lift.`);
-        await postAlert('deferral-backoff', `${DEFERRAL_BACKOFF_THRESHOLD} consecutive deferred imports — pausing ${DEFERRAL_BACKOFF_MIN}min`);
-        continue; // skip the normal randomDelay() below — the top-of-loop branch handles the wait
       }
     }
 
