@@ -41,23 +41,27 @@ Reuses the existing alert pipeline end-to-end:
 
 ## Destination
 
-New env var: `OWNER_CHAT_ID = 1450060367` (Kasing's personal Telegram chat).
-
-The name is deliberately not `PERSONAL_CHAT_ID` — `'personal'` is already an
-`org` value elsewhere in this codebase (company vs. personal outreach
-workspace), and a `PERSONAL_CHAT_ID` env var next to a `'personal'` org
-would be easy to misread as "the chat id for the personal org" rather than
-"Kasing's own chat."
+Reuse the existing `WORKER_ALERT_CHAT_ID` env var (`1450060367`, Kasing's
+personal Telegram chat) rather than inventing a new one. It's already
+documented (`OUTREACH_RUNBOOK.md:210`) and already used by the heartbeat
+watchdog to DM the operator directly instead of the audit group
+(`src/scheduler/heartbeat-watchdog-scheduler.ts:74`,
+`ctx.chatId = process.env.WORKER_ALERT_CHAT_ID`) — it's the exact "Kasing's
+personal DM" mechanism this feature needs, so a second lookalike var (e.g.
+`OWNER_CHAT_ID`) would just duplicate config for the same destination.
 
 In the `worker-alert` route, when `kind === 'daily-cap-reached'`, pass
-`chatId: process.env.OWNER_CHAT_ID` into `notifyOutreachFailure`'s context
-(the function already supports a `ctx.chatId` override — same mechanism the
-heartbeat watchdog uses to DM the operator directly instead of the audit
-group, per the existing comment at `outreach-alerts.ts:50-52`).
+`chatId: process.env.WORKER_ALERT_CHAT_ID` into `notifyOutreachFailure`'s
+context (the function already supports a `ctx.chatId` override).
 
-If `OWNER_CHAT_ID` is unset, drop the alert with a logged warning — do
-**not** fall back to `AUDIT_CHAT_ID`. Boss/dev's audit group should never
-receive this notification; that separation is the point.
+One deliberate difference from how the *other* `WORKER_LEVEL_KINDS` use this
+var: `worker-offline`/`session-expired`/`worker-fatal` silently fall back to
+`AUDIT_CHAT_ID` when `WORKER_ALERT_CHAT_ID` is unset (boss/dev should still
+hear about a real failure even if the DM var isn't configured). For
+`daily-cap-reached` — a routine status ping, not a failure — that fallback
+is wrong: if `WORKER_ALERT_CHAT_ID` is unset, drop the alert with a logged
+warning instead. Boss/dev's audit group should never receive this specific
+notification; that separation is the point.
 
 ## Throttle
 
@@ -91,9 +95,10 @@ purely "session done, N/15 delivered."
 - `scripts/telegram-worker/worker.ts` — fire `postAlert('daily-cap-reached',
   ...)` on the edge-trigger after `workerState.sentToday` reaches
   `DAILY_CAP`.
-- `.env` (not committed) / Railway env — add `OWNER_CHAT_ID=1450060367`.
-- `OUTREACH_RUNBOOK.md` — document `OWNER_CHAT_ID` alongside the existing
-  `AUDIT_CHAT_ID`/`REPORT_CHAT_ID`/`SUMMARY_CHAT_ID` table.
+- `.env` (not committed) / Railway env — set `WORKER_ALERT_CHAT_ID=1450060367`
+  if not already set (it may already be, for the heartbeat watchdog).
+- `OUTREACH_RUNBOOK.md` — extend the existing `WORKER_ALERT_CHAT_ID` row
+  (line 210) to note it's now also used for `daily-cap-reached`.
 
 ## Out of scope
 
