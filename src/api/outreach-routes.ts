@@ -229,6 +229,23 @@ router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res
     const reason = typeof body.reason === 'string' ? body.reason : 'unspecified';
     const workerId = typeof body.worker_id === 'string' ? body.worker_id : undefined;
     const org = resolveOrg(req);
+
+    if (kind === 'daily-cap-reached') {
+      // Personal DM only — never the boss/dev audit group. Unlike the other
+      // worker-level kinds (which fall back to AUDIT_CHAT_ID on purpose so a
+      // real failure is never silently dropped), a routine cap-reached ping
+      // with nowhere configured to go should just be dropped.
+      const dmChatId = process.env.WORKER_ALERT_CHAT_ID;
+      if (!dmChatId) {
+        Logger.warn('outreach worker-alert: WORKER_ALERT_CHAT_ID not set, dropping daily-cap-reached alert');
+        res.json({ ok: true });
+        return;
+      }
+      await notifyOutreachFailure(null, kind, { reason, worker_id: workerId, org, chatId: dmChatId });
+      res.json({ ok: true });
+      return;
+    }
+
     await notifyOutreachFailure(null, kind, { reason, worker_id: workerId, org });
     if (kind === 'session-expired' || kind === 'worker-fatal') {
       await new OutreachWorkerStateRepository().setLastError(org, `${kind}: ${reason}`);
