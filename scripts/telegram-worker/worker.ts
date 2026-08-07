@@ -590,6 +590,9 @@ async function main(): Promise<void> {
       workerState.sentToday++;
       workerState.lastError = null;
       console.log(`  ✓ sent (${workerState.sentToday}/${DAILY_CAP} today)`);
+      if (workerState.sentToday === DAILY_CAP) {
+        await postAlert('daily-cap-reached', `${workerState.sentToday}/${DAILY_CAP}`);
+      }
     } else {
       await markFailed(proposal._id, result.reason);
       workerState.lastError = result.reason;
