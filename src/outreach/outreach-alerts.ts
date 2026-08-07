@@ -7,13 +7,14 @@ export type AlertKind =
   | 'lease-expired'
   | 'worker-offline'
   | 'session-expired'
-  | 'worker-fatal';
+  | 'worker-fatal'
+  | 'daily-cap-reached';
 
 type SendMessage = (chatId: string, text: string, extra?: any) => Promise<void>;
 
 const PER_PHONE_THROTTLE_MS = 6 * 60 * 60 * 1000; // 6h
 const PER_KIND_THROTTLE_MS = 30 * 60 * 1000; // 30m for worker-level alerts
-const WORKER_LEVEL_KINDS = new Set<AlertKind>(['worker-offline', 'session-expired', 'worker-fatal']);
+const WORKER_LEVEL_KINDS = new Set<AlertKind>(['worker-offline', 'session-expired', 'worker-fatal', 'daily-cap-reached']);
 
 let sender: SendMessage | null = null;
 const recentAlerts = new Map<string, number>();
@@ -81,6 +82,13 @@ function formatProposalAlert(
     case 'worker-fatal':
       lines.push(`🚨 *Outreach worker fatal error*${orgTag}`);
       break;
+    case 'daily-cap-reached': {
+      lines.push(`✅ *Outreach delivery cap reached*${orgTag}`);
+      lines.push('');
+      lines.push(`Delivered: ${ctx.reason || 'cap reached'} today.`);
+      lines.push('Resumes after UTC midnight reset.');
+      return lines.join('\n');
+    }
   }
 
   if (proposal) {
