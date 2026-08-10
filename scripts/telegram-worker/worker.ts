@@ -55,8 +55,7 @@ const ALERT_URL = `${BASE_URL}/crm/api/outreach/worker-alert`;
 const REPORT_INBOUND_URL = `${BASE_URL}/crm/api/outreach/report-inbound`;
 const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-sent`;
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
-const EFFECTIVE_IMAGE_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-image`;
-const DEFAULT_VIDEO_URL = `${BASE_URL}/crm/api/outreach/default-video-url`;
+const EFFECTIVE_MEDIA_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-media`;
 
 if (!API_ID || !API_HASH) {
   console.error('TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env. Get them from https://my.telegram.org/apps.');
@@ -204,24 +203,6 @@ async function markFailed(id: string, reason: string): Promise<void> {
   if (!resp.ok) console.error(`mark-failed ${resp.status}: ${await resp.text()}`);
 }
 
-// Fetch the send image. Returns null when the org has NO default/custom image
-// configured (server 404) — a legitimate "send text/video only" signal, not an
-// error. Any other non-OK status throws, so a transient fetch failure fails the
-// send (and retries) rather than silently dropping an image that does exist.
-async function fetchEffectiveImage(proposalId: string): Promise<{ buffer: Buffer; filename: string; kind: string } | null> {
-  const resp = await authedFetch(EFFECTIVE_IMAGE_URL(proposalId));
-  if (resp.status === 404) return null; // no image configured for this org → text/video-only send
-  if (!resp.ok) {
-    throw new Error(`effective-image ${resp.status}: ${await resp.text().catch(() => '')}`);
-  }
-  const arr = await resp.arrayBuffer();
-  const buffer = Buffer.from(arr);
-  const rawFilename = resp.headers.get('x-filename') || 'brand.jpg';
-  const filename = (() => { try { return decodeURIComponent(rawFilename); } catch { return rawFilename; } })();
-  const kind = resp.headers.get('x-image-kind') || 'unknown';
-  return { buffer, filename, kind };
-}
-
 async function reportInbound(payload: {
   phone: string;
   telegram_message_id: number;
@@ -255,29 +236,43 @@ async function writeTemp(buffer: Buffer, ext: string): Promise<string> {
   return tmpPath;
 }
 
-// Ask the server for a presigned URL to the default marketing video, download
-// the bytes, and stage them in a temp file. Returns null when no video is
-// available to send — either none is set (server 404) or R2 storage isn't
-// configured yet (server 503) — the signal to fall back to an image-only
-// send. Any other failure throws, which the send's catch turns into a
-// marked-failed proposal (never a freeze — withTimeout bounds the whole send).
-async function fetchDefaultVideo(): Promise<{ path: string; mime: string } | null> {
-  const resp = await authedFetch(DEFAULT_VIDEO_URL);
-  if (resp.status === 404) return null;
-  if (resp.status === 503) {
-    console.log('  video: R2 not configured on server — sending image-only');
-    return null;
-  }
+interface ManifestItem {
+  type: 'image' | 'video';
+  source: string;
+  id: string;
+  filename: string;
+  url: string;
+}
+
+// Fetch the ordered media manifest for a proposal, then download every item
+// and stage it as a temp file. Images are server-relative paths (fetched
+// with our bearer token, same auth as everything else); videos are already
+// absolute, presigned R2 URLs (fetched with a plain, unauthenticated
+// request, same as today's default-video-url flow). Empty manifest is a
+// valid text-only send, not an error — matches existing behavior.
+async function fetchEffectiveMedia(proposalId: string): Promise<string[]> {
+  const resp = await authedFetch(EFFECTIVE_MEDIA_URL(proposalId));
   if (!resp.ok) {
-    throw new Error(`default-video-url ${resp.status}: ${await resp.text().catch(() => '')}`);
+    throw new Error(`effective-media ${resp.status}: ${await resp.text().catch(() => '')}`);
   }
-  const meta = (await resp.json()) as { url: string; mime_type?: string };
-  const dl = await fetch(meta.url); // presigned R2 URL — no auth header
-  if (!dl.ok) throw new Error(`video download failed: HTTP ${dl.status}`);
-  const bytes = Buffer.from(await dl.arrayBuffer());
-  const filePath = await writeTemp(bytes, 'mp4'); // upload endpoint accepts mp4 only
-  console.log(`  video: ${bytes.length}B staged at ${path.basename(filePath)}`);
-  return { path: filePath, mime: meta.mime_type || 'video/mp4' };
+  const manifest = (await resp.json()) as ManifestItem[];
+  const paths: string[] = [];
+  for (const item of manifest) {
+    if (item.type === 'image') {
+      const imgResp = await authedFetch(`${BASE_URL}${item.url}`);
+      if (!imgResp.ok) throw new Error(`effective-media image fetch ${imgResp.status}: ${item.url}`);
+      const buffer = Buffer.from(await imgResp.arrayBuffer());
+      const ext = item.filename.split('.').pop() || 'jpg';
+      paths.push(await writeTemp(buffer, ext));
+    } else {
+      const dl = await fetch(item.url); // presigned R2 URL — no auth header
+      if (!dl.ok) throw new Error(`effective-media video download failed: HTTP ${dl.status}`);
+      const bytes = Buffer.from(await dl.arrayBuffer());
+      paths.push(await writeTemp(bytes, 'mp4'));
+      console.log(`  video: ${bytes.length}B staged (${item.source})`);
+    }
+  }
+  return paths;
 }
 
 // ---- Telegram (MTProto via gramjs) ----
@@ -352,8 +347,7 @@ async function sendViaMTProto(
   const phoneDigits = phone.replace(/\D/g, '');
 
   let importedPeer: Api.User | null = null;
-  let imageTmpPath: string | null = null;
-  let videoTmpPath: string | null = null;
+  let mediaPaths: string[] = [];
   try {
     const outcome = await importPhoneAsPeer(client, phoneDigits, customerName || '');
     if (outcome.kind === 'deferred') {
@@ -371,18 +365,12 @@ async function sendViaMTProto(
     // user still resolve to a phone even after we delete the contact below.
     peerPhoneByUserId.set(peer.id.toString(), phoneDigits);
 
-    // Image and video are BOTH optional. The message always exists (server
-    // falls back to the built-in template), so a send with no media is a plain
-    // text message. Media is fetched only after the peer resolves so unreachable
-    // numbers don't cost a wasted image fetch / 50MB video download.
-    const img = await fetchEffectiveImage(proposalId); // null = none configured for this org
-    if (img) console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
-    const video = await fetchDefaultVideo();
-
-    // Stage whatever media exists as temp files, image first (legitimacy proof).
-    const mediaPaths: string[] = [];
-    if (img) { imageTmpPath = await writeTemp(img.buffer, img.filename.split('.').pop() || 'jpg'); mediaPaths.push(imageTmpPath); }
-    if (video) { videoTmpPath = video.path; mediaPaths.push(videoTmpPath); }
+    // Media (images + videos, primary + extras) is fully optional. The
+    // message always exists (server falls back to the built-in template), so
+    // a send with no media is a plain text message. Fetched only after the
+    // peer resolves so unreachable numbers don't cost wasted downloads.
+    mediaPaths = await fetchEffectiveMedia(proposalId);
+    if (mediaPaths.length > 0) console.log(`  media: ${mediaPaths.length} item(s) staged`);
 
     const captionMode = message.length <= 1024;
 
@@ -430,8 +418,9 @@ async function sendViaMTProto(
     return { ok: false, reason: `mtproto exception: ${msg}` };
   } finally {
     if (importedPeer) await deleteImportedContact(client, importedPeer);
-    if (imageTmpPath) await fs.promises.unlink(imageTmpPath).catch(() => {});
-    if (videoTmpPath) await fs.promises.unlink(videoTmpPath).catch(() => {});
+    for (const p of mediaPaths) {
+      await fs.promises.unlink(p).catch(() => {});
+    }
   }
 }
 
