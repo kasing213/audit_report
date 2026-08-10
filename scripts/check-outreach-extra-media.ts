@@ -110,6 +110,17 @@ async function main(): Promise<void> {
     const bytes = Buffer.from(await bytesResp.arrayBuffer());
     check('GET default-image/extra/:id returns the uploaded bytes', bytes.equals(imgBuf), true);
 
+    // Cross-org isolation: an extra created under TEST_ORG must be invisible
+    // (404, not silently deletable) when accessed under a different org.
+    const OTHER_ORG = 'personal'; // TEST_ORG is always 'company'
+    const crossOrgGet = await fetch(`${base}/default-image/extra/${added.id}?org=${OTHER_ORG}`, { headers: authHeaders });
+    check('extra image is NOT fetchable from a different org', crossOrgGet.status, 404);
+    const crossOrgDelete = await fetch(`${base}/default-image/extra/${added.id}?org=${OTHER_ORG}`, { method: 'DELETE', headers: authHeaders });
+    const crossOrgDeleteBody = await crossOrgDelete.json() as any;
+    check('extra image is NOT deletable from a different org', crossOrgDeleteBody.removed, false);
+    const stillThere = await fetch(`${base}/default-image/extra/${added.id}`, { headers: authHeaders });
+    check('extra image still exists under its real org after the cross-org delete attempt', stillThere.status, 200);
+
     const delResp = await fetch(`${base}/default-image/extra/${added.id}`, { method: 'DELETE', headers: authHeaders });
     check('DELETE default-image/extra/:id status', delResp.status, 200);
     const delBody = await delResp.json() as any;

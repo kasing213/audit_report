@@ -484,8 +484,9 @@ router.post('/default-image/extra', imageUpload.single('file'), imageUploadError
 // (dashboard thumbnails + worker fetch via effective-media).
 router.get('/default-image/extra/:id', async (req: Request, res: Response) => {
   try {
-    const doc = await new OutreachImagesRepository().getById(req.params.id);
-    if (!doc || doc.kind !== 'extra') { res.status(404).json({ error: 'extra image not found' }); return; }
+    const org = resolveOrg(req);
+    const doc = await new OutreachImagesRepository().getExtraById(req.params.id, org);
+    if (!doc) { res.status(404).json({ error: 'extra image not found' }); return; }
     res.setHeader('Content-Type', doc.mime_type);
     res.setHeader('X-Filename', encodeURIComponent(doc.filename));
     res.setHeader('Content-Length', String(doc.size_bytes));
@@ -500,8 +501,9 @@ router.get('/default-image/extra/:id', async (req: Request, res: Response) => {
 // DELETE /crm/api/outreach/default-image/extra/:id
 router.delete('/default-image/extra/:id', async (req: Request, res: Response) => {
   try {
-    const removed = await new OutreachImagesRepository().removeExtra(req.params.id);
-    Logger.info(`outreach extra image removed by ${getSessionUser(req) || 'unknown'}: id=${req.params.id} (removed=${removed})`);
+    const org = resolveOrg(req);
+    const removed = await new OutreachImagesRepository().removeExtra(req.params.id, org);
+    Logger.info(`outreach extra image removed by ${getSessionUser(req) || 'unknown'} for org=${org}: id=${req.params.id} (removed=${removed})`);
     res.json({ ok: true, removed });
   } catch (err) {
     Logger.error('default-image/extra/:id DELETE failed', err as Error);
@@ -670,12 +672,13 @@ router.post('/default-video/extra', videoUpload.single('file'), videoUploadError
 // DELETE /crm/api/outreach/default-video/extra/:id — removes metadata + R2 object
 router.delete('/default-video/extra/:id', async (req: Request, res: Response) => {
   try {
-    const removedKey = await new OutreachVideoRepository().removeExtra(req.params.id);
+    const org = resolveOrg(req);
+    const removedKey = await new OutreachVideoRepository().removeExtra(req.params.id, org);
     if (removedKey) {
       const r2 = new R2StorageService();
       if (r2.isConfigured()) await r2.deleteObject(removedKey).catch(() => {});
     }
-    Logger.info(`outreach extra video removed by ${getSessionUser(req) || 'unknown'}: id=${req.params.id} (removed=${Boolean(removedKey)})`);
+    Logger.info(`outreach extra video removed by ${getSessionUser(req) || 'unknown'} for org=${org}: id=${req.params.id} (removed=${Boolean(removedKey)})`);
     res.json({ ok: true, removed: Boolean(removedKey) });
   } catch (err) {
     Logger.error('default-video/extra/:id DELETE failed', err as Error);

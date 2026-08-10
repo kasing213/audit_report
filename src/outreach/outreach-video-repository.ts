@@ -111,13 +111,14 @@ export class OutreachVideoRepository {
   }
 
   /** Removes the metadata doc; returns the removed r2_key (caller deletes
-   *  the R2 object) or null if no such extra existed. */
-  async removeExtra(id: string | ObjectId): Promise<string | null> {
+   *  the R2 object) or null if no such extra existed. Scoped to orgId so one
+   *  workspace can't delete another's extra video by guessing/reusing an id. */
+  async removeExtra(id: string | ObjectId, orgId: OrgId = DEFAULT_ORG): Promise<string | null> {
     try {
       const oid = typeof id === 'string' ? new ObjectId(id) : id;
-      const doc = await this.extraCol.findOne({ _id: oid });
+      const doc = await this.extraCol.findOne({ _id: oid, org_id: orgId });
       if (!doc) return null;
-      await this.extraCol.deleteOne({ _id: oid });
+      await this.extraCol.deleteOne({ _id: oid, org_id: orgId });
       return doc.r2_key;
     } catch {
       return null;

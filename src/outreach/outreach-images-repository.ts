@@ -143,13 +143,26 @@ export class OutreachImagesRepository {
     return oid;
   }
 
-  async removeExtra(id: string | ObjectId): Promise<boolean> {
+  /** Scoped to orgId so one workspace can't delete another's extra image by
+   *  guessing/reusing an id (org is otherwise just a routing dimension in
+   *  this app, but delete is destructive enough to be worth the check). */
+  async removeExtra(id: string | ObjectId, orgId: OrgId = DEFAULT_ORG): Promise<boolean> {
     try {
       const oid = typeof id === 'string' ? new ObjectId(id) : id;
-      const result = await this.col.deleteOne({ _id: oid, kind: 'extra' } as any);
+      const result = await this.col.deleteOne({ _id: oid, kind: 'extra', org_id: orgId } as any);
       return result.deletedCount === 1;
     } catch {
       return false;
+    }
+  }
+
+  /** Org-scoped lookup for an extra image (bytes route + worker fetch). */
+  async getExtraById(id: string | ObjectId, orgId: OrgId = DEFAULT_ORG): Promise<OutreachImageDocument | null> {
+    try {
+      const oid = typeof id === 'string' ? new ObjectId(id) : id;
+      return await this.col.findOne({ _id: oid, kind: 'extra', org_id: orgId } as any);
+    } catch {
+      return null;
     }
   }
 
