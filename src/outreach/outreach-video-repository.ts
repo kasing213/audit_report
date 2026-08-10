@@ -6,7 +6,7 @@
  * Mongo collection as one fixed doc `_id: 'default'`. Mirrors the shape of
  * OutreachImagesRepository minus the Binary `data` field.
  */
-import { Collection } from 'mongodb';
+import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
 import { OrgId, DEFAULT_ORG, defaultDocKey } from './orgs';
@@ -21,14 +21,27 @@ export interface OutreachVideoDocument {
   uploaded_by: string;
 }
 
+export interface OutreachExtraVideoDocument {
+  _id: ObjectId;
+  org_id: string;
+  r2_key: string;
+  filename: string;
+  mime_type: string;
+  size_bytes: number;
+  uploaded_at: Date;
+  uploaded_by: string;
+}
+
 const COLLECTION = 'outreach_media';
 
 export class OutreachVideoRepository {
   private col: Collection<OutreachVideoDocument>;
+  private extraCol: Collection<OutreachExtraVideoDocument>;
 
   constructor() {
     const db = DatabaseConnection.getInstance().getDb();
     this.col = db.collection<OutreachVideoDocument>(COLLECTION);
+    this.extraCol = db.collection<OutreachExtraVideoDocument>(COLLECTION);
   }
 
   async getDefault(orgId: OrgId = DEFAULT_ORG): Promise<OutreachVideoDocument | null> {
@@ -68,5 +81,51 @@ export class OutreachVideoRepository {
       Logger.warn('outreach_media clearDefault: default doc vanished between read and delete');
     }
     return previous.r2_key;
+  }
+
+  /** List this org's extra (additional) default videos, oldest first. */
+  async listExtras(orgId: OrgId = DEFAULT_ORG): Promise<OutreachExtraVideoDocument[]> {
+    return this.extraCol.find({ org_id: orgId }).sort({ _id: 1 }).toArray();
+  }
+
+  async addExtra(input: {
+    r2_key: string;
+    filename: string;
+    mime_type: string;
+    size_bytes: number;
+    uploaded_by: string;
+  }, orgId: OrgId = DEFAULT_ORG): Promise<ObjectId> {
+    const oid = new ObjectId();
+    const doc: OutreachExtraVideoDocument = {
+      _id: oid,
+      org_id: orgId,
+      r2_key: input.r2_key,
+      filename: input.filename,
+      mime_type: input.mime_type,
+      size_bytes: input.size_bytes,
+      uploaded_at: new Date(),
+      uploaded_by: input.uploaded_by,
+    };
+    await this.extraCol.insertOne(doc);
+    return oid;
+  }
+
+  /** Removes the metadata doc; returns the removed r2_key (caller deletes
+   *  the R2 object) or null if no such extra existed. */
+  async removeExtra(id: string | ObjectId): Promise<string | null> {
+    try {
+      const oid = typeof id === 'string' ? new ObjectId(id) : id;
+      const doc = await this.extraCol.findOne({ _id: oid });
+      if (!doc) return null;
+      await this.extraCol.deleteOne({ _id: oid });
+      return doc.r2_key;
+    } catch {
+      return null;
+    }
+  }
+
+  async sumExtraBytes(orgId: OrgId = DEFAULT_ORG): Promise<number> {
+    const docs = await this.extraCol.find({ org_id: orgId }).project({ size_bytes: 1 }).toArray();
+    return docs.reduce((sum, d) => sum + (d.size_bytes || 0), 0);
   }
 }
