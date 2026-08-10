@@ -1146,6 +1146,67 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
   }
 });
 
+// GET /crm/api/outreach/:id/effective-media — worker-only. Ordered fetch
+// manifest for everything to send with this proposal: images (custom
+// override if set, else primary + extras) then videos (primary + extras).
+// Reuses /:id/effective-image for the single "primary-or-custom" image entry
+// (it already implements that exact resolution); only extras get new routes.
+router.get('/:id/effective-media', async (req: Request, res: Response) => {
+  try {
+    const proposalRepo = new OutreachRepository();
+    const proposal = await proposalRepo.getById(req.params.id);
+    if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
+
+    const org = normalizeOrg(proposal.org_id);
+    const imagesRepo = new OutreachImagesRepository();
+    const videoRepo = new OutreachVideoRepository();
+
+    type ManifestItem = { type: 'image' | 'video'; source: string; id: string; filename: string; url: string };
+    const items: ManifestItem[] = [];
+
+    // Custom override, if it resolves — /:id/effective-image already returns
+    // the custom bytes when custom_image_id is set (with its own fallback
+    // logging), so we can just check existence here to decide whether to
+    // also list primary/extra images.
+    let usedCustom = false;
+    if (proposal.custom_image_id) {
+      const custom = await imagesRepo.getById(proposal.custom_image_id);
+      if (custom) {
+        items.push({ type: 'image', source: 'custom', id: String(custom._id), filename: custom.filename, url: `/crm/api/outreach/${req.params.id}/effective-image` });
+        usedCustom = true;
+      }
+    }
+    if (!usedCustom) {
+      const primary = await imagesRepo.getDefault(org);
+      if (primary) items.push({ type: 'image', source: 'primary', id: String(primary._id), filename: primary.filename, url: `/crm/api/outreach/${req.params.id}/effective-image` });
+      const extras = await imagesRepo.listExtras(org);
+      for (const e of extras) {
+        items.push({ type: 'image', source: 'extra', id: String(e._id), filename: e.filename, url: `/crm/api/outreach/default-image/extra/${e._id}` });
+      }
+    }
+
+    const r2 = new R2StorageService();
+    if (r2.isConfigured()) {
+      const primaryVideo = await videoRepo.getDefault(org);
+      if (primaryVideo) {
+        const url = await r2.generatePresignedGet(primaryVideo.r2_key);
+        items.push({ type: 'video', source: 'primary', id: 'primary', filename: primaryVideo.filename, url });
+      }
+      const extraVideos = await videoRepo.listExtras(org);
+      for (const v of extraVideos) {
+        const url = await r2.generatePresignedGet(v.r2_key);
+        items.push({ type: 'video', source: 'extra', id: String(v._id), filename: v.filename, url });
+      }
+    }
+
+    Logger.info(`effective-media[${req.params.id}] org=${org} items=${items.length} types=${items.map((i) => i.type[0]).join('')}`);
+    res.json(items);
+  } catch (err) {
+    Logger.error('effective-media GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
 // GET /crm/api/outreach/failed-numbers — phone-level failed/suppressed list (CRM,
 // developer/manager). Deduped by phone; nothing is ever deleted.
 router.get('/failed-numbers', async (req: Request, res: Response) => {
