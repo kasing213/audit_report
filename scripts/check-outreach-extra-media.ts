@@ -16,6 +16,8 @@ import { OutreachImagesRepository } from '../src/outreach/outreach-images-reposi
 import { OutreachVideoRepository } from '../src/outreach/outreach-video-repository';
 import { getMediaUsage, checkBudget, MEDIA_BUDGET_BYTES } from '../src/outreach/outreach-media-budget';
 import { ObjectId } from 'mongodb';
+import express from 'express';
+import outreachRoutes from '../src/api/outreach-routes';
 
 const TEST_ORG = 'company';
 let failures = 0;
@@ -74,6 +76,74 @@ async function main(): Promise<void> {
   // A fake ObjectId lookup returns null cleanly (no throw) for video extras.
   const missingVideoRemove = await videoRepo.removeExtra(new ObjectId());
   check('removeExtra returns null for a non-existent id', missingVideoRemove, null);
+
+  // --- Task 2: route layer (extra images) ---
+  if (!process.env.DASHBOARD_TOKEN) process.env.DASHBOARD_TOKEN = 'check-script-dashboard-token';
+  const app = express();
+  app.use('/crm/api/outreach', outreachRoutes);
+  const server = await new Promise<import('http').Server>((resolve) => {
+    const listening = app.listen(0, '127.0.0.1', () => resolve(listening));
+  });
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('failed to bind check server');
+  const base = `http://127.0.0.1:${address.port}/crm/api/outreach`;
+  const authHeaders = { Authorization: `Bearer ${process.env.DASHBOARD_TOKEN}` };
+
+  try {
+    const fd = new FormData();
+    fd.append('file', new Blob([imgBuf], { type: 'image/jpeg' }), 'route-test.jpg');
+    const addResp = await fetch(`${base}/default-image/extra?org=${TEST_ORG}`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: fd,
+    });
+    check('POST default-image/extra status', addResp.status, 200);
+    const added = await addResp.json() as any;
+    check('POST default-image/extra returns an id', typeof added.id === 'string' && added.id.length > 0, true);
+
+    const listResp = await fetch(`${base}/default-image/extra?org=${TEST_ORG}`, { headers: authHeaders });
+    const list = await listResp.json() as any[];
+    check('GET default-image/extra lists the added item', list.some((d: any) => d.id === added.id), true);
+
+    const bytesResp = await fetch(`${base}/default-image/extra/${added.id}`, { headers: authHeaders });
+    check('GET default-image/extra/:id status', bytesResp.status, 200);
+    const bytes = Buffer.from(await bytesResp.arrayBuffer());
+    check('GET default-image/extra/:id returns the uploaded bytes', bytes.equals(imgBuf), true);
+
+    const delResp = await fetch(`${base}/default-image/extra/${added.id}`, { method: 'DELETE', headers: authHeaders });
+    check('DELETE default-image/extra/:id status', delResp.status, 200);
+    const delBody = await delResp.json() as any;
+    check('DELETE default-image/extra/:id reports removed', delBody.removed, true);
+
+    const bytesAfterDelete = await fetch(`${base}/default-image/extra/${added.id}`, { headers: authHeaders });
+    check('extra image is gone after delete', bytesAfterDelete.status, 404);
+
+    const r2Configured = Boolean(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY && process.env.R2_SECRET_KEY && process.env.R2_BUCKET);
+    if (r2Configured) {
+      const vidBuf = Buffer.from('fake-mp4-bytes-for-testing');
+      const vfd = new FormData();
+      vfd.append('file', new Blob([vidBuf], { type: 'video/mp4' }), 'route-test.mp4');
+      const vAddResp = await fetch(`${base}/default-video/extra?org=${TEST_ORG}`, { method: 'POST', headers: authHeaders, body: vfd });
+      check('POST default-video/extra status', vAddResp.status, 200);
+      const vAdded = await vAddResp.json() as any;
+
+      const vListResp = await fetch(`${base}/default-video/extra?org=${TEST_ORG}`, { headers: authHeaders });
+      const vList = await vListResp.json() as any[];
+      check('GET default-video/extra lists the added item', vList.some((d: any) => d.id === vAdded.id), true);
+
+      const vDelResp = await fetch(`${base}/default-video/extra/${vAdded.id}`, { method: 'DELETE', headers: authHeaders });
+      check('DELETE default-video/extra/:id status', vDelResp.status, 200);
+    } else {
+      console.log('SKIP  extra-video route checks (R2 env vars not set in this environment)');
+    }
+
+    const usageResp2 = await fetch(`${base}/default-media/usage?org=${TEST_ORG}`, { headers: authHeaders });
+    check('GET default-media/usage status', usageResp2.status, 200);
+    const usageBody = await usageResp2.json() as any;
+    check('GET default-media/usage returns budget_bytes', usageBody.budget_bytes, MEDIA_BUDGET_BYTES);
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+  }
 
   // Cleanup any leftovers (defensive — steps above already clean as they go).
   for (const fn of cleanup) await fn();
