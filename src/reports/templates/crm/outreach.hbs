@@ -187,6 +187,50 @@
     border-color: var(--yellow);
     color: var(--yellow);
   }
+  .schedule-card {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 0.8rem;
+    margin-bottom: 0.75rem;
+    padding: 0.75rem 0.85rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: var(--radius);
+  }
+  .schedule-clock {
+    display: grid;
+    place-items: center;
+    width: 2.3rem;
+    height: 2.3rem;
+    border-radius: 50%;
+    background: var(--accent-dim);
+    color: var(--accent);
+    font-family: var(--font-mono);
+    font-size: 1rem;
+  }
+  .schedule-copy { min-width: 0; }
+  .schedule-title { color: var(--text); font-size: 0.9rem; font-weight: 600; }
+  .schedule-help { color: var(--text-muted); font-size: 0.76rem; margin-top: 0.15rem; }
+  .schedule-controls { display: flex; align-items: center; gap: 0.5rem; }
+  .schedule-time {
+    width: 7.4rem;
+    padding: 0.42rem 0.55rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: var(--bg);
+    color: var(--text);
+    color-scheme: dark;
+    font: 600 0.85rem var(--font-mono);
+    outline: none;
+  }
+  .schedule-time:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim); }
+  @media (max-width: 620px) {
+    .schedule-card { grid-template-columns: auto minmax(0, 1fr); }
+    .schedule-controls { grid-column: 1 / -1; }
+    .schedule-time { flex: 1 1 auto; width: auto; }
+  }
   .pause-banner {
     display: none;
     background: var(--yellow-dim);
@@ -296,19 +340,64 @@
   .image-bar .counter.green { color: var(--green); }
   .image-bar .counter.yellow { color: var(--yellow); }
   .image-bar .counter.red { color: var(--red); }
+  .extra-media-strip {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.5rem;
+    align-items: center;
+  }
+  .extra-media-item {
+    position: relative;
+    width: 48px;
+    height: 48px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    background: var(--bg);
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.9rem;
+  }
+  .extra-media-item img { width: 100%; height: 100%; object-fit: cover; }
+  .extra-media-item .remove-btn {
+    position: absolute;
+    top: -6px;
+    right: -6px;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    background: var(--red);
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    font-size: 0.7rem;
+    line-height: 1;
+  }
+  .media-budget-readout {
+    font-family: var(--font-mono);
+    font-size: 0.78rem;
+    color: var(--text-muted);
+    margin-bottom: 0.5rem;
+  }
 </style>
 
 <div class="outreach-wrap">
+  <div class="media-budget-readout" id="media-budget-readout">Loading media usage…</div>
   <div class="default-image-card">
     <img class="default-image-thumb" id="default-image-thumb" alt="Default brand image" onclick="openLightbox()">
     <div class="default-image-meta">
       <div class="name" id="default-image-name">Loading…</div>
       <div class="sub" id="default-image-sub"></div>
+      <div class="extra-media-strip" id="extra-images-strip"></div>
     </div>
     <div class="default-image-actions">
       <input type="file" id="default-image-file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadDefaultImage(event)">
       <button class="btn btn-primary" onclick="document.getElementById('default-image-file').click()">Replace image</button>
       <button class="btn btn-ghost" id="default-image-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultImage()">Remove</button>
+      <input type="file" id="extra-image-file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="addExtraImage(event)">
+      <button class="btn btn-ghost" id="add-extra-image-btn" onclick="document.getElementById('extra-image-file').click()">+ Add image</button>
     </div>
   </div>
   <div class="default-image-card" id="default-video-card">
@@ -316,11 +405,14 @@
     <div class="default-image-meta">
       <div class="name" id="default-video-name">Loading…</div>
       <div class="sub" id="default-video-sub"></div>
+      <div class="extra-media-strip" id="extra-videos-strip"></div>
     </div>
     <div class="default-image-actions">
       <input type="file" id="default-video-file" accept="video/mp4" style="display:none" onchange="uploadDefaultVideo(event)">
       <button class="btn btn-primary" onclick="document.getElementById('default-video-file').click()">Replace video</button>
       <button class="btn btn-ghost" id="default-video-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultVideo()">Remove</button>
+      <input type="file" id="extra-video-file" accept="video/mp4" style="display:none" onchange="addExtraVideo(event)">
+      <button class="btn btn-ghost" id="add-extra-video-btn" onclick="document.getElementById('extra-video-file').click()">+ Add video</button>
     </div>
   </div>
   <div class="default-image-card" id="default-text-card" style="align-items:flex-start">
@@ -336,6 +428,17 @@
           <button class="btn btn-primary" id="default-text-save" onclick="saveDefaultText()">Save</button>
         </div>
       </div>
+    </div>
+  </div>
+  <div class="schedule-card" id="outreach-schedule-card">
+    <div class="schedule-clock" aria-hidden="true">13</div>
+    <div class="schedule-copy">
+      <label class="schedule-title" for="outreach-daily-time">Daily outreach time</label>
+      <div class="schedule-help" id="outreach-schedule-help">Cambodia time · applies to Company and Personal</div>
+    </div>
+    <div class="schedule-controls">
+      <input class="schedule-time" type="time" id="outreach-daily-time" step="60" aria-describedby="outreach-schedule-help">
+      <button class="btn btn-primary" id="outreach-schedule-save" onclick="saveOutreachSchedule()">Save time</button>
     </div>
   </div>
   <div class="lightbox-backdrop" id="lightbox" onclick="closeLightbox()">
@@ -501,6 +604,120 @@
     } catch { showToast('Remove failed', 'error'); }
   }
 
+  const EXTRA_IMAGE_URL = API + '/default-image/extra';
+  const EXTRA_VIDEO_URL = API + '/default-video/extra';
+  const MEDIA_USAGE_URL = API + '/default-media/usage';
+
+  async function refreshMediaUsage() {
+    const el = document.getElementById('media-budget-readout');
+    try {
+      const resp = await fetch(MEDIA_USAGE_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
+      if (!resp.ok) throw new Error('GET default-media/usage ' + resp.status);
+      const data = await resp.json();
+      const usedMb = (data.total_bytes / (1024 * 1024)).toFixed(1);
+      const budgetMb = Math.round(data.budget_bytes / (1024 * 1024));
+      el.textContent = usedMb + ' / ' + budgetMb + ' MB used (shared across all default images + videos)';
+      const overBudget = data.total_bytes >= data.budget_bytes;
+      const addImgBtn = document.getElementById('add-extra-image-btn');
+      const addVidBtn = document.getElementById('add-extra-video-btn');
+      if (addImgBtn) addImgBtn.disabled = overBudget;
+      if (addVidBtn) addVidBtn.disabled = overBudget;
+      if (addImgBtn) addImgBtn.title = overBudget ? 'Media budget full — remove something first' : '';
+      if (addVidBtn) addVidBtn.title = overBudget ? 'Media budget full — remove something first' : '';
+    } catch (err) {
+      console.error('refreshMediaUsage', err);
+      el.textContent = 'Media usage unavailable';
+    }
+  }
+
+  async function refreshExtraImages() {
+    const strip = document.getElementById('extra-images-strip');
+    try {
+      const resp = await fetch(EXTRA_IMAGE_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
+      if (!resp.ok) throw new Error('GET default-image/extra ' + resp.status);
+      const items = await resp.json();
+      strip.innerHTML = items.map((it) =>
+        '<div class="extra-media-item">' +
+          '<img src="' + EXTRA_IMAGE_URL + '/' + it.id + '?cb=' + Date.now() + '" alt="' + esc(it.filename) + '">' +
+          '<button class="remove-btn" onclick="removeExtraImage(\'' + it.id + '\')" title="Remove">×</button>' +
+        '</div>'
+      ).join('');
+    } catch (err) {
+      console.error('refreshExtraImages', err);
+    }
+  }
+
+  async function addExtraImage(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    showToast('Adding image…', 'success');
+    try {
+      const resp = await fetch(EXTRA_IMAGE_URL, { method: 'POST', credentials: 'same-origin', body: fd });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) { showToast('Image added', 'success'); refreshExtraImages(); refreshMediaUsage(); }
+      else { showToast(data.error || ('Add failed: ' + resp.status), 'error'); }
+    } catch (err) {
+      showToast('Add failed', 'error');
+    } finally {
+      ev.target.value = '';
+    }
+  }
+
+  async function removeExtraImage(id) {
+    if (!confirm('Remove this extra image?')) return;
+    try {
+      const resp = await fetch(EXTRA_IMAGE_URL + '/' + id, { method: 'DELETE', credentials: 'same-origin' });
+      if (resp.ok) { showToast('Image removed', 'success'); refreshExtraImages(); refreshMediaUsage(); }
+      else showToast('Remove failed', 'error');
+    } catch { showToast('Remove failed', 'error'); }
+  }
+
+  async function refreshExtraVideos() {
+    const strip = document.getElementById('extra-videos-strip');
+    try {
+      const resp = await fetch(EXTRA_VIDEO_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
+      if (!resp.ok) throw new Error('GET default-video/extra ' + resp.status);
+      const items = await resp.json();
+      strip.innerHTML = items.map((it) => {
+        const sizeMb = (Number(it.size_bytes || 0) / (1024 * 1024)).toFixed(1);
+        return '<div class="extra-media-item" title="' + esc(it.filename) + ' · ' + sizeMb + ' MB">🎬' +
+          '<button class="remove-btn" onclick="removeExtraVideo(\'' + it.id + '\')" title="Remove">×</button>' +
+        '</div>';
+      }).join('');
+    } catch (err) {
+      console.error('refreshExtraVideos', err);
+    }
+  }
+
+  async function addExtraVideo(ev) {
+    const file = ev.target.files && ev.target.files[0];
+    if (!file) return;
+    const fd = new FormData();
+    fd.append('file', file);
+    showToast('Adding video… (may take a moment)', 'success');
+    try {
+      const resp = await fetch(EXTRA_VIDEO_URL, { method: 'POST', credentials: 'same-origin', body: fd });
+      const data = await resp.json().catch(() => ({}));
+      if (resp.ok) { showToast('Video added', 'success'); refreshExtraVideos(); refreshMediaUsage(); }
+      else { showToast(data.error || ('Add failed: ' + resp.status), 'error'); }
+    } catch (err) {
+      showToast('Add failed', 'error');
+    } finally {
+      ev.target.value = '';
+    }
+  }
+
+  async function removeExtraVideo(id) {
+    if (!confirm('Remove this extra video?')) return;
+    try {
+      const resp = await fetch(EXTRA_VIDEO_URL + '/' + id, { method: 'DELETE', credentials: 'same-origin' });
+      if (resp.ok) { showToast('Video removed', 'success'); refreshExtraVideos(); refreshMediaUsage(); }
+      else showToast('Remove failed', 'error');
+    } catch { showToast('Remove failed', 'error'); }
+  }
+
   const DEFAULT_TEXT_URL = API + '/default-text';
 
   function updateDefaultTextCounter() {
@@ -559,6 +776,70 @@
       if (resp.ok) { showToast('Reset to default', 'success'); refreshDefaultText(); }
       else showToast('Reset failed', 'error');
     } catch { showToast('Reset failed', 'error'); }
+  }
+
+  const SCHEDULE_SETTINGS_URL = API + '/scheduler/settings';
+
+  function renderOutreachSchedule(data) {
+    const input = document.getElementById('outreach-daily-time');
+    const help = document.getElementById('outreach-schedule-help');
+    const clock = document.querySelector('#outreach-schedule-card .schedule-clock');
+    const time = data.daily_time || '';
+    const timezoneLabel = data.timezone === 'Asia/Phnom_Penh'
+      ? 'Cambodia time'
+      : (data.timezone || 'configured timezone');
+    input.value = time;
+    clock.textContent = time ? time.slice(0, 2) : '--';
+    if (!time) {
+      help.textContent = 'The current cron is not a single daily time. Choose a time to replace it for both sending numbers.';
+    } else if (data.enabled) {
+      help.textContent = timezoneLabel + ' · applies to Company and Personal · active now';
+    } else {
+      help.textContent = timezoneLabel + ' · saved for both sending numbers · auto-scan is disabled';
+    }
+  }
+
+  async function refreshOutreachSchedule() {
+    const help = document.getElementById('outreach-schedule-help');
+    try {
+      const resp = await fetch(SCHEDULE_SETTINGS_URL, { credentials: 'same-origin' });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || ('Load failed: ' + resp.status));
+      renderOutreachSchedule(data);
+    } catch (err) {
+      help.textContent = 'Could not load the daily outreach time. Refresh and try again.';
+      console.error('refreshOutreachSchedule', err);
+    }
+  }
+
+  async function saveOutreachSchedule() {
+    const input = document.getElementById('outreach-daily-time');
+    const button = document.getElementById('outreach-schedule-save');
+    if (!/^\d{2}:\d{2}$/.test(input.value)) {
+      showToast('Choose a valid daily outreach time', 'error');
+      return;
+    }
+
+    button.disabled = true;
+    button.textContent = 'Saving…';
+    try {
+      const resp = await fetch(SCHEDULE_SETTINGS_URL, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ daily_time: input.value }),
+      });
+      const data = await resp.json().catch(() => ({}));
+      if (!resp.ok) throw new Error(data.error || ('Save failed: ' + resp.status));
+      renderOutreachSchedule(data);
+      const timezoneLabel = data.timezone === 'Asia/Phnom_Penh' ? 'Cambodia time' : data.timezone;
+      showToast('Daily outreach time saved for ' + data.daily_time + ' ' + timezoneLabel, 'success');
+    } catch (err) {
+      showToast(err.message || 'Schedule save failed', 'error');
+    } finally {
+      button.disabled = false;
+      button.textContent = 'Save time';
+    }
   }
 
   function openLightbox() {
@@ -964,7 +1245,11 @@
   document.getElementById('default-text-input').addEventListener('input', updateDefaultTextCounter);
   refreshDefaultImage();
   refreshDefaultVideo();
+  refreshExtraImages();
+  refreshExtraVideos();
+  refreshMediaUsage();
   refreshDefaultText();
+  refreshOutreachSchedule();
   startWorkerStatusPoll();
   loadList();
 </script>
