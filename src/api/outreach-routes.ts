@@ -25,21 +25,23 @@ import { notifyOutreachFailure, AlertKind } from '../outreach/outreach-alerts';
 import { notifyInboundReply } from '../outreach/inbound-alerts';
 import { InboundMessagesRepository } from '../database/inbound-messages-repository';
 import { ObjectId } from 'mongodb';
+import { MEDIA_BUDGET_BYTES, getMediaUsage, checkBudget } from '../outreach/outreach-media-budget';
 
 const router = express.Router();
 const LEASE_MS = 5 * 60 * 1000; // 5 min
 const DEFAULT_DAILY_CAP = 15;
 const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
-const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
+// Per-file multer ceiling matches the shared budget — a single file can never
+// legitimately exceed it. The real gate is checkBudget() inside each route,
+// which accounts for everything else already uploaded for the org.
+const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MEDIA_BUDGET_BYTES } });
 
 const ALLOWED_VIDEO_MIME = ['video/mp4'];
-const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50MB
-const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_VIDEO_BYTES } });
+const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MEDIA_BUDGET_BYTES } });
 
 function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
   if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
-    res.status(413).json({ error: `File exceeds ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB limit` });
+    res.status(413).json({ error: `File exceeds the ${Math.round(MEDIA_BUDGET_BYTES / 1024 / 1024)} MB shared media budget` });
     return;
   }
   if (err) {
@@ -52,7 +54,7 @@ function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: N
 
 function videoUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
   if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
-    res.status(413).json({ error: `File exceeds ${Math.round(MAX_VIDEO_BYTES / 1024 / 1024)} MB limit` });
+    res.status(413).json({ error: `File exceeds the ${Math.round(MEDIA_BUDGET_BYTES / 1024 / 1024)} MB shared media budget` });
     return;
   }
   if (err) {
@@ -141,7 +143,7 @@ router.get('/worker-status', async (req: Request, res: Response) => {
 // POST /crm/api/outreach/scheduler/run-once — fire the daily scan synchronously
 // for testing. Same code path the cron tick uses (per-org top-up against each
 // workspace's queue target and auto-approve setting, then posts the audit-chat
-// summary), so it exercises the end-to-end flow without waiting for 9 AM.
+// summary), so it exercises the end-to-end flow without waiting for the daily time.
 router.post('/scheduler/run-once', async (_req: Request, res: Response) => {
   const sched = getRegisteredOutreachScheduler();
   if (!sched) {
@@ -287,6 +289,23 @@ router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res
     const reason = typeof body.reason === 'string' ? body.reason : 'unspecified';
     const workerId = typeof body.worker_id === 'string' ? body.worker_id : undefined;
     const org = resolveOrg(req);
+
+    if (kind === 'daily-cap-reached') {
+      // Personal DM only — never the boss/dev audit group. Unlike the other
+      // worker-level kinds (which fall back to AUDIT_CHAT_ID on purpose so a
+      // real failure is never silently dropped), a routine cap-reached ping
+      // with nowhere configured to go should just be dropped.
+      const dmChatId = process.env.WORKER_ALERT_CHAT_ID;
+      if (!dmChatId) {
+        Logger.warn('outreach worker-alert: WORKER_ALERT_CHAT_ID not set, dropping daily-cap-reached alert');
+        res.json({ ok: true });
+        return;
+      }
+      await notifyOutreachFailure(null, kind, { reason, worker_id: workerId, org, chatId: dmChatId });
+      res.json({ ok: true });
+      return;
+    }
+
     await notifyOutreachFailure(null, kind, { reason, worker_id: workerId, org });
     if (kind === 'session-expired' || kind === 'worker-fatal') {
       await new OutreachWorkerStateRepository().setLastError(org, `${kind}: ${reason}`);
@@ -405,8 +424,20 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
       return;
     }
     const org = resolveOrg(req);
+    const imagesRepo = new OutreachImagesRepository();
+    const existing = await imagesRepo.getDefault(org);
+    const budget = await checkBudget(org, req.file.size, existing?.size_bytes || 0);
+    if (!budget.ok) {
+      res.status(413).json({
+        error: `Uploading this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
+        total_bytes: budget.totalBytes,
+        budget_bytes: budget.budgetBytes,
+        attempted_bytes: budget.attemptedBytes,
+      });
+      return;
+    }
     const uploadedBy = getSessionUser(req) || 'unknown';
-    await new OutreachImagesRepository().setDefault({
+    await imagesRepo.setDefault({
       filename: req.file.originalname,
       mime_type: req.file.mimetype,
       buffer: req.file.buffer,
@@ -416,6 +447,91 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
     res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
     Logger.error('default-image POST failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-image/extra — list this org's extra images
+router.get('/default-image/extra', async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const docs = await new OutreachImagesRepository().listExtras(org);
+    res.json(docs.map((d) => ({
+      id: String(d._id),
+      filename: d.filename,
+      mime_type: d.mime_type,
+      size_bytes: d.size_bytes,
+      uploaded_at: d.uploaded_at,
+      uploaded_by: d.uploaded_by,
+    })));
+  } catch (err) {
+    Logger.error('default-image/extra GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/default-image/extra — add an extra image (does not
+// replace the primary default; independently removable).
+router.post('/default-image/extra', imageUpload.single('file'), imageUploadErrorHandler, async (req: Request, res: Response) => {
+  try {
+    if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
+    if (!ALLOWED_IMAGE_MIME.includes(req.file.mimetype)) {
+      res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use JPEG, PNG, or WebP` });
+      return;
+    }
+    const org = resolveOrg(req);
+    const budget = await checkBudget(org, req.file.size);
+    if (!budget.ok) {
+      res.status(413).json({
+        error: `Adding this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
+        total_bytes: budget.totalBytes,
+        budget_bytes: budget.budgetBytes,
+        attempted_bytes: budget.attemptedBytes,
+      });
+      return;
+    }
+    const uploadedBy = getSessionUser(req) || 'unknown';
+    const id = await new OutreachImagesRepository().addExtra({
+      filename: req.file.originalname,
+      mime_type: req.file.mimetype,
+      buffer: req.file.buffer,
+      uploaded_by: uploadedBy,
+    }, org);
+    Logger.info(`outreach extra image added by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) id=${id}`);
+    res.json({ ok: true, id: String(id), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
+  } catch (err) {
+    Logger.error('default-image/extra POST failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-image/extra/:id — bytes for one extra image
+// (dashboard thumbnails + worker fetch via effective-media).
+router.get('/default-image/extra/:id', async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const doc = await new OutreachImagesRepository().getExtraById(req.params.id, org);
+    if (!doc) { res.status(404).json({ error: 'extra image not found' }); return; }
+    res.setHeader('Content-Type', doc.mime_type);
+    res.setHeader('X-Filename', encodeURIComponent(doc.filename));
+    res.setHeader('Content-Length', String(doc.size_bytes));
+    res.setHeader('Cache-Control', 'private, max-age=60');
+    res.send(doc.data.buffer);
+  } catch (err) {
+    Logger.error('default-image/extra/:id GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// DELETE /crm/api/outreach/default-image/extra/:id
+router.delete('/default-image/extra/:id', async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const removed = await new OutreachImagesRepository().removeExtra(req.params.id, org);
+    Logger.info(`outreach extra image removed by ${getSessionUser(req) || 'unknown'} for org=${org}: id=${req.params.id} (removed=${removed})`);
+    res.json({ ok: true, removed });
+  } catch (err) {
+    Logger.error('default-image/extra/:id DELETE failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
@@ -469,9 +585,21 @@ router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandle
     }
 
     const org = resolveOrg(req);
+    const videoRepo = new OutreachVideoRepository();
+    const existingVideo = await videoRepo.getDefault(org);
+    const budget = await checkBudget(org, req.file.size, existingVideo?.size_bytes || 0);
+    if (!budget.ok) {
+      res.status(413).json({
+        error: `Uploading this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
+        total_bytes: budget.totalBytes,
+        budget_bytes: budget.budgetBytes,
+        attempted_bytes: budget.attemptedBytes,
+      });
+      return;
+    }
     const uploadedBy = getSessionUser(req) || 'unknown';
     const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
-    const previousKey = await new OutreachVideoRepository().setDefault({
+    const previousKey = await videoRepo.setDefault({
       r2_key: key,
       filename: req.file.originalname,
       mime_type: req.file.mimetype,
@@ -501,6 +629,97 @@ router.delete('/default-video', async (req: Request, res: Response) => {
     res.json({ ok: true, removed: Boolean(removedKey) });
   } catch (err) {
     Logger.error('default-video DELETE failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-video/extra — list this org's extra videos
+router.get('/default-video/extra', async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const docs = await new OutreachVideoRepository().listExtras(org);
+    res.json(docs.map((d) => ({
+      id: String(d._id),
+      filename: d.filename,
+      mime_type: d.mime_type,
+      size_bytes: d.size_bytes,
+      uploaded_at: d.uploaded_at,
+      uploaded_by: d.uploaded_by,
+    })));
+  } catch (err) {
+    Logger.error('default-video/extra GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// POST /crm/api/outreach/default-video/extra — add an extra video (R2 +
+// metadata doc). Does not replace the primary default video.
+router.post('/default-video/extra', videoUpload.single('file'), videoUploadErrorHandler, async (req: Request, res: Response) => {
+  try {
+    const r2 = new R2StorageService();
+    if (!r2.isConfigured()) {
+      res.status(503).json({ error: 'R2 storage not configured (set R2_ACCOUNT_ID / R2_ACCESS_KEY / R2_SECRET_KEY / R2_BUCKET)' });
+      return;
+    }
+    if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
+    if (!ALLOWED_VIDEO_MIME.includes(req.file.mimetype)) {
+      res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use MP4 (video/mp4)` });
+      return;
+    }
+    const org = resolveOrg(req);
+    const budget = await checkBudget(org, req.file.size);
+    if (!budget.ok) {
+      res.status(413).json({
+        error: `Adding this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
+        total_bytes: budget.totalBytes,
+        budget_bytes: budget.budgetBytes,
+        attempted_bytes: budget.attemptedBytes,
+      });
+      return;
+    }
+    const uploadedBy = getSessionUser(req) || 'unknown';
+    const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
+    const id = await new OutreachVideoRepository().addExtra({
+      r2_key: key,
+      filename: req.file.originalname,
+      mime_type: req.file.mimetype,
+      size_bytes: req.file.size,
+      uploaded_by: uploadedBy,
+    }, org);
+    Logger.info(`outreach extra video added by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) key=${key} id=${id}`);
+    res.json({ ok: true, id: String(id), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
+  } catch (err) {
+    Logger.error('default-video/extra POST failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// DELETE /crm/api/outreach/default-video/extra/:id — removes metadata + R2 object
+router.delete('/default-video/extra/:id', async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const removedKey = await new OutreachVideoRepository().removeExtra(req.params.id, org);
+    if (removedKey) {
+      const r2 = new R2StorageService();
+      if (r2.isConfigured()) await r2.deleteObject(removedKey).catch(() => {});
+    }
+    Logger.info(`outreach extra video removed by ${getSessionUser(req) || 'unknown'} for org=${org}: id=${req.params.id} (removed=${Boolean(removedKey)})`);
+    res.json({ ok: true, removed: Boolean(removedKey) });
+  } catch (err) {
+    Logger.error('default-video/extra/:id DELETE failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/default-media/usage — running total for the
+// dashboard's "X / 50 MB used" readout.
+router.get('/default-media/usage', async (req: Request, res: Response) => {
+  try {
+    const org = resolveOrg(req);
+    const usage = await getMediaUsage(org);
+    res.json({ total_bytes: usage.totalBytes, budget_bytes: usage.budgetBytes });
+  } catch (err) {
+    Logger.error('default-media/usage GET failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
@@ -949,6 +1168,67 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
     res.send(doc.data.buffer);
   } catch (err) {
     Logger.error('effective-image GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/:id/effective-media — worker-only. Ordered fetch
+// manifest for everything to send with this proposal: images (custom
+// override if set, else primary + extras) then videos (primary + extras).
+// Reuses /:id/effective-image for the single "primary-or-custom" image entry
+// (it already implements that exact resolution); only extras get new routes.
+router.get('/:id/effective-media', async (req: Request, res: Response) => {
+  try {
+    const proposalRepo = new OutreachRepository();
+    const proposal = await proposalRepo.getById(req.params.id);
+    if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
+
+    const org = normalizeOrg(proposal.org_id);
+    const imagesRepo = new OutreachImagesRepository();
+    const videoRepo = new OutreachVideoRepository();
+
+    type ManifestItem = { type: 'image' | 'video'; source: string; id: string; filename: string; url: string };
+    const items: ManifestItem[] = [];
+
+    // Custom override, if it resolves — /:id/effective-image already returns
+    // the custom bytes when custom_image_id is set (with its own fallback
+    // logging), so we can just check existence here to decide whether to
+    // also list primary/extra images.
+    let usedCustom = false;
+    if (proposal.custom_image_id) {
+      const custom = await imagesRepo.getById(proposal.custom_image_id);
+      if (custom) {
+        items.push({ type: 'image', source: 'custom', id: String(custom._id), filename: custom.filename, url: `/crm/api/outreach/${req.params.id}/effective-image` });
+        usedCustom = true;
+      }
+    }
+    if (!usedCustom) {
+      const primary = await imagesRepo.getDefault(org);
+      if (primary) items.push({ type: 'image', source: 'primary', id: String(primary._id), filename: primary.filename, url: `/crm/api/outreach/${req.params.id}/effective-image` });
+      const extras = await imagesRepo.listExtras(org);
+      for (const e of extras) {
+        items.push({ type: 'image', source: 'extra', id: String(e._id), filename: e.filename, url: `/crm/api/outreach/default-image/extra/${e._id}` });
+      }
+    }
+
+    const r2 = new R2StorageService();
+    if (r2.isConfigured()) {
+      const primaryVideo = await videoRepo.getDefault(org);
+      if (primaryVideo) {
+        const url = await r2.generatePresignedGet(primaryVideo.r2_key);
+        items.push({ type: 'video', source: 'primary', id: 'primary', filename: primaryVideo.filename, url });
+      }
+      const extraVideos = await videoRepo.listExtras(org);
+      for (const v of extraVideos) {
+        const url = await r2.generatePresignedGet(v.r2_key);
+        items.push({ type: 'video', source: 'extra', id: String(v._id), filename: v.filename, url });
+      }
+    }
+
+    Logger.info(`effective-media[${req.params.id}] org=${org} items=${items.length} types=${items.map((i) => i.type[0]).join('')}`);
+    res.json(items);
+  } catch (err) {
+    Logger.error('effective-media GET failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
