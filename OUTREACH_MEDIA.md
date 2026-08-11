@@ -11,20 +11,26 @@ See `OUTREACH_RUNBOOK.md` for the base pipeline, worker ops, and daily cap/pacin
 
 ---
 
-## 1. Media: image + video album
+## 1. Media: image + videos
 
-Every send delivers the default **image** and (if set) the default **video** as
-one Telegram **album** (media group). The image is mandatory ("legitimacy
-proof"); the video is optional marketing content.
+Every send delivers the default **image** plus this org's **queued videos** (if
+any), each as its **own** Telegram message — a mixed photo+video album via
+`messages.SendMultiMedia` can fail with `MEDIA_EMPTY` (gramjs), so the worker
+sends sequential single-file messages instead (`3f925a0`). The image is
+mandatory ("legitimacy proof"); videos are optional marketing content.
 
 - **Image** — bytes stored in MongoDB collection `outreach_images`
   (`OutreachImagesRepository`). JPEG/PNG/WebP, ≤ 5 MB. Managed on the CRM
   Outreach page ("Replace image").
-- **Video** — bytes stored in **Cloudflare R2** (private bucket); only *metadata*
-  (the R2 object key + display fields) lives in MongoDB collection
-  `outreach_media` (`OutreachVideoRepository`, single doc `_id:'default'`).
-  **MP4 only, ≤ 50 MB.** Managed on the CRM Outreach page ("Replace video" /
-  "Remove"). Video is optional — with none set, sends are image-only.
+- **Videos** — bytes stored in **Cloudflare R2** (private bucket); only
+  *metadata* (the R2 object key + display fields) lives in MongoDB collection
+  `outreach_media` (`OutreachVideoRepository`, **one doc per video**, scoped by
+  `org_id`). An org may queue up to **5 videos**, MP4 only, whose sizes must
+  sum to **≤ 50 MB combined** (not 50 MB each — e.g. 5 + 10 + 20 MB = 35 MB
+  fits; adding a 4th that would push the total over 50 MB, or a 6th video at
+  all, is rejected with a 400 before anything is uploaded to R2). Managed on
+  the CRM Outreach page ("Add video" / per-row "Remove"). Videos are optional —
+  with none queued, sends are image-only.
 
 ### R2 configuration (server only)
 
@@ -47,22 +53,25 @@ no public access, no custom domain, no CORS needed.
 > uses `...eu.r2.cloudflarestorage.com` and will fail signing — use a standard
 > bucket.
 
-### How a video reaches the worker
+### How videos reach the worker
 
 1. CRM upload (`POST /crm/api/outreach/default-video`, developer/manager) →
-   bytes go to R2 (`outreach-media/default-video-<uuid>.mp4`), metadata upserted
-   into `outreach_media`.
+   rejected with 400 if it would breach the 5-video count or 50 MB combined
+   budget (checked before touching R2); otherwise bytes go to R2
+   (`outreach-media/default-video-<uuid>.mp4`) and a new metadata doc is
+   inserted into `outreach_media`.
 2. At send time the worker calls `GET /crm/api/outreach/default-video-url` and
-   gets a **short-lived (300 s) presigned GET URL** (signing is local, no creds
-   leave the server). `404` = no video set, `503` = R2 not configured — both are
-   the worker's signal to send **image-only**.
-3. The worker downloads the presigned URL with a plain `fetch` (no auth header),
-   stages it to a temp `.mp4`, and sends `[image, video]` as one album.
-   `SEND_TIMEOUT_SEC` (default **240 s**) bounds the whole send because a ~50 MB
-   download + upload is slow.
+   gets `{ videos: [...] }` — one **short-lived (300 s) presigned GET URL** per
+   queued video, oldest-first (signing is local, no creds leave the server).
+   An empty `videos` array or `503` (R2 not configured) are both the worker's
+   signal to send **image-only**.
+3. The worker downloads each presigned URL with a plain `fetch` (no auth
+   header), stages it to a temp `.mp4`, and sends each video as its own
+   message after the image. `SEND_TIMEOUT_SEC` (default **240 s**) bounds the
+   whole send because downloading + uploading up to 50 MB total is slow.
 
-Worker send-mode log strings: `album+caption`, `album+two_bubble` (video present),
-`caption`, `two_bubble` (image-only).
+Worker send-mode log strings: `N media (image+video×M)+caption` or
+`+two_bubble` when media is present, `text-only` when neither is configured.
 
 ### Media routes (`src/api/outreach-routes.ts`)
 
@@ -70,10 +79,10 @@ Worker send-mode log strings: `album+caption`, `album+two_bubble` (video present
 |---|---|---|---|
 | GET | `/default-image` | cookie | default image bytes / 404 |
 | POST | `/default-image` | cookie | replace (JPEG/PNG/WebP, 5 MB) |
-| GET | `/default-video` | cookie | metadata for the CRM / 404 |
-| POST | `/default-video` | cookie | replace (MP4, 50 MB → R2); 503 if R2 unconfigured |
-| DELETE | `/default-video` | cookie | clear metadata + delete R2 object |
-| GET | `/default-video-url` | **agent** | worker-facing presigned URL / 404 / 503 |
+| GET | `/default-video` | cookie | `{ videos, total_bytes, max_bytes, max_count }` for the CRM |
+| POST | `/default-video` | cookie | **adds** a video (MP4, ≤50 MB → R2); 400 if it would exceed the 5-count or 50 MB-combined budget; 503 if R2 unconfigured |
+| DELETE | `/default-video/:id` | cookie | remove one queued video + its R2 object |
+| GET | `/default-video-url` | **agent** | worker-facing `{ videos: [{url, mime_type, size_bytes}] }` array / 503 |
 | GET | `/:id/effective-image` | **agent** | worker-facing image bytes (custom-or-default) |
 
 ### Agent-role allowlist (9 paths)

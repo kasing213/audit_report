@@ -311,17 +311,19 @@
       <button class="btn btn-ghost" id="default-image-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultImage()">Remove</button>
     </div>
   </div>
-  <div class="default-image-card" id="default-video-card">
-    <div class="default-image-thumb empty" id="default-video-thumb">🎬</div>
-    <div class="default-image-meta">
-      <div class="name" id="default-video-name">Loading…</div>
-      <div class="sub" id="default-video-sub"></div>
+  <div class="default-image-card" id="default-video-card" style="align-items:flex-start;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:0.75rem;width:100%;flex-wrap:wrap">
+      <div class="default-image-thumb empty">🎬</div>
+      <div class="default-image-meta">
+        <div class="name">Marketing videos</div>
+        <div class="sub" id="default-video-budget">Loading…</div>
+      </div>
+      <div class="default-image-actions">
+        <input type="file" id="default-video-file" accept="video/mp4" style="display:none" onchange="uploadDefaultVideo(event)">
+        <button class="btn btn-primary" id="default-video-add-btn" onclick="document.getElementById('default-video-file').click()">Add video</button>
+      </div>
     </div>
-    <div class="default-image-actions">
-      <input type="file" id="default-video-file" accept="video/mp4" style="display:none" onchange="uploadDefaultVideo(event)">
-      <button class="btn btn-primary" onclick="document.getElementById('default-video-file').click()">Replace video</button>
-      <button class="btn btn-ghost" id="default-video-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultVideo()">Remove</button>
-    </div>
+    <div id="default-video-list" style="width:100%;margin-top:0.5rem;display:flex;flex-direction:column;gap:0.4rem"></div>
   </div>
   <div class="default-image-card" id="default-text-card" style="align-items:flex-start">
     <div class="default-image-meta" style="flex:1 1 100%">
@@ -477,27 +479,46 @@
 
   const DEFAULT_VIDEO_URL = API + '/default-video';
 
+  function videoBudgetClass(usedBytes, maxBytes) {
+    const frac = maxBytes > 0 ? usedBytes / maxBytes : 0;
+    if (frac >= 0.95) return 'red';
+    if (frac >= 0.7) return 'yellow';
+    return 'green';
+  }
+
   async function refreshDefaultVideo() {
-    const thumb = document.getElementById('default-video-thumb');
-    const name = document.getElementById('default-video-name');
-    const sub = document.getElementById('default-video-sub');
-    const removeBtn = document.getElementById('default-video-remove');
+    const budget = document.getElementById('default-video-budget');
+    const list = document.getElementById('default-video-list');
+    const addBtn = document.getElementById('default-video-add-btn');
     try {
       const resp = await fetch(DEFAULT_VIDEO_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
-      if (resp.status === 404) {
-        name.textContent = 'No marketing video set';
-        sub.textContent = 'Optional — leads get image + text only';
-        thumb.textContent = '🎬';
-        removeBtn.style.display = 'none';
-        return;
-      }
       if (!resp.ok) throw new Error('GET default-video ' + resp.status);
       const data = await resp.json();
-      const sizeMb = (Number(data.size_bytes || 0) / (1024 * 1024)).toFixed(1);
-      name.textContent = data.filename || 'video.mp4';
-      sub.textContent = (data.mime_type || 'video/mp4') + ' · ' + sizeMb + ' MB';
-      thumb.textContent = '🎬';
-      removeBtn.style.display = '';
+      const videos = data.videos || [];
+      const usedMb = (Number(data.total_bytes || 0) / (1024 * 1024)).toFixed(1);
+      const maxMb = (Number(data.max_bytes || 0) / (1024 * 1024)).toFixed(0);
+      budget.innerHTML = videos.length === 0
+        ? 'No marketing videos set — leads get image + text only'
+        : '<span class="counter ' + videoBudgetClass(data.total_bytes, data.max_bytes) + '">' +
+          usedMb + ' / ' + maxMb + ' MB used · ' + videos.length + ' / ' + data.max_count + ' videos</span>';
+
+      const atLimit = videos.length >= data.max_count || data.total_bytes >= data.max_bytes;
+      addBtn.disabled = atLimit;
+      addBtn.title = atLimit ? 'Video queue is full — remove one to add another' : '';
+
+      list.innerHTML = '';
+      for (const v of videos) {
+        const sizeMb = (Number(v.size_bytes || 0) / (1024 * 1024)).toFixed(1);
+        const row = document.createElement('div');
+        row.className = 'image-bar';
+        row.innerHTML =
+          '<div class="thumb" style="display:flex;align-items:center;justify-content:center">🎬</div>' +
+          '<span class="label"></span>' +
+          '<div class="actions"><button class="icon-btn">Remove</button></div>';
+        row.querySelector('.label').textContent = (v.filename || 'video.mp4') + ' · ' + sizeMb + ' MB';
+        row.querySelector('.icon-btn').addEventListener('click', () => removeVideo(v.id));
+        list.appendChild(row);
+      }
     } catch (err) {
       console.error('refreshDefaultVideo', err);
     }
@@ -512,7 +533,7 @@
     try {
       const resp = await fetch(DEFAULT_VIDEO_URL, { method: 'POST', credentials: 'same-origin', body: fd });
       const data = await resp.json().catch(() => ({}));
-      if (resp.ok) { showToast('Marketing video updated', 'success'); refreshDefaultVideo(); }
+      if (resp.ok) { showToast('Video added', 'success'); refreshDefaultVideo(); }
       else { showToast(data.error || ('Upload failed: ' + resp.status), 'error'); }
     } catch (err) {
       showToast('Upload failed', 'error');
@@ -521,10 +542,10 @@
     }
   }
 
-  async function removeDefaultVideo() {
-    if (!confirm('Remove the marketing video? Leads will get image + text only.')) return;
+  async function removeVideo(id) {
+    if (!confirm('Remove this marketing video?')) return;
     try {
-      const resp = await fetch(DEFAULT_VIDEO_URL, { method: 'DELETE', credentials: 'same-origin' });
+      const resp = await fetch(DEFAULT_VIDEO_URL + '/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin' });
       if (resp.ok) { showToast('Video removed', 'success'); refreshDefaultVideo(); }
       else showToast('Remove failed', 'error');
     } catch { showToast('Remove failed', 'error'); }

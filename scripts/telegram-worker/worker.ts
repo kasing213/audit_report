@@ -320,29 +320,33 @@ async function writeTemp(buffer: Buffer, ext: string): Promise<string> {
   return tmpPath;
 }
 
-// Ask the server for a presigned URL to the default marketing video, download
-// the bytes, and stage them in a temp file. Returns null when no video is
-// available to send — either none is set (server 404) or R2 storage isn't
-// configured yet (server 503) — the signal to fall back to an image-only
-// send. Any other failure throws, which the send's catch turns into a
-// marked-failed proposal (never a freeze — withTimeout bounds the whole send).
-async function fetchDefaultVideo(): Promise<{ path: string; mime: string } | null> {
+// Ask the server for presigned URLs to this org's queued marketing videos
+// (send order), download each, and stage them as temp files. Returns [] when
+// no video is available to send — either none are queued (server returns an
+// empty videos array) or R2 storage isn't configured yet (server 503) — the
+// signal to fall back to an image-only send. Any other failure throws, which
+// the send's catch turns into a marked-failed proposal (never a freeze —
+// withTimeout bounds the whole send).
+async function fetchDefaultVideos(): Promise<Array<{ path: string; mime: string }>> {
   const resp = await authedFetch(DEFAULT_VIDEO_URL);
-  if (resp.status === 404) return null;
   if (resp.status === 503) {
     console.log('  video: R2 not configured on server — sending image-only');
-    return null;
+    return [];
   }
   if (!resp.ok) {
     throw new Error(`default-video-url ${resp.status}: ${await resp.text().catch(() => '')}`);
   }
-  const meta = (await resp.json()) as { url: string; mime_type?: string };
-  const dl = await fetch(meta.url); // presigned R2 URL — no auth header
-  if (!dl.ok) throw new Error(`video download failed: HTTP ${dl.status}`);
-  const bytes = Buffer.from(await dl.arrayBuffer());
-  const filePath = await writeTemp(bytes, 'mp4'); // upload endpoint accepts mp4 only
-  console.log(`  video: ${bytes.length}B staged at ${path.basename(filePath)}`);
-  return { path: filePath, mime: meta.mime_type || 'video/mp4' };
+  const body = (await resp.json()) as { videos: Array<{ url: string; mime_type?: string }> };
+  const staged: Array<{ path: string; mime: string }> = [];
+  for (const meta of body.videos) {
+    const dl = await fetch(meta.url); // presigned R2 URL — no auth header
+    if (!dl.ok) throw new Error(`video download failed: HTTP ${dl.status}`);
+    const bytes = Buffer.from(await dl.arrayBuffer());
+    const filePath = await writeTemp(bytes, 'mp4'); // upload endpoint accepts mp4 only
+    console.log(`  video: ${bytes.length}B staged at ${path.basename(filePath)}`);
+    staged.push({ path: filePath, mime: meta.mime_type || 'video/mp4' });
+  }
+  return staged;
 }
 
 // ---- Telegram (MTProto via gramjs) ----
@@ -406,7 +410,7 @@ async function sendViaMTProto(
   const phoneDigits = phone.replace(/\D/g, '');
 
   let imageTmpPath: string | null = null;
-  let videoTmpPath: string | null = null;
+  let videoTmpPaths: string[] = [];
   try {
     const outcome = await importPhoneAsPeer(client, phoneDigits, customerName || '');
     if (outcome.kind === 'deferred') {
@@ -427,12 +431,13 @@ async function sendViaMTProto(
     // numbers don't cost a wasted image fetch / 50MB video download.
     const img = await fetchEffectiveImage(proposalId); // null = none configured for this org
     if (img) console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
-    const video = await fetchDefaultVideo();
+    const videos = await fetchDefaultVideos();
 
-    // Stage whatever media exists as temp files, image first (legitimacy proof).
+    // Stage whatever media exists as temp files, image first (legitimacy proof),
+    // then videos in queue order.
     const mediaPaths: string[] = [];
     if (img) { imageTmpPath = await writeTemp(img.buffer, img.filename.split('.').pop() || 'jpg'); mediaPaths.push(imageTmpPath); }
-    if (video) { videoTmpPath = video.path; mediaPaths.push(videoTmpPath); }
+    if (videos.length > 0) { videoTmpPaths = videos.map((v) => v.path); mediaPaths.push(...videoTmpPaths); }
 
     const captionMode = message.length <= 1024;
 
@@ -445,7 +450,7 @@ async function sendViaMTProto(
       // messages.SendMultiMedia can fail with MEDIA_EMPTY; sequential single-file
       // sends are reliable. The caption rides on the first item when it fits
       // (<=1024); otherwise the text follows as its own bubble after all media.
-      const kinds = `${img ? 'image' : ''}${img && video ? '+' : ''}${video ? 'video' : ''}`;
+      const kinds = `${img ? 'image' : ''}${img && videos.length > 0 ? '+' : ''}${videos.length > 0 ? `video×${videos.length}` : ''}`;
       console.log(`  send mode: ${mediaPaths.length} media (${kinds})${captionMode ? '+caption' : '+two_bubble'}`);
       for (let i = 0; i < mediaPaths.length; i++) {
         if (captionMode && i === 0) {
@@ -480,7 +485,7 @@ async function sendViaMTProto(
     return { ok: false, reason: `mtproto exception: ${msg}` };
   } finally {
     if (imageTmpPath) await fs.promises.unlink(imageTmpPath).catch(() => {});
-    if (videoTmpPath) await fs.promises.unlink(videoTmpPath).catch(() => {});
+    await Promise.all(videoTmpPaths.map((p) => fs.promises.unlink(p).catch(() => {})));
   }
 }
 

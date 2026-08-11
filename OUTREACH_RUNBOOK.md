@@ -240,7 +240,7 @@ expect one DM; `pm2 start outreach-worker` to clear.
 | `outreach_worker_state` | **Per-org** (`_id: company\|personal`) heartbeat / caps / pause flag | worker, dashboard badge |
 | `outreach_settings` | **Per-org** (`_id: default:<org>`) default outreach message | `/crm/outreach`, worker text |
 | `outreach_images` | Per-org default (`_id: default:<org>`) + per-proposal custom image **bytes** | worker (`effective-image`), `/crm/outreach` |
-| `outreach_media` | **Per-org** default video **metadata** (R2 key); bytes live in Cloudflare R2 | worker (`default-video-url`), `/crm/outreach` |
+| `outreach_media` | **Per-org, one doc per queued video** (up to 5, 50 MB combined) **metadata** (R2 key); bytes live in Cloudflare R2 | worker (`default-video-url`), `/crm/outreach` |
 | `outreach_suppressions` | Phone-level failed/suppressed ledger (+ `org_id`, unique per org+phone) | mark-failed, retry scan, `/crm/failed-numbers` |
 | `inbound_messages` | Customer replies received by the worker | inbound alerts |
 | `audit_logs` | Bot action history | audit trail |

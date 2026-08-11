@@ -3,7 +3,7 @@ import multer from 'multer';
 import { authMiddleware, getSessionUser } from './auth-middleware';
 import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachImagesRepository, OutreachImageDocument } from '../outreach/outreach-images-repository';
-import { OutreachVideoRepository } from '../outreach/outreach-video-repository';
+import { OutreachVideoRepository, VideoBudgetExceededError, MAX_VIDEO_COUNT, MAX_TOTAL_VIDEO_BYTES } from '../outreach/outreach-video-repository';
 import { OutreachSettingsRepository } from '../outreach/outreach-settings-repository';
 import { getStaticOutreachMessage, DEFAULT_STATIC_MESSAGE } from '../outreach/static-template';
 import { R2StorageService } from '../outreach/r2-storage-service';
@@ -452,18 +452,24 @@ router.delete('/default-image', async (req: Request, res: Response) => {
   }
 });
 
-// GET /crm/api/outreach/default-video — metadata for the CRM UI (or 404)
+// GET /crm/api/outreach/default-video — the CRM UI's queued-video list + budget
 router.get('/default-video', async (req: Request, res: Response) => {
   try {
     const org = resolveOrg(req);
-    const doc = await new OutreachVideoRepository().getDefault(org);
-    if (!doc) { res.status(404).json({ error: `No default video set for the ${org} workspace` }); return; }
+    const videos = await new OutreachVideoRepository().listAll(org);
+    const total_bytes = videos.reduce((sum, v) => sum + (v.size_bytes || 0), 0);
     res.json({
-      filename: doc.filename,
-      mime_type: doc.mime_type,
-      size_bytes: doc.size_bytes,
-      uploaded_at: doc.uploaded_at,
-      uploaded_by: doc.uploaded_by,
+      videos: videos.map((v) => ({
+        id: v._id!.toString(),
+        filename: v.filename,
+        mime_type: v.mime_type,
+        size_bytes: v.size_bytes,
+        uploaded_at: v.uploaded_at,
+        uploaded_by: v.uploaded_by,
+      })),
+      total_bytes,
+      max_bytes: MAX_TOTAL_VIDEO_BYTES,
+      max_count: MAX_VIDEO_COUNT,
     });
   } catch (err) {
     Logger.error('default-video GET failed', err as Error);
@@ -471,7 +477,9 @@ router.get('/default-video', async (req: Request, res: Response) => {
   }
 });
 
-// POST /crm/api/outreach/default-video — multipart upload, replaces default (bytes → R2)
+// POST /crm/api/outreach/default-video — multipart upload, ADDS a video to the
+// org's queue (rejected with 400 before any R2 upload if it would breach the
+// count or combined-size budget).
 router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandler, async (req: Request, res: Response) => {
   try {
     const r2 = new R2StorageService();
@@ -487,31 +495,56 @@ router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandle
 
     const org = resolveOrg(req);
     const uploadedBy = getSessionUser(req) || 'unknown';
-    const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
-    const previousKey = await new OutreachVideoRepository().setDefault({
-      r2_key: key,
-      filename: req.file.originalname,
-      mime_type: req.file.mimetype,
-      size_bytes: req.file.size,
-      uploaded_by: uploadedBy,
-    }, org);
-    // Best-effort: delete the object the metadata previously pointed at.
-    if (previousKey && previousKey !== key) {
-      await r2.deleteObject(previousKey).catch(() => {});
+    const repo = new OutreachVideoRepository();
+
+    // Cheap pre-check against the existing queue before spending an R2 upload.
+    const existing = await repo.listAll(org);
+    const currentBytes = existing.reduce((sum, v) => sum + (v.size_bytes || 0), 0);
+    if (existing.length >= MAX_VIDEO_COUNT) {
+      res.status(400).json({ error: `Already at the ${MAX_VIDEO_COUNT}-video limit` });
+      return;
     }
-    Logger.info(`outreach default video replaced by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) key=${key}`);
-    res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
+    if (currentBytes + req.file.size > MAX_TOTAL_VIDEO_BYTES) {
+      res.status(400).json({
+        error: `Adding this ${(req.file.size / (1024 * 1024)).toFixed(1)}MB video would exceed the ` +
+          `${(MAX_TOTAL_VIDEO_BYTES / (1024 * 1024)).toFixed(0)}MB total (already using ${(currentBytes / (1024 * 1024)).toFixed(1)}MB)`,
+      });
+      return;
+    }
+
+    const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
+    let doc;
+    try {
+      doc = await repo.add({
+        r2_key: key,
+        filename: req.file.originalname,
+        mime_type: req.file.mimetype,
+        size_bytes: req.file.size,
+        uploaded_by: uploadedBy,
+      }, org);
+    } catch (err) {
+      if (err instanceof VideoBudgetExceededError) {
+        // Lost a race against a concurrent upload — the bytes are already in
+        // R2 with nothing pointing at them; clean up before returning 400.
+        await r2.deleteObject(key).catch(() => {});
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
+    }
+    Logger.info(`outreach video added by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) key=${key}`);
+    res.json({ ok: true, id: doc._id!.toString(), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
     Logger.error('default-video POST failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-// DELETE /crm/api/outreach/default-video — clear default, remove object from R2
-router.delete('/default-video', async (req: Request, res: Response) => {
+// DELETE /crm/api/outreach/default-video/:id — remove one queued video, delete its R2 object
+router.delete('/default-video/:id', async (req: Request, res: Response) => {
   try {
     const org = resolveOrg(req);
-    const removedKey = await new OutreachVideoRepository().clearDefault(org);
+    const removedKey = await new OutreachVideoRepository().remove(org, req.params.id);
     if (removedKey) {
       await new R2StorageService().deleteObject(removedKey).catch(() => {});
     }
@@ -522,20 +555,25 @@ router.delete('/default-video', async (req: Request, res: Response) => {
   }
 });
 
-// GET /crm/api/outreach/default-video-url — worker-facing: presigned GET URL for
-// the default video, or 404 when none is set (the worker's signal to send image-only).
+// GET /crm/api/outreach/default-video-url — worker-facing: presigned GET URLs
+// for every queued video (send order), or an empty array when none are set
+// (the worker's signal to send image-only).
 router.get('/default-video-url', async (req: Request, res: Response) => {
   try {
     const org = resolveOrg(req);
-    const doc = await new OutreachVideoRepository().getDefault(org);
-    if (!doc) { res.status(404).json({ error: 'No default video set' }); return; }
+    const videos = await new OutreachVideoRepository().listAll(org);
+    if (videos.length === 0) { res.json({ videos: [] }); return; }
     const r2 = new R2StorageService();
     if (!r2.isConfigured()) {
       res.status(503).json({ error: 'R2 storage not configured' });
       return;
     }
-    const url = await r2.generatePresignedGet(doc.r2_key);
-    res.json({ url, mime_type: doc.mime_type, size_bytes: doc.size_bytes });
+    const urls = await Promise.all(videos.map(async (v) => ({
+      url: await r2.generatePresignedGet(v.r2_key),
+      mime_type: v.mime_type,
+      size_bytes: v.size_bytes,
+    })));
+    res.json({ videos: urls });
   } catch (err) {
     Logger.error('default-video-url GET failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
