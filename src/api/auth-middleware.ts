@@ -176,8 +176,6 @@ const AGENT_ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   // self-restart, instead of relying on a local pm2 cron_restart it has no
   // way to update from the dashboard.
   { method: 'GET',  pattern: /^\/crm\/api\/outreach\/schedule-settings$/ },
-  { method: 'GET',  pattern: /^\/crm\/api\/outreach\/[A-Za-z0-9_-]+\/effective-media$/ },
-  { method: 'GET',  pattern: /^\/crm\/api\/outreach\/default-image\/extra\/[A-Za-z0-9_-]+$/ },
 ];
 
 function isAgentAllowed(req: Request): boolean {

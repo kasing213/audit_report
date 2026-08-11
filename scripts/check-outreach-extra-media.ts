@@ -141,48 +141,6 @@ async function main(): Promise<void> {
     check('GET default-media/usage status', usageResp2.status, 200);
     const usageBody = await usageResp2.json() as any;
     check('GET default-media/usage returns budget_bytes', usageBody.budget_bytes, MEDIA_BUDGET_BYTES);
-
-    // --- Task 4: effective-media manifest ---
-    if (!process.env.AGENT_TOKEN) process.env.AGENT_TOKEN = 'check-script-agent-token';
-    const testProposalId = new ObjectId();
-    const proposalsCol = db.getDb().collection('outreach_proposals');
-    await proposalsCol.insertOne({
-      _id: testProposalId,
-      org_id: TEST_ORG,
-      generation_id: 'check-script',
-      customer_phone: '85500000000',
-      customer_name: 'Check Script Test',
-      reason_code: null,
-      days_since_contact: null,
-      follower: null,
-      message: 'test',
-      reasoning: 'test',
-      status: 'pending',
-      skipped_reason: null,
-      failed_reason: null,
-      custom_image_id: null,
-      created_at: new Date(),
-      approved_at: null,
-      approved_by: null,
-      sent_at: null,
-      lease_expires_at: null,
-      model: 'check-script',
-    });
-    try {
-      const manifestResp = await fetch(`${base}/${testProposalId}/effective-media`, {
-        headers: { Authorization: `Bearer ${process.env.AGENT_TOKEN}` },
-      });
-      check('GET :id/effective-media status', manifestResp.status, 200);
-      const manifest = await manifestResp.json() as any[];
-      check('effective-media returns an array', Array.isArray(manifest), true);
-      check('effective-media images (if any) come before videos', (() => {
-        const firstVideoIdx = manifest.findIndex((m: any) => m.type === 'video');
-        const lastImageIdx = manifest.reduce((last: number, m: any, i: number) => (m.type === 'image' ? i : last), -1);
-        return firstVideoIdx === -1 || lastImageIdx === -1 || lastImageIdx < firstVideoIdx;
-      })(), true);
-    } finally {
-      await proposalsCol.deleteOne({ _id: testProposalId });
-    }
   } finally {
     await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
   }
