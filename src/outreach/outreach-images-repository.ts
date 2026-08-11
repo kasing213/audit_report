@@ -4,16 +4,12 @@ import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
 import { OrgId, DEFAULT_ORG, defaultDocKey } from './orgs';
 
-export type ImageKind = 'default' | 'proposal_custom' | 'extra';
+export type ImageKind = 'default' | 'proposal_custom';
 
 export interface OutreachImageDocument {
   // Per-org default images use a string _id (defaultDocKey(orgId), e.g.
-  // 'default:company'); per-proposal custom images and 'extra' (additional
-  // default) images use an ObjectId. org_id is only set on 'extra' docs —
-  // 'default' docs are org-scoped via their _id, 'proposal_custom' docs are
-  // scoped implicitly through the proposal that references them.
+  // 'default:company'); per-proposal custom images use an ObjectId.
   _id: ObjectId | string;
-  org_id?: string;
   filename: string;
   mime_type: string;
   size_bytes: number;
@@ -113,51 +109,5 @@ export class OutreachImagesRepository {
     } catch {
       return false;
     }
-  }
-
-  /** List this org's extra (additional) default images, oldest first —
-   *  ObjectId is chronological, so sorting by _id gives add-order for free. */
-  async listExtras(orgId: OrgId = DEFAULT_ORG): Promise<OutreachImageDocument[]> {
-    return this.col.find({ kind: 'extra', org_id: orgId } as any).sort({ _id: 1 }).toArray();
-  }
-
-  async addExtra(input: {
-    filename: string;
-    mime_type: string;
-    buffer: Buffer;
-    uploaded_by: string;
-  }, orgId: OrgId = DEFAULT_ORG): Promise<ObjectId> {
-    const oid = new ObjectId();
-    const doc: OutreachImageDocument = {
-      _id: oid,
-      org_id: orgId,
-      filename: input.filename,
-      mime_type: input.mime_type,
-      size_bytes: input.buffer.length,
-      data: new Binary(input.buffer),
-      uploaded_at: new Date(),
-      uploaded_by: input.uploaded_by,
-      kind: 'extra',
-    };
-    await this.col.insertOne(doc as any);
-    return oid;
-  }
-
-  async removeExtra(id: string | ObjectId): Promise<boolean> {
-    try {
-      const oid = typeof id === 'string' ? new ObjectId(id) : id;
-      const result = await this.col.deleteOne({ _id: oid, kind: 'extra' } as any);
-      return result.deletedCount === 1;
-    } catch {
-      return false;
-    }
-  }
-
-  async sumExtraBytes(orgId: OrgId = DEFAULT_ORG): Promise<number> {
-    const docs = await this.col
-      .find({ kind: 'extra', org_id: orgId } as any)
-      .project({ size_bytes: 1 })
-      .toArray();
-    return docs.reduce((sum, d: any) => sum + (d.size_bytes || 0), 0);
   }
 }
