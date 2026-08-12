@@ -60,18 +60,26 @@ no public access, no custom domain, no CORS needed.
    budget (checked before touching R2); otherwise bytes go to R2
    (`outreach-media/default-video-<uuid>.mp4`) and a new metadata doc is
    inserted into `outreach_media`.
-2. At send time the worker calls `GET /crm/api/outreach/default-video-url` and
-   gets `{ videos: [...] }` — one **short-lived (300 s) presigned GET URL** per
-   queued video, oldest-first (signing is local, no creds leave the server).
-   An empty `videos` array or `503` (R2 not configured) are both the worker's
-   signal to send **image-only**.
+2. At send time the worker calls `GET /crm/api/outreach/:id/effective-video-url`
+   (org derived from the proposal itself, never from the calling worker's own
+   header/env — see the cross-tenant-leak incident in `OUTREACH_RUNBOOK.md`)
+   and gets `{ videos: [...] }` — one **short-lived (300 s) presigned GET URL**
+   per queued video, oldest-first (signing is local, no creds leave the
+   server). An empty `videos` array or `503` (R2 not configured) are both the
+   worker's signal to send **image-only**.
 3. The worker downloads each presigned URL with a plain `fetch` (no auth
-   header), stages it to a temp `.mp4`, and sends each video as its own
-   message after the image. `SEND_TIMEOUT_SEC` (default **240 s**) bounds the
-   whole send because downloading + uploading up to 50 MB total is slow.
+   header) and stages it to a temp `.mp4`. `SEND_TIMEOUT_SEC` (default
+   **240 s**) bounds the whole send because downloading + uploading up to
+   50 MB total is slow.
 
-Worker send-mode log strings: `N media (image+video×M)+caption` or
-`+two_bubble` when media is present, `text-only` when neither is configured.
+Send order: the message text always goes out **first** as its own message,
+then every media item (image, then videos in queue order) is sent **bare, no
+caption** as its own message. Keeps the format identical regardless of media
+count — no "which item gets the caption" ambiguity, and no orphaned
+uncaptioned video sitting after the first when multiple videos are queued.
+
+Worker send-mode log strings: `text+N media (image+video×M)` when media is
+present, `text-only` when neither image nor video is configured.
 
 ### Media routes (`src/api/outreach-routes.ts`)
 

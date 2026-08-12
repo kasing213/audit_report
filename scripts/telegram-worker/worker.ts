@@ -440,33 +440,28 @@ async function sendViaMTProto(
     if (img) { imageTmpPath = await writeTemp(img.buffer, img.filename.split('.').pop() || 'jpg'); mediaPaths.push(imageTmpPath); }
     if (videos.length > 0) { videoTmpPaths = videos.map((v) => v.path); mediaPaths.push(...videoTmpPaths); }
 
-    const captionMode = message.length <= 1024;
-
     if (mediaPaths.length === 0) {
       // Text-only send — no image or video configured for this org.
       console.log('  send mode: text-only (no image/video configured)');
       await client.sendMessage(peer, { message });
     } else {
-      // Send each media item as its OWN message. A mixed photo+video album via
-      // messages.SendMultiMedia can fail with MEDIA_EMPTY; sequential single-file
-      // sends are reliable. The caption rides on the first item when it fits
-      // (<=1024); otherwise the text follows as its own bubble after all media.
+      // Text always goes first as its own message, then every media item is
+      // sent bare (no caption) as its own message — a mixed photo+video album
+      // via messages.SendMultiMedia can fail with MEDIA_EMPTY, so sequential
+      // single-file sends are used instead. Putting text first and leaving
+      // every media item uncaptioned keeps the format identical regardless of
+      // how many videos are queued: no "which item gets the caption"
+      // ambiguity, and no orphaned uncaptioned video sitting after the first.
       const kinds = `${img ? 'image' : ''}${img && videos.length > 0 ? '+' : ''}${videos.length > 0 ? `video×${videos.length}` : ''}`;
-      console.log(`  send mode: ${mediaPaths.length} media (${kinds})${captionMode ? '+caption' : '+two_bubble'}`);
-      for (let i = 0; i < mediaPaths.length; i++) {
-        if (captionMode && i === 0) {
-          await client.sendFile(peer, { file: mediaPaths[i], caption: message, forceDocument: false, supportsStreaming: true });
-        } else {
-          await client.sendFile(peer, { file: mediaPaths[i], forceDocument: false, supportsStreaming: true });
+      console.log(`  send mode: text+${mediaPaths.length} media (${kinds})`);
+      await client.sendMessage(peer, { message });
+      try {
+        for (const p of mediaPaths) {
+          await client.sendFile(peer, { file: p, forceDocument: false, supportsStreaming: true });
         }
-      }
-      if (!captionMode) {
-        try {
-          await client.sendMessage(peer, { message });
-        } catch (err) {
-          const e = err as Error;
-          return { ok: false, reason: `media sent, text failed: ${e.message || String(err)}` };
-        }
+      } catch (err) {
+        const e = err as Error;
+        return { ok: false, reason: `text sent, media failed: ${e.message || String(err)}` };
       }
     }
 
