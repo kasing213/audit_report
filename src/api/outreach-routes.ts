@@ -555,31 +555,6 @@ router.delete('/default-video/:id', async (req: Request, res: Response) => {
   }
 });
 
-// GET /crm/api/outreach/default-video-url — worker-facing: presigned GET URLs
-// for every queued video (send order), or an empty array when none are set
-// (the worker's signal to send image-only).
-router.get('/default-video-url', async (req: Request, res: Response) => {
-  try {
-    const org = resolveOrg(req);
-    const videos = await new OutreachVideoRepository().listAll(org);
-    if (videos.length === 0) { res.json({ videos: [] }); return; }
-    const r2 = new R2StorageService();
-    if (!r2.isConfigured()) {
-      res.status(503).json({ error: 'R2 storage not configured' });
-      return;
-    }
-    const urls = await Promise.all(videos.map(async (v) => ({
-      url: await r2.generatePresignedGet(v.r2_key),
-      mime_type: v.mime_type,
-      size_bytes: v.size_bytes,
-    })));
-    res.json({ videos: urls });
-  } catch (err) {
-    Logger.error('default-video-url GET failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
 // GET /crm/api/outreach/default-text — effective message + whether a custom one is saved
 router.get('/default-text', async (req: Request, res: Response) => {
   try {
@@ -1004,6 +979,37 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
     res.send(doc.data.buffer);
   } catch (err) {
     Logger.error('effective-image GET failed', err as Error);
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+// GET /crm/api/outreach/:id/effective-video-url — worker-only
+// Presigned GET URLs for the PROPOSAL'S OWN org's queued videos (send order),
+// or an empty array when none are set (the worker's signal to send image-only).
+// Org is derived from the proposal, never from the caller's header/env — a
+// worker must not be able to fetch another org's videos just by asking.
+router.get('/:id/effective-video-url', async (req: Request, res: Response) => {
+  try {
+    const proposalRepo = new OutreachRepository();
+    const proposal = await proposalRepo.getById(req.params.id);
+    if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
+
+    const proposalOrg = normalizeOrg(proposal.org_id);
+    const videos = await new OutreachVideoRepository().listAll(proposalOrg);
+    if (videos.length === 0) { res.json({ videos: [] }); return; }
+    const r2 = new R2StorageService();
+    if (!r2.isConfigured()) {
+      res.status(503).json({ error: 'R2 storage not configured' });
+      return;
+    }
+    const urls = await Promise.all(videos.map(async (v) => ({
+      url: await r2.generatePresignedGet(v.r2_key),
+      mime_type: v.mime_type,
+      size_bytes: v.size_bytes,
+    })));
+    res.json({ videos: urls });
+  } catch (err) {
+    Logger.error('effective-video-url GET failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });

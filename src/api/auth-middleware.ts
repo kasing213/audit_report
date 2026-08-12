@@ -171,7 +171,7 @@ const AGENT_ALLOWED: Array<{ method: string; pattern: RegExp }> = [
   { method: 'POST', pattern: /^\/crm\/api\/outreach\/report-inbound$/ },
   { method: 'GET',  pattern: /^\/crm\/api\/outreach\/worker-status$/ },
   { method: 'GET',  pattern: /^\/crm\/api\/outreach\/[A-Za-z0-9_-]+\/effective-image$/ },
-  { method: 'GET',  pattern: /^\/crm\/api\/outreach\/default-video-url$/ },
+  { method: 'GET',  pattern: /^\/crm\/api\/outreach\/[A-Za-z0-9_-]+\/effective-video-url$/ },
   // Read-only: the Mac worker polls its configured daily bounce time here to
   // self-restart, instead of relying on a local pm2 cron_restart it has no
   // way to update from the dashboard.

@@ -365,6 +365,32 @@ careful with the path (see the session-path gotcha under
 The `TELEGRAM_API_ID`/`HASH` in `.env` don't change — they're app-level, not
 account-level, and are shared by both workers.
 
+### 7. Cross-tenant video leak (fixed 2026-08-12)
+
+**Symptom:** `outreach-worker-company` sent a real customer a video that
+actually belonged to `personal` (identifiable in `~/.pm2/logs/outreach-worker-
+company-out.log` by a video byte-size that never appeared in company's send
+history before, but matches a size in `outreach-worker-personal`'s log).
+
+**Root cause, two layers:**
+
+1. The `GET /default-video-url` route (now `GET /:id/effective-video-url`)
+   resolved which org's videos to return from the *calling worker's own*
+   `X-Org-Id` header/`ORG_ID` env, instead of from the org of the specific
+   proposal being messaged — unlike `effective-image`, which was always
+   proposal-scoped. Fixed: the route now takes a proposal id and derives org
+   via `normalizeOrg(proposal.org_id)`, same as `effective-image`.
+2. `orgMatch()` (`src/outreach/orgs.ts`) gives `company` (the default org) a
+   null-fallback for legacy pre-multi-org data. A leftover `outreach_media`
+   doc from before the 2026-08-11 multi-video migration
+   (`scripts/backfill-multi-video.js`) still had no `org_id`, so it matched
+   `company`'s query and got queued alongside company's real video.
+
+**Fix:** both the route/worker code (above) and the underlying data were
+corrected; see `check-outreach-media-org-ids.js` in
+[Diagnostic scripts](#diagnostic-scripts) — run it after any future
+`outreach_media` migration to confirm no doc is missing `org_id`.
+
 ## Diagnostic scripts
 
 All under `scripts/`. Read-only unless noted. Always invoke through Railway so
@@ -382,6 +408,7 @@ railway run node scripts/<name>.js
 | `check-070.js` | Proposals/leads/suppression for the 070597666 test number, plus proposal counts by (org, status) | no |
 | `preview-pending-outreach.js` | Full message body of every claimable proposal — read before starting the worker if you're unsure what's queued | no |
 | `query-bulk.js` | Older snapshot script for the deprecated `bulk-paste` model. Mostly historical. | no |
+| `check-outreach-media-org-ids.js` | Verifies every `outreach_media` doc has an `org_id` set. Run this after any `outreach_media` migration/backfill, and if a worker ever sends the wrong org's video — see the 2026-08-12 cross-tenant video leak below. | no |
 
 ## Destructive one-shots (NOT committed)
 

@@ -68,7 +68,7 @@ const REPORT_INBOUND_URL = `${BASE_URL}/crm/api/outreach/report-inbound`;
 const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-sent`;
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
 const EFFECTIVE_IMAGE_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-image`;
-const DEFAULT_VIDEO_URL = `${BASE_URL}/crm/api/outreach/default-video-url`;
+const EFFECTIVE_VIDEO_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-video-url`;
 const SCHEDULE_URL = `${BASE_URL}/crm/api/outreach/schedule-settings`;
 // How often to poll the dashboard-configured bounce time. Cheap GET, and the
 // only thing that matters is catching the target minute within this window,
@@ -320,21 +320,22 @@ async function writeTemp(buffer: Buffer, ext: string): Promise<string> {
   return tmpPath;
 }
 
-// Ask the server for presigned URLs to this org's queued marketing videos
-// (send order), download each, and stage them as temp files. Returns [] when
-// no video is available to send — either none are queued (server returns an
-// empty videos array) or R2 storage isn't configured yet (server 503) — the
-// signal to fall back to an image-only send. Any other failure throws, which
-// the send's catch turns into a marked-failed proposal (never a freeze —
-// withTimeout bounds the whole send).
-async function fetchDefaultVideos(): Promise<Array<{ path: string; mime: string }>> {
-  const resp = await authedFetch(DEFAULT_VIDEO_URL);
+// Ask the server for presigned URLs to this proposal's org's queued marketing
+// videos (send order), download each, and stage them as temp files. Org is
+// derived server-side from the proposal itself, not from this worker's own
+// X-Org-Id header/env. Returns [] when no video is available to send — either
+// none are queued (server returns an empty videos array) or R2 storage isn't
+// configured yet (server 503) — the signal to fall back to an image-only
+// send. Any other failure throws, which the send's catch turns into a
+// marked-failed proposal (never a freeze — withTimeout bounds the whole send).
+async function fetchDefaultVideos(proposalId: string): Promise<Array<{ path: string; mime: string }>> {
+  const resp = await authedFetch(EFFECTIVE_VIDEO_URL(proposalId));
   if (resp.status === 503) {
     console.log('  video: R2 not configured on server — sending image-only');
     return [];
   }
   if (!resp.ok) {
-    throw new Error(`default-video-url ${resp.status}: ${await resp.text().catch(() => '')}`);
+    throw new Error(`effective-video-url ${resp.status}: ${await resp.text().catch(() => '')}`);
   }
   const body = (await resp.json()) as { videos: Array<{ url: string; mime_type?: string }> };
   const staged: Array<{ path: string; mime: string }> = [];
@@ -431,7 +432,7 @@ async function sendViaMTProto(
     // numbers don't cost a wasted image fetch / 50MB video download.
     const img = await fetchEffectiveImage(proposalId); // null = none configured for this org
     if (img) console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
-    const videos = await fetchDefaultVideos();
+    const videos = await fetchDefaultVideos(proposalId);
 
     // Stage whatever media exists as temp files, image first (legitimacy proof),
     // then videos in queue order.
