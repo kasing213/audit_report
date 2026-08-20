@@ -25,12 +25,11 @@ const shared = {
   interpreter: 'node',
   autorestart: true, // restart on crash — pm2's core job, and also what brings
   // the process back after its own daily self-bounce (see worker.ts
-  // checkDailyBounce) — pm2's cron_restart is deliberately NOT used here
-  // anymore: it has no way to read the dashboard-editable bounce time from
-  // outreach_schedule_settings, so worker.ts polls that itself and exits
-  // cleanly once the configured time arrives. Default bounce is 08:30
-  // Cambodia, strictly before the 09:00 scan/watchdog-window open — see
-  // OutreachScheduleSettingsRepository. Guarded by
+  // checkDailyBounce). BOUNCE_TIME below is hardcoded, not fetched from
+  // outreach_schedule_settings — that fetch could silently no-op the whole
+  // day's bounce on a backend hiccup at exactly the wrong moment. Must stay
+  // strictly before the 09:00 scan/watchdog-window open (matches
+  // OutreachScheduleSettingsRepository's scan_time default) — guarded by
   // scripts/check-bounce-precedes-scan.js.
   max_restarts: 10,
   restart_delay: 5000,
@@ -47,6 +46,7 @@ module.exports = {
         ORG_ID: 'company',
         STRING_SESSION_PATH: './telegram-string-session.txt',
         WORKER_ID: 'outreach-company',
+        BOUNCE_TIME: '08:30',
       },
     },
     {
@@ -56,6 +56,7 @@ module.exports = {
         ORG_ID: 'personal',
         STRING_SESSION_PATH: './telegram-string-session-personal.txt',
         WORKER_ID: 'outreach-personal',
+        BOUNCE_TIME: '08:30',
       },
     },
   ],

@@ -346,7 +346,51 @@ Common cases:
 | `AUTH_KEY_UNREGISTERED` / `SESSION_REVOKED` | StringSession invalidated (logged out from another device, account password changed) | Re-run `npm run login` in `scripts/telegram-worker/` |
 | `chat did not load via tgaddr …` (with `screenshot=…`) | Legacy Playwright error \| | Worker is on old code. `git pull` to get the gramjs rewrite. |
 
-### 6. Switching a worker to a different Telegram account
+### 6. High "contact import deferred by Telegram" rate (not a privacy block)
+
+**Symptom:** most attempts fail with `contact import deferred by Telegram`
+(NOT `phone number not on Telegram (or hidden by privacy)`). The two look
+similar in the logs but mean completely different things:
+
+| Failure | What it actually means |
+|---|---|
+| `phone number not on Telegram (or hidden by privacy)` | The target number really isn't reachable — not on Telegram, or has privacy settings hiding it from contact import. Permanent, correctly skipped. |
+| `contact import deferred by Telegram` | Telegram's server is throttling **our session's** `ImportContacts` RPC specifically — nothing to do with the target number. A number that gets "deferred" from the bot can often be messaged fine from the same account through the actual Telegram app. |
+
+**Root cause found 2026-08-05:** the Mac Mini migration (2026-08-01) put the
+worker on a freshly-created Telegram authorization instead of continuing the
+established one. Confirmed via `account.GetAuthorizations()` — Telegram scopes
+trust to the specific auth key (session), not the account's age. The old,
+trusted auth key (created 2026-07-17, the one with a month of clean 15/15 and
+zero deferrals — see July pm2 logs) sat idle as a separate `Windows_NT` entry
+in Settings → Devices, while a brand-new `Darwin` entry did all the post-
+migration sending and got progressively MORE throttled over the following
+days (54% deferred cumulative since the move → 85% by day 5).
+
+**Fix:** recover the OLD session file (it's still on whatever machine hosted
+the worker before — the Windows laptop, in this case, at
+`scripts/telegram-worker/telegram-string-session*.txt`) and swap it back in.
+**Don't trust file timestamps to tell old vs. new sessions apart** — a
+straight `scp`/copy can preserve or reset mtime depending on flags, and mtime
+tells you nothing about which Telegram auth key is inside the file anyway.
+Verify for real:
+
+1. Stop the pm2 worker for that org (releases the live connection so the
+   check isn't just seeing the still-running old state).
+2. Connect with the candidate file and call `account.GetAuthorizations()` —
+   look at `dateCreated` on the entry marked `current: true`. That's the auth
+   key's actual age, regardless of which machine/device label the connection
+   reports (device label is always based on whatever machine is *currently*
+   connecting, not something baked into the session).
+3. Only then restart pm2 with that file in place.
+
+If the old session isn't recoverable, there's no known way to transplant
+trust onto a fresh auth key — the account's overall age doesn't help;
+Telegram trusts sessions, not accounts. Worth trying: cut `ImportContacts`
+volume/frequency on the new session for a few days before concluding it's
+permanently stuck, since the actual throttle mechanics are undocumented.
+
+### 7. Switching a worker to a different Telegram account
 
 Each org has its own session file — re-login **the one for that org** and be
 careful with the path (see the session-path gotcha under
@@ -365,7 +409,7 @@ careful with the path (see the session-path gotcha under
 The `TELEGRAM_API_ID`/`HASH` in `.env` don't change — they're app-level, not
 account-level, and are shared by both workers.
 
-### 7. Cross-tenant video leak (fixed 2026-08-12)
+### 8. Cross-tenant video leak (fixed 2026-08-12)
 
 **Symptom:** `outreach-worker-company` sent a real customer a video that
 actually belonged to `personal` (identifiable in `~/.pm2/logs/outreach-worker-
@@ -430,13 +474,19 @@ Use only when you genuinely want to start from zero.
   like a password — a full account login. Don't commit, don't paste in chat.
   Mind the **session-path gotcha** under [Multi-org](#multi-org-company--personal):
   a bare `npm run login` overwrites the *company* file.
-- **Caps are enforced server-side, per org** (`deliveries_today` /
-  `claims_today` on that org's `outreach_worker_state` doc): **15 delivered** +
-  a **40 attempt** ceiling. Unreachable numbers (privacy/not-on-Telegram) burn
-  an *attempt* but not a *delivery* slot, so the worker keeps going until 15
-  land or 40 attempts are spent. Running two copies of the same org's worker
-  doesn't double its cap — they race for the same slot.
-- **`failed` is terminal.** No silent retries. Re-generate to draft again.
+- **Only one cap, enforced server-side per org**: **15 delivered**
+  (`deliveries_today` on that org's `outreach_worker_state` doc). As of
+  2026-08 there's no separate attempt ceiling — `claims_today` is tracked but
+  purely observational. Unreachable numbers (privacy/deferred/invalid) burn
+  neither a hard-capped resource; the worker keeps claiming until 15 land.
+  Running two copies of the same org's worker doesn't double its cap — they
+  race for the same slot.
+- **`failed` is terminal, for every failure kind** — privacy, invalid, AND
+  deferred (see [gotcha 6](#6-high-contact-import-deferred-by-telegram-rate-not-a-privacy-block)).
+  No auto-retry anywhere in the system. Re-generate to draft again. The
+  worker does pause itself for a while (not cap, not suppress) after 5
+  consecutive deferrals in a row — `DEFERRAL_BACKOFF_THRESHOLD`/`_MIN` env
+  vars — pure pacing so it isn't hammering Telegram's throttle every poll.
 - **Pause is server-side.** Click Pause on `/crm/outreach`; the worker reads
   the flag every iteration. No restart needed.
 - **Media sends go as SEPARATE messages, not an album.** Image and video (then
