@@ -29,6 +29,7 @@ import { ObjectId } from 'mongodb';
 const router = express.Router();
 const LEASE_MS = 5 * 60 * 1000; // 5 min
 const DEFAULT_DAILY_CAP = 15;
+const DEFAULT_AUTO_APPROVE_WINDOW = 5;
 const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
 const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
@@ -36,6 +37,11 @@ const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize
 const ALLOWED_VIDEO_MIME = ['video/mp4'];
 const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50MB
 const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_VIDEO_BYTES } });
+
+function autoApproveWindow(): number {
+  const parsed = Number(process.env.OUTREACH_AUTO_APPROVE_WINDOW);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_AUTO_APPROVE_WINDOW;
+}
 
 function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
   if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
@@ -242,15 +248,9 @@ router.post('/auto-approve', express.json(), async (req: Request, res: Response)
 
     let approvedCount = 0;
     if (target) {
-      // Resulting state is Auto: clear whatever this workspace currently has
-      // pending, so the switch never leaves a drafted batch stranded. Runs on
-      // every ON request, not just an observed false->true transition — a
-      // transition-only check is racy against concurrent toggles/requests and
-      // silently no-ops if auto_approve was already true when new pending
-      // proposals showed up. Re-approving an already-empty pending set is a
-      // harmless no-op.
+      // Release one small window; leave the rest pending until it settles.
       const approver = getSessionUser(req) || 'auto-approve';
-      approvedCount = await new OutreachRepository().approveAllPending(org, approver);
+      approvedCount = await new OutreachRepository().approveNextPendingWindow(org, approver, autoApproveWindow());
     }
 
     Logger.info(`[outreach] auto_approve org=${org} -> ${target}${approvedCount ? ` (${approvedCount} pending approved)` : ''}`);
@@ -788,6 +788,11 @@ router.post('/claim', async (req: Request, res: Response) => {
     }
 
     const repo = new OutreachRepository();
+    // Release only after a delivery slot is available. This avoids exposing a
+    // fresh window at the daily cap, where it would sit approved overnight.
+    if (state.auto_approve) {
+      await repo.approveNextPendingWindow(org, 'auto-approve', autoApproveWindow());
+    }
     const proposal = await repo.claimNextApproved(org, LEASE_MS, async (expired) => {
       // Capped re-leases that finally flip to failed call this hook.
       try {

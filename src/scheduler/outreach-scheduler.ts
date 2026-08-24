@@ -28,6 +28,7 @@ const DEFAULT_DAILY_CAP = 15;
  * another 20 at once.
  */
 const DEFAULT_TOPUP_INCREMENT = 10;
+const DEFAULT_AUTO_APPROVE_WINDOW = 5;
 // How often the top-up check runs within the active-hours window (itself
 // dashboard-editable — see OutreachScheduleSettingsRepository). Overlapping
 // the daily scan tick is harmless: the top-up no-ops whenever the scan
@@ -160,6 +161,11 @@ export class OutreachScheduler {
     return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TOPUP_INCREMENT;
   }
 
+  private autoApproveWindow(): number {
+    const parsed = Number(process.env.OUTREACH_AUTO_APPROVE_WINDOW);
+    return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_AUTO_APPROVE_WINDOW;
+  }
+
   /**
    * Scan every workspace. One org failing must not stop the others.
    * NOTE: OUTREACH_ORGS is OrgDef[] ({ id, label }), not a string array — iterate
@@ -193,14 +199,17 @@ export class OutreachScheduler {
     const result = await generateBatch({
       limit: draftCount,
       staleDays: this.staleDays(),
-      autoApprove,
+      autoApprove: false,
       orgId,
     });
+    const approved = autoApprove
+      ? await new OutreachRepository().approveNextPendingWindow(orgId, 'auto-approve', this.autoApproveWindow())
+      : 0;
 
     Logger.info(
       `Outreach scan org=${orgId} mode=${autoApprove ? 'auto' : 'manual'}: ` +
       `outstanding=${outstanding} target=${target} drafted=${draftCount} ` +
-      `created=${result.created} skipped=${result.skipped} errored=${result.errored}`
+      `created=${result.created} approved_window=${approved} skipped=${result.skipped} errored=${result.errored}`
     );
 
     const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
@@ -211,6 +220,7 @@ export class OutreachScheduler {
         `Mode: ${autoApprove ? 'AUTO approve' : 'manual approve'}`,
         `Queue before: ${outstanding}/${target}`,
         `Drafted: ${result.created}`,
+        ...(autoApprove ? [`Released now: ${approved}/${this.autoApproveWindow()}`] : []),
         `Skipped: ${result.skipped}`,
         `Errored: ${result.errored}`,
       ];
@@ -259,21 +269,30 @@ export class OutreachScheduler {
     const dCap = this.dailyCap();
     if (state.deliveries_today >= dCap) return; // day's target already met
 
-    const counts = await new OutreachRepository().counts(orgId);
-    if (counts.approved > 0) return; // worker still has something to claim
+    const repo = new OutreachRepository();
+    const counts = await repo.counts(orgId);
+    if (counts.approved > 0 || counts.in_flight > 0) return;
+
+    // Drain the pending reservoir before drafting any more contacts.
+    const released = await repo.approveNextPendingWindow(orgId, 'auto-approve', this.autoApproveWindow());
+    if (released > 0) {
+      Logger.info(`Outreach top-up org=${orgId}: released ${released} pending proposals into approved window`);
+      return;
+    }
 
     const draftCount = this.topupIncrement();
 
     const result = await generateBatch({
       limit: draftCount,
       staleDays: this.staleDays(),
-      autoApprove: true,
+      autoApprove: false,
       orgId,
     });
+    const approved = await repo.approveNextPendingWindow(orgId, 'auto-approve', this.autoApproveWindow());
 
     Logger.info(
       `Outreach top-up org=${orgId}: deliveries=${state.deliveries_today}/${dCap} ` +
-      `claims=${state.claims_today} drafted=${draftCount} created=${result.created}`
+      `claims=${state.claims_today} drafted=${draftCount} created=${result.created} approved_window=${approved}`
     );
 
     const chatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
@@ -282,7 +301,7 @@ export class OutreachScheduler {
         `🔁 *Outreach top-up* — ${orgId}`,
         '',
         `Delivered so far: ${state.deliveries_today}/${dCap}`,
-        `Approved queue ran dry — drafted ${result.created} more (auto-approved)`,
+        `Queue ran dry — drafted ${result.created} more and released ${approved} now`,
       ];
       try {
         await this.sendMessageCallback(chatId, lines.join('\n'), { parse_mode: 'Markdown' });
