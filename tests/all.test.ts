@@ -3,3 +3,4 @@
 // path and makes the ts-node register shim load exactly once.
 import './payment-tracker/org-boundary.test';
 import './payment-tracker/payment-domain.test';
+import './payment-tracker/payment-source.test';
