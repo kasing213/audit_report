@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { Collection, Filter, ObjectId, Sort } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
@@ -70,6 +71,13 @@ export interface OutreachProposalDocument {
   verification_state?: PaymentVerificationState | null;
   verified_at?: Date | null;
   verification_error?: string | null;
+  // Short lease held while one worker re-reads the source for this proposal, so
+  // two workers cannot verify or claim the same reminder concurrently.
+  verification_lease_token?: string | null;
+  verification_lease_expires_at?: Date | null;
+  // Bounded backoff after a blocked verification, so one unreadable receivable
+  // cannot hot-loop the claim endpoint or starve the rest of the queue.
+  verification_retry_after?: Date | null;
   cancelled_at?: Date | null;
   cancelled_reason?: string | null;
   cancelled_by?: string | null;
@@ -128,6 +136,35 @@ export interface PaymentDraftInput {
 export interface PaymentDraftResult {
   created: boolean;
   proposal: OutreachProposalDocument | null;
+}
+
+/** Recorded as the approver when Payment Auto approves without a human. */
+export const PAYMENT_AUTO_APPROVER = 'payment-auto';
+
+/** Why a verification lease was given back without a claim. */
+export interface VerificationOutcome {
+  state: PaymentVerificationState;
+  errorCode: string | null;
+  retryAfter: Date | null;
+}
+
+/** The source-derived fields a refresh rewrites onto an existing proposal. */
+export interface RefreshedPaymentFields {
+  message: string;
+  customer_phone: string;
+  customer_name: string | null;
+  billing_month: string;
+  due_date: string;
+  referenced_ar_ids: string[];
+  home_references: string[];
+  customer_names: string[];
+  payment_currency: string;
+  payment_amount_total: number;
+  payment_credit_total: number;
+  payment_balance_due: number;
+  payment_ar_details: PaymentArSnapshot[];
+  source_fingerprint: string;
+  send_not_before: Date;
 }
 
 /** Mongo duplicate-key error code. */
@@ -446,6 +483,171 @@ export class OutreachRepository {
    * or a source change that made the reminder wrong. Keeps payment_dedupe_key
    * so the boundary stays suppressed, and records who/why/when.
    */
+  /**
+   * Take a short exclusive lease on one approved payment proposal that is due,
+   * so exactly one worker re-reads the source for it.
+   *
+   * org_id is matched EXACTLY here, never through orgMatch(): the Company
+   * compatibility widening ({ $in: [null, 'company'] }) exists for legacy sales
+   * documents and must never be able to select one into the payment path.
+   *
+   * The lease is what makes verification safe under concurrency. Without it two
+   * workers could both read "unchanged", both finalize, and both send the same
+   * reminder.
+   */
+  async acquirePaymentVerificationLease(
+    orgId: OrgId,
+    now: Date,
+    leaseMs: number
+  ): Promise<{ proposal: OutreachProposalDocument; leaseToken: string } | null> {
+    const leaseToken = randomUUID();
+    const proposal = await this.col.findOneAndUpdate(
+      {
+        org_id: orgId,
+        type: 'payment',
+        status: 'approved',
+        // Never before local midnight on the exact due date.
+        send_not_before: { $lte: now },
+        $and: [
+          {
+            $or: [
+              { verification_lease_expires_at: null },
+              { verification_lease_expires_at: { $lte: now } },
+            ],
+          },
+          {
+            $or: [
+              { verification_retry_after: null },
+              { verification_retry_after: { $lte: now } },
+            ],
+          },
+        ],
+      },
+      {
+        $set: {
+          verification_lease_token: leaseToken,
+          verification_lease_expires_at: new Date(now.getTime() + leaseMs),
+        },
+      },
+      { sort: { send_not_before: 1, approved_at: 1 }, returnDocument: 'after' }
+    );
+
+    return proposal ? { proposal, leaseToken } : null;
+  }
+
+  /**
+   * Give the lease back without claiming. `outcome` records why: a blocked
+   * verification also gets a machine-readable code and a retry time, so one
+   * unreadable receivable backs off instead of hot-looping the claim endpoint.
+   */
+  async releasePaymentVerificationLease(
+    id: string,
+    orgId: OrgId,
+    leaseToken: string,
+    outcome: VerificationOutcome
+  ): Promise<boolean> {
+    try {
+      const result = await this.col.updateOne(
+        { _id: new ObjectId(id), org_id: orgId, verification_lease_token: leaseToken },
+        {
+          $set: {
+            verification_state: outcome.state,
+            verification_error: outcome.errorCode,
+            verification_retry_after: outcome.retryAfter,
+            verification_lease_token: null,
+            verification_lease_expires_at: null,
+          },
+        }
+      );
+      return result.matchedCount > 0;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * The single compare-and-set that hands a reminder to the worker.
+   *
+   * Matches on id, exact org, still-approved status, the lease we hold, AND the
+   * fingerprint we just verified. If anything moved between the source reread
+   * and this write, the update matches nothing and no send happens.
+   */
+  async finalizeVerifiedPaymentClaim(
+    id: string,
+    orgId: OrgId,
+    leaseToken: string,
+    fingerprint: string,
+    claimLeaseUntil: Date,
+    now: Date
+  ): Promise<OutreachProposalDocument | null> {
+    try {
+      return await this.col.findOneAndUpdate(
+        {
+          _id: new ObjectId(id),
+          org_id: orgId,
+          type: 'payment',
+          status: 'approved',
+          verification_lease_token: leaseToken,
+          source_fingerprint: fingerprint,
+        },
+        {
+          $set: {
+            status: 'in_flight',
+            lease_expires_at: claimLeaseUntil,
+            verification_state: 'verified',
+            verified_at: now,
+            verification_error: null,
+            verification_retry_after: null,
+            verification_lease_token: null,
+            verification_lease_expires_at: null,
+          },
+        },
+        { returnDocument: 'after' }
+      );
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Rewrite a proposal whose source moved but whose dedupe boundary did not.
+   *
+   * In manual mode approval is revoked and the draft returns to `pending`, so a
+   * human sees the new figures before anything sends. In auto mode it stays
+   * approved but is NOT returned to the worker in this request — it must pass a
+   * fresh verification first.
+   */
+  async refreshPaymentProposal(
+    id: string,
+    orgId: OrgId,
+    leaseToken: string,
+    refreshed: RefreshedPaymentFields,
+    mode: 'manual' | 'auto',
+    now: Date
+  ): Promise<OutreachProposalDocument | null> {
+    try {
+      return await this.col.findOneAndUpdate(
+        { _id: new ObjectId(id), org_id: orgId, type: 'payment', verification_lease_token: leaseToken },
+        {
+          $set: {
+            ...refreshed,
+            status: mode === 'auto' ? 'approved' : 'pending',
+            approved_at: mode === 'auto' ? now : null,
+            approved_by: mode === 'auto' ? PAYMENT_AUTO_APPROVER : null,
+            verification_state: 'not_verified',
+            verification_error: null,
+            verification_retry_after: null,
+            verification_lease_token: null,
+            verification_lease_expires_at: null,
+          },
+        },
+        { returnDocument: 'after' }
+      );
+    } catch {
+      return null;
+    }
+  }
+
   async cancelPayment(id: string, orgId: OrgId, reason: string, actor: string): Promise<boolean> {
     try {
       const result = await this.col.updateOne(

@@ -7,13 +7,10 @@
  * later: the source can change, but the record of what we based the message on
  * cannot.
  */
-import { OutreachProposalDocument } from '../outreach/outreach-repository';
+import { OutreachProposalDocument, PAYMENT_AUTO_APPROVER } from '../outreach/outreach-repository';
 import { PAYMENT_TRACKER_ORG } from '../outreach/orgs';
 import { PaymentGroup } from './payment-types';
 import { paymentDedupeKey, paymentFingerprint } from './payment-domain';
-
-/** Recorded as the approver when Payment Auto approves a draft without a human. */
-export const PAYMENT_AUTO_ACTOR = 'payment-auto';
 
 export function mapPaymentProposal(
   group: PaymentGroup,
@@ -42,7 +39,7 @@ export function mapPaymentProposal(
     custom_image_id: null,
     created_at: now,
     approved_at: autoApprove ? now : null,
-    approved_by: autoApprove ? PAYMENT_AUTO_ACTOR : null,
+    approved_by: autoApprove ? PAYMENT_AUTO_APPROVER : null,
     sent_at: null,
     lease_expires_at: null,
     model: 'payment-tracker',

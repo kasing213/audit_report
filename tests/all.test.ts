@@ -7,3 +7,4 @@ import './payment-tracker/payment-source.test';
 import './payment-tracker/payment-template.test';
 import './payment-tracker/payment-proposal.test';
 import './payment-tracker/payment-scanner.test';
+import './payment-tracker/payment-claim.test';

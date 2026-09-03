@@ -8,7 +8,15 @@
  */
 import { PaymentGroup, RawPaymentAr } from '../../src/payment-tracker/payment-types';
 import { PaymentTemplateDocument } from '../../src/payment-tracker/payment-template-repository';
-import { groupPaymentArs, validatePaymentAr } from '../../src/payment-tracker/payment-domain';
+import { PaymentArSnapshot, ValidatedPaymentAr } from '../../src/payment-tracker/payment-types';
+import { OutreachProposalDocument } from '../../src/outreach/outreach-repository';
+import {
+  cambodiaStartOfDate,
+  groupPaymentArs,
+  validatePaymentAr,
+} from '../../src/payment-tracker/payment-domain';
+import { mapPaymentProposal } from '../../src/payment-tracker/payment-proposal-mapper';
+import { InMemoryPaymentProposalStore } from './proposal-store';
 
 export const NOW = new Date('2026-09-03T17:00:00.000Z');
 export const CUTOFF = new Date('2026-09-04T16:59:59.999Z');
@@ -52,3 +60,60 @@ export function approvedTemplateFixture(approved: boolean): PaymentTemplateDocum
     approved_by: approved ? 'developer' : null,
   };
 }
+
+/**
+ * Exact reverse of validatePaymentAr, so a live source read can be built from a
+ * group the scanner already produced. Deliberately lossless and deliberately
+ * NOT lenient: the round trip must survive production validation unchanged, or
+ * the fingerprint comparison the claim path relies on would be meaningless.
+ */
+export function validatedArToRawFixture(ar: PaymentArSnapshot): RawPaymentAr {
+  return {
+    ar_id: ar.arId,
+    home_id: ar.homeId,
+    customer_name: ar.customerName,
+    customer_phone: [ar.primaryPhone],
+    current_status: ar.status,
+    amount: { value: ar.amountValue, currency: ar.currency },
+    credit_applied: { value: ar.creditValue, currency: ar.currency },
+    due_date: cambodiaStartOfDate(ar.dueDate),
+  };
+}
+
+/** One approved, human-approved payment proposal ready to be claimed. */
+export function seededApprovedPaymentProposalStore(group: PaymentGroup): InMemoryPaymentProposalStore {
+  const document: OutreachProposalDocument = {
+    ...mapPaymentProposal(group, 'reminder', false, NOW),
+    status: 'approved',
+    approved_at: new Date('2026-09-03T10:00:00.000Z'),
+    approved_by: 'developer',
+  };
+  return new InMemoryPaymentProposalStore([document]);
+}
+
+/**
+ * Array-backed live source. findByArIds returns whatever rows exist for those
+ * ids — a referenced id with no row is genuinely missing, which is a distinct
+ * outcome from an ineligible one and must stay distinguishable.
+ */
+export function arrayBackedPaymentSource(rows: RawPaymentAr[], error?: Error) {
+  const reject = async (): Promise<never> => {
+    throw error as Error;
+  };
+  return {
+    findByArIds: async (arIds: string[]): Promise<RawPaymentAr[]> => {
+      if (error) return reject();
+      return rows.filter((row) => arIds.includes(String(row.ar_id)));
+    },
+    findCandidatesForDate: async (localDate: string): Promise<RawPaymentAr[]> => {
+      if (error) return reject();
+      return rows.filter((row) => {
+        const validated = validatePaymentAr(row, CUTOFF);
+        return validated.ok && validated.ar.dueDate === localDate;
+      });
+    },
+  };
+}
+
+/** Narrow the domain type for fixtures that build ARs by hand. */
+export type FixtureAr = ValidatedPaymentAr;

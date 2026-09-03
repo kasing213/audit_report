@@ -286,7 +286,12 @@ export class RecordingProposalCollection implements ProposalCollectionPort {
 export class InMemoryPaymentProposalStore extends RecordingProposalCollection {
   constructor(documents: OutreachProposalDocument[] = []) {
     super();
-    this.documents = structuredClone(documents);
+    // Backfill _id the way an insert would. A stored proposal always has one,
+    // and without it every id-scoped filter silently misses.
+    this.documents = documents.map((document) => ({
+      ...structuredClone(document),
+      _id: document._id ?? new ObjectId(),
+    }));
   }
 
   async countByDedupeKey(key: string): Promise<number> {
