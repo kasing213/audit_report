@@ -1,7 +1,7 @@
 # Payment Tracker Outreach Integration — Design Spec
 
 Status: approved architecture; implementation blocked on a read-only source credential
-Revised: 2026-09-02
+Revised: 2026-09-03
 
 ## 1. Purpose
 
@@ -212,6 +212,7 @@ verified_at: Date | null
 verification_error: string | null
 cancelled_at: Date | null
 cancelled_reason: string | null
+cancelled_by: string | null
 ```
 
 `cancelled` is added as an auditable terminal proposal status. A rejected
