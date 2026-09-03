@@ -9,3 +9,4 @@ import './payment-tracker/payment-proposal.test';
 import './payment-tracker/payment-scanner.test';
 import './payment-tracker/payment-claim.test';
 import './payment-tracker/worker-isolation.test';
+import './payment-tracker/payment-ui.test';

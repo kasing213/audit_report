@@ -8,7 +8,7 @@ import { GroupConfigManager } from '../utils/group-config';
 import { formatTelegramLink, formatPhoneDisplay, toInternationalPhone } from '../utils/phone-utils';
 import { generateBatch } from '../outreach/outreach-agent';
 import { resolveOrg, ORG_COOKIE_NAME } from '../outreach/org-context';
-import { OUTREACH_ORGS, normalizeOrg } from '../outreach/orgs';
+import { OUTREACH_ORGS, PAYMENT_TRACKER_ORG, normalizeOrg } from '../outreach/orgs';
 import { OutreachSuppressionRepository } from '../outreach/outreach-suppression-repository';
 import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
@@ -24,8 +24,16 @@ function getRepository(): SalesCaseRepository {
 
 // Common template context so every CRM page shows the org switcher and reflects
 // the active workspace. Merge into each page's renderPage data.
-function withOrg(req: Request): { activeOrg: string; orgs: typeof OUTREACH_ORGS } {
-  return { activeOrg: resolveOrg(req), orgs: OUTREACH_ORGS };
+function withOrg(req: Request): {
+  activeOrg: string;
+  orgs: typeof OUTREACH_ORGS;
+  isPaymentTracker: boolean;
+} {
+  const activeOrg = resolveOrg(req);
+  // Payment Tracker shares the outreach page but not its controls: it is fed by
+  // receivables, not stale leads, so the sales generation and schedule controls
+  // are meaningless there and are hidden server-side rather than by JS.
+  return { activeOrg, orgs: OUTREACH_ORGS, isPaymentTracker: activeOrg === PAYMENT_TRACKER_ORG };
 }
 
 // GET /crm/set-org?org=personal — flip the active workspace, then return to the

@@ -10,11 +10,12 @@ import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { ORG_HEADER_NAME, resolveOrg, strictWorkerOrg } from '../outreach/org-context';
 import { requireWorkerOrg } from '../outreach/worker-org-middleware';
+import paymentTrackerRoutes from './payment-tracker-routes';
 import { SalesSideEffectsPort, WorkerProposalService } from '../outreach/worker-proposal-service';
 import { PaymentClaimService } from '../payment-tracker/payment-claim-service';
 import { PaymentSourceConnection } from '../payment-tracker/payment-source-connection';
 import { PaymentSourceRepository } from '../payment-tracker/payment-source-repository';
-import { PaymentTemplateRepository } from '../payment-tracker/payment-template-repository';
+import { PaymentTemplateRepository, isPaymentTemplateActive } from '../payment-tracker/payment-template-repository';
 import { renderPaymentTemplate } from '../payment-tracker/payment-template';
 import { normalizeOrg, OrgId, PAYMENT_TRACKER_ORG } from '../outreach/orgs';
 import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery } from '../outreach/outreach-suppression-repository';
@@ -80,6 +81,11 @@ function dailyCap(): number {
 }
 
 router.use(authMiddleware);
+
+// Dashboard-only Payment Tracker settings. Mounted AFTER authMiddleware — this
+// router must never be reachable unauthenticated — and before the '/:id'
+// routes so 'payment' is not parsed as a proposal id.
+router.use('/payment', paymentTrackerRoutes);
 
 /**
  * Workspace for a request that either a worker or a browser may make.
@@ -274,6 +280,18 @@ router.post('/auto-approve', express.json(), async (req: Request, res: Response)
     const repo = new OutreachWorkerStateRepository();
     const current = await repo.getStatus(org);
     const target = typeof req.body?.enabled === 'boolean' ? req.body.enabled : !current.auto_approve;
+
+    // Payment Auto has an extra precondition: approved wording must exist
+    // before drafts can be approved without a human reading them. Checked
+    // before any state change, so a refusal leaves Auto exactly as it was.
+    if (org === PAYMENT_TRACKER_ORG && target) {
+      const template = await new PaymentTemplateRepository().get();
+      if (!isPaymentTemplateActive(template)) {
+        res.status(409).json({ error: 'approve the payment reminder wording before turning Auto on' });
+        return;
+      }
+    }
+
     await repo.setAutoApprove(org, target);
 
     let approvedCount = 0;

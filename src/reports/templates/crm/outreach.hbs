@@ -340,6 +340,7 @@
 </style>
 
 <div class="outreach-wrap">
+  {{#unless isPaymentTracker}}
   <div class="media-budget-readout" id="media-budget-readout">Loading media usage…</div>
   <div class="default-image-card">
     <img class="default-image-thumb" id="default-image-thumb" alt="Default brand image" onclick="openLightbox()">
@@ -414,6 +415,37 @@
       <div class="sub" id="schedule-status" style="margin-top:0.4rem"></div>
     </div>
   </div>
+  {{/unless}}
+
+  {{#if isPaymentTracker}}
+  <div class="default-image-card" id="payment-wording-card" style="align-items:flex-start">
+    <div class="default-image-meta" style="flex:1 1 100%">
+      <div class="name">Payment reminder wording</div>
+      <div class="sub">
+        Sent to every customer with a balance due. Editing revokes approval —
+        reminders stay blocked until you approve the new wording.
+      </div>
+      <textarea id="payment-template-input" rows="4" style="margin-top:0.5rem;width:100%"></textarea>
+      <div class="sub" style="margin-top:0.35rem" id="payment-placeholder-help"></div>
+      <div class="image-bar" style="margin-top:0.5rem">
+        <button class="btn btn-ghost" onclick="savePaymentTemplate()">Save wording</button>
+        <button class="btn btn-primary" id="payment-approve-btn" onclick="approvePaymentTemplate()">Approve wording</button>
+        <span class="sub" id="payment-template-status"></span>
+      </div>
+    </div>
+  </div>
+
+  <div class="default-image-card" id="payment-source-card" style="align-items:flex-start">
+    <div class="default-image-meta" style="flex:1 1 100%">
+      <div class="name">Source verification</div>
+      <div class="sub" id="payment-source-status">Checking receivables source…</div>
+      <div class="image-bar" style="margin-top:0.5rem">
+        <button class="btn btn-ghost" onclick="paymentScanNow()">Scan now</button>
+      </div>
+    </div>
+  </div>
+  {{/if}}
+
   <div class="lightbox-backdrop" id="lightbox" onclick="closeLightbox()">
     <img id="lightbox-img" alt="Full size">
   </div>
@@ -424,7 +456,7 @@
     <span class="spacer"></span>
     <button class="mode-btn" id="mode-btn" onclick="toggleAutoApprove()">Approve: Manual</button>
     <button class="pause-btn" id="pause-btn" onclick="togglePause()">Pause</button>
-    <button class="btn btn-ghost" id="retry-deferred-btn" onclick="reapproveDeferredToday()" title="Re-approve today's send-timeout / import-deferred failures for this workspace so they retry once the daily cap resets. Skips genuinely bad numbers (privacy/invalid) — only our own crashes.">Retry deferred</button>
+    {{#unless isPaymentTracker}}<button class="btn btn-ghost" id="retry-deferred-btn" onclick="reapproveDeferredToday()" title="Re-approve today's send-timeout / import-deferred failures for this workspace so they retry once the daily cap resets. Skips genuinely bad numbers (privacy/invalid) — only our own crashes.">Retry deferred</button>{{/unless}}
   </div>
   <div class="outreach-top">
     <div class="status-tabs" id="status-tabs">
@@ -432,15 +464,18 @@
       <button class="status-tab" data-status="approved">Approved <span class="count" data-count="approved">0</span></button>
       <button class="status-tab" data-status="in_flight">In Flight <span class="count" data-count="in_flight">0</span></button>
       <button class="status-tab" data-status="sent">Sent <span class="count" data-count="sent">0</span></button>
-      <button class="status-tab" data-status="skipped">Skipped <span class="count" data-count="skipped">0</span></button>
+      {{#unless isPaymentTracker}}<button class="status-tab" data-status="skipped">Skipped <span class="count" data-count="skipped">0</span></button>{{/unless}}
+      {{#if isPaymentTracker}}<button class="status-tab" data-status="cancelled">Cancelled <span class="count" data-count="cancelled">0</span></button>{{/if}}
       <button class="status-tab" data-status="failed">Failed <span class="count" data-count="failed">0</span></button>
     </div>
+    {{#unless isPaymentTracker}}
     <div class="generate-bar">
       <input type="number" id="gen-limit" value="20" min="1" max="50" style="width:70px" title="Max proposals to create">
       <button class="btn btn-ghost" onclick="openTestPrompt()">Test on me (kasing / Chan kasing)</button>
       <button class="btn btn-primary" id="gen-batch-btn" onclick="generateBatch()">Generate batch</button>
       <button class="btn btn-ghost" style="color:var(--red);border-color:var(--red)" onclick="clearAll()">Clear all</button>
     </div>
+    {{/unless}}
   </div>
 
   <div id="list">
@@ -450,6 +485,8 @@
 
 <script>
   const API = '/crm/api/outreach';
+  const PAYMENT_API = API + '/payment';
+  const IS_PAYMENT_TRACKER = {{#if isPaymentTracker}}true{{else}}false{{/if}};
   const DEFAULT_IMAGE_URL = API + '/default-image';
   let hasDefaultImage = false;
   let defaultImageBlobUrl = null;
@@ -901,6 +938,51 @@
     return '';
   }
 
+  /**
+   * What a payment reminder asserts, and where that assertion came from.
+   *
+   * Shown as an explicit per-receivable ledger rather than one total: the
+   * customer is being told they owe money, and an operator approving that needs
+   * to see the amounts, credits, and source ids it was derived from — plus when
+   * the source was last verified.
+   */
+  function paymentDetailHtml(p) {
+    if (!IS_PAYMENT_TRACKER || p.type !== 'payment') return '';
+    const rows = (p.payment_ar_details || []).map(function (ar) {
+      return '<div style="display:flex;gap:0.6rem;font-family:var(--font-mono);font-size:0.78rem">' +
+        '<span style="color:var(--text-muted);min-width:6rem">' + esc(ar.arId) + '</span>' +
+        '<span>' + esc(String(ar.amountValue)) + '</span>' +
+        '<span style="color:var(--text-muted)">- ' + esc(String(ar.creditValue)) + '</span>' +
+        '<span style="margin-left:auto">' + esc(String(ar.amountDue)) + ' ' + esc(ar.currency) + '</span>' +
+        '</div>';
+    }).join('');
+
+    const verified = p.verification_state === 'verified' && p.verified_at
+      ? 'Verified ' + new Date(p.verified_at).toLocaleString()
+      : p.verification_state === 'blocked'
+        ? 'Blocked: ' + esc(p.verification_error || 'unknown')
+        : 'Not verified since drafting';
+
+    const meta = [
+      'Due ' + esc(p.due_date || '-'),
+      'Billing ' + esc(p.billing_month || '-'),
+      p.send_not_before ? 'Sendable from ' + new Date(p.send_not_before).toLocaleString() : '',
+      (p.home_references || []).length ? 'Homes ' + esc((p.home_references || []).join(', ')) : '',
+    ].filter(Boolean).join(' · ');
+
+    return '<div class="reasoning-block" style="display:block;margin:0.5rem 0">' +
+      '<div style="display:flex;justify-content:space-between;font-weight:600;margin-bottom:0.35rem">' +
+        '<span>Balance due</span>' +
+        '<span>' + esc(String(p.payment_balance_due)) + ' ' + esc(p.payment_currency || '') + '</span>' +
+      '</div>' +
+      rows +
+      '<div class="sub" style="margin-top:0.4rem">' + meta + '</div>' +
+      '<div class="sub">' + verified + '</div>' +
+      '<div class="sub" style="font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted)">' +
+        esc(String(p.source_fingerprint || '').slice(0, 16)) + '</div>' +
+      '</div>';
+  }
+
   function statusBadge(p) {
     const color = {
       pending: 'var(--text-muted)',
@@ -909,6 +991,7 @@
       sent: 'var(--green)',
       skipped: 'var(--text-muted)',
       failed: 'var(--red)',
+      cancelled: 'var(--text-muted)',
     }[p.status] || 'var(--text-muted)';
     return '<span class="badge" style="color:' + color + ';border:1px solid ' + color + '55">' + p.status + '</span>';
   }
@@ -939,6 +1022,10 @@
       const statusTail = p.status === 'skipped' && p.skipped_reason ? '<span>· ' + esc(p.skipped_reason) + '</span>' : '';
       const failedTail = p.status === 'failed' && p.failed_reason ? '<span>· ' + esc(p.failed_reason) + '</span>' : '';
       const approvedTail = p.approved_by ? '<span>· approved by ' + esc(p.approved_by) + '</span>' : '';
+      const cancelledTail = p.status === 'cancelled' && p.cancelled_reason
+        ? '<span>· ' + esc(p.cancelled_reason) + (p.cancelled_by ? ' by ' + esc(p.cancelled_by) : '') + '</span>'
+        : '';
+      const paymentBlock = paymentDetailHtml(p);
       return (
         '<div class="proposal" id="p-' + p._id + '">' +
           '<div class="proposal-top">' +
@@ -948,7 +1035,9 @@
             '</div>' +
             '<div>' + statusBadge(p) + '</div>' +
           '</div>' +
+          paymentBlock +
           '<textarea class="proposal-message" id="m-' + p._id + '" ' + editable + '>' + esc(p.message) + '</textarea>' +
+          (IS_PAYMENT_TRACKER ? '' :
           '<div class="image-bar">' +
             '<img class="thumb" id="img-' + p._id + '" src="' + esc(API + '/' + p._id + '/effective-image?v=' + (p.custom_image_id || 'default')) + '" onclick="openProposalLightbox(\'' + p._id + '\')" alt="image">' +
             '<span class="label ' + customClass + '" id="img-label-' + p._id + '">' + customLabel + '</span>' +
@@ -958,11 +1047,11 @@
               '<button class="icon-btn" onclick="clearCustomImage(\'' + p._id + '\')" ' + customDisabled + ' ' + imageBarReadonly + ' id="img-clear-' + p._id + '">↺ Use default</button>' +
             '</div>' +
             '<span class="counter" id="counter-' + p._id + '">0 / 1024</span>' +
-          '</div>' +
+          '</div>') +
           '<div class="proposal-actions">' + actionsHtml(p) + '</div>' +
           '<div class="proposal-footer">' +
             '<button class="reasoning-toggle" onclick="toggleReason(\'' + p._id + '\')">Show reasoning</button>' +
-            '<div>' + new Date(p.created_at).toLocaleString() + ' ' + approvedTail + ' ' + statusTail + ' ' + failedTail + '</div>' +
+            '<div>' + new Date(p.created_at).toLocaleString() + ' ' + approvedTail + ' ' + statusTail + ' ' + failedTail + ' ' + cancelledTail + '</div>' +
           '</div>' +
           '<div class="reasoning-block" id="r-' + p._id + '">' + esc(p.reasoning || '') + '</div>' +
         '</div>'
@@ -1214,14 +1303,85 @@
     workerStatusTimer = setInterval(refreshWorkerStatus, 10000);
   }
 
-  document.getElementById('default-text-input').addEventListener('input', updateDefaultTextCounter);
-  refreshDefaultImage();
-  refreshDefaultVideo();
-  refreshExtraImages();
-  refreshExtraVideos();
-  refreshMediaUsage();
-  refreshDefaultText();
-  loadScheduleSettings();
+  async function refreshPaymentSettings() {
+    try {
+      const [templateResp, statusResp] = await Promise.all([
+        fetch(PAYMENT_API + '/template'),
+        fetch(PAYMENT_API + '/source-status'),
+      ]);
+      const template = (await templateResp.json()).template;
+      const status = await statusResp.json();
+
+      const input = document.getElementById('payment-template-input');
+      if (input && template) input.value = template.template_text || '';
+      document.getElementById('payment-placeholder-help').textContent =
+        'Available: customer_name, customer_names, ar_references, home_references, amount_due, currency, due_date';
+
+      const label = document.getElementById('payment-template-status');
+      if (!status.template_configured) label.textContent = 'No wording saved yet.';
+      else if (!status.template_approved) label.textContent = 'Edited — approve it before reminders can be drafted.';
+      else label.textContent = 'Approved by ' + esc(status.template_approved_by || 'unknown') + '.';
+
+      const parts = [];
+      parts.push(status.scan_enabled ? 'Scanning enabled.' : 'Scanning disabled.');
+      if (status.last_scan_at) parts.push('Last scan ' + new Date(status.last_scan_at).toLocaleString() + '.');
+      else parts.push('No scan has run yet.');
+      if (status.last_error_code) parts.push('Last error: ' + esc(status.last_error_code) + '.');
+      const latest = (status.recent_summaries || []).slice(-1)[0];
+      if (latest) {
+        parts.push(latest.created + ' drafted, ' + latest.invalid_records +
+          ' ineligible records, ' + latest.blocked_groups + ' blocked groups.');
+      }
+      document.getElementById('payment-source-status').textContent = parts.join(' ');
+    } catch (e) {
+      document.getElementById('payment-source-status').textContent = 'Could not read payment settings.';
+    }
+  }
+
+  async function savePaymentTemplate() {
+    const text = document.getElementById('payment-template-input').value;
+    const resp = await fetch(PAYMENT_API + '/template', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: text }),
+    });
+    const body = await resp.json().catch(function () { return {}; });
+    showToast(resp.ok ? 'Wording saved. Approve it to start reminders.' : (body.error || 'Could not save wording'));
+    refreshPaymentSettings();
+  }
+
+  async function approvePaymentTemplate() {
+    const resp = await fetch(PAYMENT_API + '/template/approve', { method: 'POST' });
+    const body = await resp.json().catch(function () { return {}; });
+    showToast(resp.ok ? 'Wording approved.' : (body.error || 'Could not approve wording'));
+    refreshPaymentSettings();
+  }
+
+  async function paymentScanNow() {
+    showToast('Scanning receivables…');
+    const resp = await fetch(PAYMENT_API + '/scan-now', { method: 'POST' });
+    const body = await resp.json().catch(function () { return {}; });
+    if (!resp.ok) { showToast(body.error || 'Scan failed'); return; }
+    showToast(body.result.created + ' reminder(s) drafted.');
+    refreshPaymentSettings();
+    loadList();
+  }
+
+  // Payment Tracker hides the media/text/schedule cards server-side, so every
+  // initialiser that reaches for one has to be skipped rather than allowed to
+  // throw — an exception here would kill the rest of the page script.
+  if (!IS_PAYMENT_TRACKER) {
+    document.getElementById('default-text-input').addEventListener('input', updateDefaultTextCounter);
+    refreshDefaultImage();
+    refreshDefaultVideo();
+    refreshExtraImages();
+    refreshExtraVideos();
+    refreshMediaUsage();
+    refreshDefaultText();
+    loadScheduleSettings();
+  } else {
+    refreshPaymentSettings();
+  }
   startWorkerStatusPoll();
   loadList();
 </script>
