@@ -1,15 +1,22 @@
 import express, { Request, Response, NextFunction } from 'express';
 import multer from 'multer';
 import { authMiddleware, getSessionUser } from './auth-middleware';
-import { OutreachRepository } from '../outreach/outreach-repository';
+import { OutreachRepository, defaultProposalCollectionPort } from '../outreach/outreach-repository';
 import { OutreachImagesRepository, OutreachImageDocument } from '../outreach/outreach-images-repository';
 import { OutreachVideoRepository } from '../outreach/outreach-video-repository';
 import { OutreachSettingsRepository } from '../outreach/outreach-settings-repository';
 import { getStaticOutreachMessage, DEFAULT_STATIC_MESSAGE } from '../outreach/static-template';
 import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
-import { resolveOrg } from '../outreach/org-context';
-import { normalizeOrg, PAYMENT_TRACKER_ORG } from '../outreach/orgs';
+import { ORG_HEADER_NAME, resolveOrg, strictWorkerOrg } from '../outreach/org-context';
+import { requireWorkerOrg } from '../outreach/worker-org-middleware';
+import { SalesSideEffectsPort, WorkerProposalService } from '../outreach/worker-proposal-service';
+import { PaymentClaimService } from '../payment-tracker/payment-claim-service';
+import { PaymentSourceConnection } from '../payment-tracker/payment-source-connection';
+import { PaymentSourceRepository } from '../payment-tracker/payment-source-repository';
+import { PaymentTemplateRepository } from '../payment-tracker/payment-template-repository';
+import { renderPaymentTemplate } from '../payment-tracker/payment-template';
+import { normalizeOrg, OrgId, PAYMENT_TRACKER_ORG } from '../outreach/orgs';
 import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery } from '../outreach/outreach-suppression-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { formatPhoneDisplay, formatTelegramLink } from '../utils/phone-utils';
@@ -28,7 +35,9 @@ import { ObjectId } from 'mongodb';
 import { MEDIA_BUDGET_BYTES, getMediaUsage, checkBudget } from '../outreach/outreach-media-budget';
 
 const router = express.Router();
-const LEASE_MS = 5 * 60 * 1000; // 5 min
+const LEASE_MS = 5 * 60 * 1000;
+// Short lease held while one worker re-reads the payment source.
+const PAYMENT_VERIFICATION_LEASE_MS = 60 * 1000; // 5 min
 const DEFAULT_DAILY_CAP = 15;
 const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
 // Per-file multer ceiling matches the shared budget — a single file can never
@@ -71,6 +80,30 @@ function dailyCap(): number {
 }
 
 router.use(authMiddleware);
+
+/**
+ * Workspace for a request that either a worker or a browser may make.
+ *
+ * An agent must declare a registered X-Org-Id and gets no fallback — a Payment
+ * worker with a typo in ORG_ID must fail, not quietly claim Company proposals.
+ * A browser keeps the forgiving cookie/query resolution. Returns null after
+ * having already sent a 400, so callers just return.
+ */
+function orgForRequest(req: Request, res: Response): OrgId | null {
+  if (getSessionUser(req) !== 'agent') return resolveOrg(req);
+  const org = strictWorkerOrg(req.headers[ORG_HEADER_NAME]);
+  if (!org) {
+    res.status(400).json({ error: 'X-Org-Id header must name a registered workspace' });
+    return null;
+  }
+  return org;
+}
+
+/** Payment Tracker enforces its own cap, independent of Company/Personal. */
+function paymentDailyCap(): number {
+  const parsed = Number(process.env.PAYMENT_TRACKER_DAILY_CAP);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_DAILY_CAP;
+}
 
 function agentOnly(req: Request, res: Response, next: NextFunction): void {
   if (getSessionUser(req) !== 'agent') {
@@ -119,7 +152,8 @@ router.get('/', async (req: Request, res: Response) => {
 // GET /crm/api/outreach/worker-status — visible to any logged-in user (UI badge polls this)
 router.get('/worker-status', async (req: Request, res: Response) => {
   try {
-    const org = resolveOrg(req);
+    const org = orgForRequest(req, res);
+    if (!org) return;
     const state = await new OutreachWorkerStateRepository().getStatus(org);
     res.json({
       org,
@@ -264,7 +298,7 @@ router.post('/auto-approve', express.json(), async (req: Request, res: Response)
 });
 
 // POST /crm/api/outreach/worker-heartbeat — agent only
-router.post('/worker-heartbeat', express.json(), agentOnly, async (req: Request, res: Response) => {
+router.post('/worker-heartbeat', express.json(), agentOnly, requireWorkerOrg, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
     const org = resolveOrg(req);
@@ -282,7 +316,7 @@ router.post('/worker-heartbeat', express.json(), agentOnly, async (req: Request,
 });
 
 // POST /crm/api/outreach/worker-alert — agent only; fires a manager alert
-router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res: Response) => {
+router.post('/worker-alert', express.json(), agentOnly, requireWorkerOrg, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
     const kind = (body.kind as AlertKind) || 'worker-fatal';
@@ -321,7 +355,7 @@ router.post('/worker-alert', express.json(), agentOnly, async (req: Request, res
 // Worker reports an inbound customer reply scraped from the user's Telegram inbox.
 // Idempotent on (phone, telegram_message_id). Alerts the audit-trail group on
 // first insert; deduped re-posts return { deduped: true } without alerting.
-router.post('/report-inbound', express.json(), agentOnly, async (req: Request, res: Response) => {
+router.post('/report-inbound', express.json(), agentOnly, requireWorkerOrg, async (req: Request, res: Response) => {
   try {
     const body = req.body || {};
     const phoneRaw = typeof body.phone === 'string' ? body.phone : '';
@@ -509,7 +543,8 @@ router.post('/default-image/extra', imageUpload.single('file'), imageUploadError
 // (dashboard thumbnails + worker fetch via effective-media).
 router.get('/default-image/extra/:id', async (req: Request, res: Response) => {
   try {
-    const org = resolveOrg(req);
+    const org = orgForRequest(req, res);
+    if (!org) return;
     const doc = await new OutreachImagesRepository().getExtraById(req.params.id, org);
     if (!doc) { res.status(404).json({ error: 'extra image not found' }); return; }
     res.setHeader('Content-Type', doc.mime_type);
@@ -728,7 +763,8 @@ router.get('/default-media/usage', async (req: Request, res: Response) => {
 // the default video, or 404 when none is set (the worker's signal to send image-only).
 router.get('/default-video-url', async (req: Request, res: Response) => {
   try {
-    const org = resolveOrg(req);
+    const org = orgForRequest(req, res);
+    if (!org) return;
     const doc = await new OutreachVideoRepository().getDefault(org);
     if (!doc) { res.status(404).json({ error: 'No default video set' }); return; }
     const r2 = new R2StorageService();
@@ -953,10 +989,142 @@ router.delete('/all', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * The sales-only work that follows a send. Bundled into one collaborator that
+ * WorkerProposalService calls for Company/Personal and never for Payment
+ * Tracker — a payment reminder is not a lead touch, so it must not write a
+ * lead event, start a 180-day contact cooldown, or enter the phone-level
+ * suppression ledger.
+ */
+function salesSideEffects(): SalesSideEffectsPort {
+  const stateRepo = new OutreachWorkerStateRepository();
+  return {
+    recordDelivery: (orgId) => stateRepo.recordDelivery(orgId),
+    releaseClaim: (orgId) => stateRepo.releaseClaim(orgId),
+    recordContacted: async (proposal, orgId) => {
+      await new OutreachSuppressionRepository().recordContacted({
+        phone: proposal.customer_phone,
+        orgId,
+        proposalId: proposal._id ?? null,
+        customerName: proposal.customer_name,
+        follower: proposal.follower,
+      });
+    },
+    recordFailure: async (proposal, orgId, reason) => {
+      const result = await new OutreachSuppressionRepository().recordFailure({
+        phone: proposal.customer_phone,
+        reason,
+        orgId,
+        proposalId: proposal._id ?? null,
+        customerName: proposal.customer_name,
+        follower: proposal.follower,
+      });
+      return result.kind;
+    },
+    saveLeadEvent: async (proposal, orgId) => {
+      const leadEvent: LeadEventDocument = {
+        date: new Date().toISOString().slice(0, 10),
+        org_id: orgId,
+        customer: { name: proposal.customer_name, phone: proposal.customer_phone },
+        page: null,
+        follower: proposal.follower,
+        status_text: 'outreach sent (AI-drafted, worker-delivered)',
+        reason_code: proposal.reason_code,
+        note: proposal.message,
+        group_id: null,
+        source: { telegram_msg_id: `outreach-${proposal._id}`, model: 'outreach-worker' },
+        created_at: new Date(),
+      };
+      await new SalesCaseRepository().saveLeadEvent(leadEvent);
+    },
+    logAudit: async (proposal) => {
+      await new SalesCaseRepository().logAudit({
+        timestamp: new Date(),
+        action: 'outreach-sent',
+        message_id: 0,
+        user_id: 0,
+        username: 'outreach-worker',
+        original_message: proposal.message,
+        parsed_result: {
+          proposal_id: String(proposal._id),
+          phone: proposal.customer_phone,
+          approved_by: proposal.approved_by,
+        },
+      });
+    },
+  };
+}
+
+function workerProposalService(): WorkerProposalService {
+  return new WorkerProposalService({
+    proposals: defaultProposalCollectionPort(),
+    workerState: new OutreachWorkerStateRepository(),
+    sales: salesSideEffects(),
+    alerts: {
+      notifyFailure: async (proposal, _kind, reason) => {
+        await notifyOutreachFailure(proposal, 'mark-failed', { reason });
+      },
+    },
+  });
+}
+
+/**
+ * Payment claims take a delivery reservation BEFORE verifying, then hand it
+ * back if verification produces nothing. Reserving first is what makes the cap
+ * hold under concurrent workers; releasing on a null result is what stops a
+ * blocked or cancelled reminder from silently burning one of the day's slots.
+ */
+async function claimPaymentReminder(
+  stateRepo: OutreachWorkerStateRepository,
+  res: Response
+): Promise<void> {
+  const now = new Date();
+  const reserved = await stateRepo.tryReservePaymentDelivery(PAYMENT_TRACKER_ORG, paymentDailyCap(), now);
+  if (!reserved) {
+    res.json({ proposal: null, daily_cap_reached: true });
+    return;
+  }
+
+  const source = new PaymentSourceConnection();
+  try {
+    const templateText = await new PaymentTemplateRepository().getActiveText();
+    if (!templateText) {
+      await stateRepo.releasePaymentDelivery(PAYMENT_TRACKER_ORG, now);
+      res.json({ proposal: null, reason: 'approved payment wording required' });
+      return;
+    }
+
+    await source.connect();
+    const service = new PaymentClaimService({
+      proposals: defaultProposalCollectionPort(),
+      source: new PaymentSourceRepository(source.collection()),
+      workerState: { getAutoApprove: () => stateRepo.getAutoApprove(PAYMENT_TRACKER_ORG) },
+      clock: () => now,
+      verificationLeaseMs: PAYMENT_VERIFICATION_LEASE_MS,
+      claimLeaseMs: LEASE_MS,
+      renderMessage: (group) => renderPaymentTemplate(templateText, group),
+    });
+
+    const result = await service.claim(now);
+    if (!result.proposal) {
+      await stateRepo.releasePaymentDelivery(PAYMENT_TRACKER_ORG, now);
+      res.json({ proposal: null, ...(result.reason ? { reason: result.reason } : {}) });
+      return;
+    }
+    res.json({ proposal: result.proposal });
+  } catch (err) {
+    await stateRepo.releasePaymentDelivery(PAYMENT_TRACKER_ORG, now);
+    throw err;
+  } finally {
+    await source.disconnect().catch(() => undefined);
+  }
+}
+
 // POST /crm/api/outreach/claim  (worker)
 router.post('/claim', async (req: Request, res: Response) => {
   try {
-    const org = resolveOrg(req);
+    const org = orgForRequest(req, res);
+    if (!org) return;
     const stateRepo = new OutreachWorkerStateRepository();
     const state = await stateRepo.getStatus(org);
     if (state.paused) {
@@ -976,6 +1144,11 @@ router.post('/claim', async (req: Request, res: Response) => {
     const nowMinutes = currentMinutesInTz(tz);
     if (!isWithinHourRange(nowMinutes, schedule.active_start_hour, schedule.active_end_hour)) {
       res.json({ proposal: null, outside_active_hours: true });
+      return;
+    }
+
+    if (org === PAYMENT_TRACKER_ORG) {
+      await claimPaymentReminder(stateRepo, res);
       return;
     }
 
@@ -1013,70 +1186,10 @@ router.post('/claim', async (req: Request, res: Response) => {
 // POST /crm/api/outreach/:id/mark-sent  (worker)
 router.post('/:id/mark-sent', async (req: Request, res: Response) => {
   try {
-    const outreachRepo = new OutreachRepository();
-    const org = resolveOrg(req);
-    const proposal = await outreachRepo.getById(req.params.id, org);
-    if (!proposal) { res.status(404).json({ error: 'not found' }); return; }
-    if (proposal.status !== 'in_flight') {
-      res.status(409).json({ error: `status is ${proposal.status}, expected in_flight` });
-      return;
-    }
-
-    const ok = await outreachRepo.markSent(req.params.id, org);
-    if (!ok) { res.status(409).json({ error: 'could not mark sent' }); return; }
-
-    // Count this successful delivery toward the daily delivery cap. Only sends
-    // that actually land consume a delivery slot; unreachable numbers do not.
-    // Attribute to the proposal's own org (authoritative), not the request.
-    try {
-      await new OutreachWorkerStateRepository().recordDelivery(normalizeOrg(proposal.org_id));
-    } catch (e) {
-      Logger.warn(`recordDelivery on mark-sent: ${(e as Error).message}`);
-    }
-
-    // Start this phone's contact cooldown for the proposal's own workspace. This
-    // also overwrites any prior failure record, so a number that finally
-    // delivered leaves the Failed list — the same effect the old resolve() had.
-    try {
-      await new OutreachSuppressionRepository().recordContacted({
-        phone: proposal.customer_phone,
-        orgId: normalizeOrg(proposal.org_id),
-        proposalId: proposal._id ?? null,
-        customerName: proposal.customer_name,
-        follower: proposal.follower,
-      });
-    } catch (e) {
-      Logger.warn(`recordContacted on mark-sent: ${(e as Error).message}`);
-    }
-
-    // Record a lead event for the outbound message.
-    const salesRepo = new SalesCaseRepository();
-    const today = new Date().toISOString().slice(0, 10);
-    const leadEvent: LeadEventDocument = {
-      date: today,
-      org_id: normalizeOrg(proposal.org_id),
-      customer: { name: proposal.customer_name, phone: proposal.customer_phone },
-      page: null,
-      follower: proposal.follower,
-      status_text: 'outreach sent (AI-drafted, worker-delivered)',
-      reason_code: proposal.reason_code,
-      note: proposal.message,
-      group_id: null,
-      source: { telegram_msg_id: `outreach-${proposal._id}`, model: 'outreach-worker' },
-      created_at: new Date(),
-    };
-    await salesRepo.saveLeadEvent(leadEvent);
-
-    await salesRepo.logAudit({
-      timestamp: new Date(),
-      action: 'outreach-sent',
-      message_id: 0,
-      user_id: 0,
-      username: 'outreach-worker',
-      original_message: proposal.message,
-      parsed_result: { proposal_id: String(proposal._id), phone: proposal.customer_phone, approved_by: proposal.approved_by },
-    });
-
+    const org = orgForRequest(req, res);
+    if (!org) return;
+    const result = await workerProposalService().markSent(req.params.id, org);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
     res.json({ success: true });
   } catch (err) {
     Logger.error('outreach mark-sent failed', err as Error);
@@ -1085,52 +1198,18 @@ router.post('/:id/mark-sent', async (req: Request, res: Response) => {
 });
 
 // POST /crm/api/outreach/:id/mark-failed  (worker)
+//
+// No auto-retry of any kind (2026-08): every failure — transient worker/network
+// blips included — is left `failed` as-is. New leads keep flowing in via the
+// normal claim queue; a failed proposal is never resurrected automatically. (A
+// human can still bring one back explicitly via /reapprove-deferred-today.)
 router.post('/:id/mark-failed', express.json(), async (req: Request, res: Response) => {
   try {
     const reason = (req.body?.reason as string) || 'unspecified worker failure';
-    const outreachRepo = new OutreachRepository();
-    const org = resolveOrg(req);
-    const proposal = await outreachRepo.getById(req.params.id, org);
-    if (!proposal) { res.status(404).json({ error: 'not found' }); return; }
-
-    // No auto-retry of any kind (2026-08): every failure — transient worker/
-    // network blips included — is left `failed` as-is. New leads keep flowing
-    // in via the normal claim queue; a failed proposal is never resurrected
-    // automatically. (A human can still bring one back explicitly via
-    // /reapprove-deferred-today.)
-    const ok = await outreachRepo.markFailed(req.params.id, org, reason);
-    if (!ok) { res.status(404).json({ error: 'not found' }); return; }
-
-    // Record the failure in the phone-level suppression ledger (stops re-hammering;
-    // privacy/invalid failures are permanent, no retry clock). Best-effort.
-    let failureKind: string | undefined;
-    try {
-      const result = await new OutreachSuppressionRepository().recordFailure({
-        phone: proposal.customer_phone,
-        reason,
-        orgId: normalizeOrg(proposal.org_id),
-        proposalId: proposal._id ?? null,
-        customerName: proposal.customer_name,
-        follower: proposal.follower,
-      });
-      failureKind = result.kind;
-    } catch (e) {
-      Logger.warn(`recordFailure on mark-failed: ${(e as Error).message}`);
-    }
-
-    // claims_today no longer gates anything (2026-08), but it's still the only
-    // record of how many real Telegram round-trips happened today (useful for
-    // spotting a throttle event, e.g. N deferred out of M attempts). Refund it
-    // ONLY for transient/system failures — they never reached Telegram at all,
-    // so counting them would overstate real attempts. Privacy/invalid/deferred
-    // consumed a genuine ImportContacts round-trip and stay counted.
-    // Unknown kind → refund (preserves prior behavior).
-    if (failureKind === undefined || failureKind === 'transient') {
-      try { await new OutreachWorkerStateRepository().releaseClaim(normalizeOrg(proposal.org_id)); } catch (e) { Logger.warn(`releaseClaim on mark-failed: ${(e as Error).message}`); }
-    }
-    notifyOutreachFailure(proposal, 'mark-failed', { reason }).catch((err) => {
-      Logger.error('mark-failed alert dispatch errored', err as Error);
-    });
+    const org = orgForRequest(req, res);
+    if (!org) return;
+    const result = await workerProposalService().markFailed(req.params.id, org, reason);
+    if (!result.ok) { res.status(result.status).json({ error: result.error }); return; }
     res.json({ success: true });
   } catch (err) {
     Logger.error('outreach mark-failed failed', err as Error);
@@ -1143,7 +1222,8 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
 router.get('/:id/effective-image', async (req: Request, res: Response) => {
   try {
     const proposalRepo = new OutreachRepository();
-    const proposalOrg = resolveOrg(req);
+    const proposalOrg = orgForRequest(req, res);
+    if (!proposalOrg) return;
     const proposal = await proposalRepo.getById(req.params.id, proposalOrg);
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
 
@@ -1193,7 +1273,8 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
 router.get('/:id/effective-media', async (req: Request, res: Response) => {
   try {
     const proposalRepo = new OutreachRepository();
-    const org = resolveOrg(req);
+    const org = orgForRequest(req, res);
+    if (!org) return;
     const proposal = await proposalRepo.getById(req.params.id, org);
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
 

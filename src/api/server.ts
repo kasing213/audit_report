@@ -28,7 +28,9 @@ export class ApiServer {
     this.app.use((_req, res, next) => {
       res.header('Access-Control-Allow-Origin', '*');
       res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization');
+      // X-Org-Id is how a worker declares its workspace on every agent call; without
+      // it here a cross-origin worker request is stripped of its org and rejected.
+      res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept, Authorization, X-Org-Id');
       next();
     });
 
