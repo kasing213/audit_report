@@ -81,6 +81,32 @@ the worker sends **text-only** using the built-in template. Set an image/video
 on the dashboard (switch to the org first) only if you want them on that org's
 sends.
 
+## Payment Tracker worker (third account)
+
+Payment Tracker sends receivable reminders. It is a third instance of this same
+worker — unchanged MTProto send/receive code — with its own session, ORG_ID, and
+PM2 file.
+
+```bash
+# One time: create ONLY telegram-string-session-payment-tracker.txt.
+# Refuses to overwrite an existing file and cannot be pointed anywhere else.
+npm run login:payment
+
+# Start it (its own ecosystem file, not ecosystem.config.js)
+pm2 start ecosystem.payment-tracker.config.js
+pm2 stop outreach-worker-payment-tracker
+```
+
+`ORG_ID` is now **required** for every worker, including the existing two. A
+worker started without it exits immediately rather than defaulting to `company`
+— that default would have let a mistyped payment worker send Company outreach
+from the payment account. The two PM2 apps in `ecosystem.config.js` already set
+`ORG_ID` explicitly, so their behaviour is unchanged.
+
+The payment worker's `DAILY_CAP=15` is defence in depth. The server is
+authoritative: it reserves a delivery slot before verification and releases it
+if nothing is sent, so concurrent workers cannot exceed the cap.
+
 ## Run the worker (laptop)
 
 ```bash

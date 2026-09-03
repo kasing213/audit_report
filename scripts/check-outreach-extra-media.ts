@@ -181,7 +181,10 @@ async function main(): Promise<void> {
     });
     try {
       const manifestResp = await fetch(`${base}/${testProposalId}/effective-media`, {
-        headers: { Authorization: `Bearer ${process.env.AGENT_TOKEN}` },
+        // Agent requests must declare their workspace — the worker sends this on
+        // every call via authedFetch, and the server no longer falls back to
+        // company for an agent token.
+        headers: { Authorization: `Bearer ${process.env.AGENT_TOKEN}`, 'X-Org-Id': TEST_ORG },
       });
       check('GET :id/effective-media status', manifestResp.status, 200);
       const manifest = await manifestResp.json() as any[];

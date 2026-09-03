@@ -5,11 +5,13 @@ import { MonthlyScheduler } from './scheduler/monthly-scheduler';
 import { PromiseScheduler } from './scheduler/promise-scheduler';
 import { OutreachScheduler } from './scheduler/outreach-scheduler';
 import { HeartbeatWatchdogScheduler } from './scheduler/heartbeat-watchdog-scheduler';
+import { PaymentTrackerScheduler } from './scheduler/payment-tracker-scheduler';
 import { AdScannerScheduler } from './ad-scanner/ad-scanner-scheduler';
 import { setOutreachAlertSender } from './outreach/outreach-alerts';
 import { setInboundAlertSender } from './outreach/inbound-alerts';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
+import { readPaymentTrackerConfig } from './payment-tracker/payment-config';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -92,6 +94,19 @@ async function main(): Promise<void> {
     const heartbeatWatchdog = new HeartbeatWatchdogScheduler();
     heartbeatWatchdog.startScheduler();
 
+    // Payment Tracker receivables scan. Off unless PAYMENT_TRACKER_SCAN_ENABLED
+    // is exactly 'true'; while disabled this registers no cron and opens no
+    // connection to the payment source, so deploying it changes nothing.
+    // Reading the config here (rather than inside the scheduler) means an
+    // invalid scan time or cap fails the boot loudly instead of silently
+    // falling back to a default nobody chose.
+    const paymentConfig = readPaymentTrackerConfig(process.env);
+    const paymentTrackerScheduler = new PaymentTrackerScheduler();
+    paymentTrackerScheduler.startScheduler();
+    Logger.info(
+      `- Payment Tracker: ${paymentConfig.scanEnabled ? `scan ${paymentConfig.scanTime} Cambodia` : 'disabled'} (cap ${paymentConfig.dailyCap})`
+    );
+
     // Setup ad report PDF scanner
     const adReportChatId = process.env.AD_REPORT_CHAT_ID;
     if (adReportChatId && process.env.INTERNAL_BOT_TOKEN) {
@@ -111,19 +126,20 @@ async function main(): Promise<void> {
       Logger.info('- Monthly Reports: 1st day 12:01 AM → Excel files');
     }
 
-    process.on('SIGINT', async () => {
+    const shutdown = async (): Promise<void> => {
       Logger.info('Shutting down...');
       telegramBot.stop();
+      // Only disconnects if a scan actually opened the payment source, so a
+      // deployment with scanning disabled never touches that client.
+      await paymentTrackerScheduler.disconnectSource().catch((err) =>
+        Logger.warn(`payment source disconnect: ${(err as Error).message}`)
+      );
       await db.disconnect();
       process.exit(0);
-    });
+    };
 
-    process.on('SIGTERM', async () => {
-      Logger.info('Shutting down...');
-      telegramBot.stop();
-      await db.disconnect();
-      process.exit(0);
-    });
+    process.on('SIGINT', shutdown);
+    process.on('SIGTERM', shutdown);
 
   } catch (error) {
     Logger.error('Failed to start application', error as Error);

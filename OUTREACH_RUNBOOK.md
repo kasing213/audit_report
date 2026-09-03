@@ -127,6 +127,73 @@ the gap. Dry-run by default; `--confirm` to apply; idempotent.
   manual re-import.
 - `inbound_messages` docs aren't org-tagged (the inbound customer *lookup* is).
 
+## Payment Tracker (third workspace)
+
+Payment Tracker drafts reminders from receivables in `ar_tracker.ar_state`, not
+from stale sales leads. It has its own source credential, template, approval
+mode, Telegram session, PM2 process, and daily cap. Company and Personal are
+unchanged by it — the sales scanner iterates `SALES_OUTREACH_ORGS`, which does
+not include Payment Tracker.
+
+### Rollout order (do not skip ahead)
+
+Each step gates the next. Nothing sends until the last one.
+
+```powershell
+# 1. Verify the source credential BEFORE enabling anything.
+#    exit 0 = ready, exit 1 = credential/schema blocker, exit 2 = data not ready.
+npx ts-node scripts/check-payment-tracker-source.ts
+
+# 2. Create the payment Telegram session (only this filename, never overwrites).
+cd scripts/telegram-worker
+npm run login:payment
+
+# 3. Start the payment worker. Server-side state ships PAUSED, so it polls and
+#    sends nothing until you resume it in the dashboard.
+pm2 start ecosystem.payment-tracker.config.js
+
+# To stop it again:
+pm2 stop outreach-worker-payment-tracker
+```
+
+Then, in the dashboard (Outreach → Payment Tracker workspace):
+
+4. Save the reminder wording and click **Approve wording**. Scanning and Auto
+   are both blocked until wording is approved.
+5. Set `PAYMENT_TRACKER_SCAN_ENABLED=true` and restart the server to enable the
+   daily 10:00 (Cambodia) scan. Use **Scan now** to draft on demand first.
+6. Review the drafts, then resume the worker to send Manual-approved reminders.
+7. Enable **Auto** only after stakeholder acceptance. Auto cannot be switched on
+   without currently-approved wording.
+
+### Hard rules
+
+- `PAYMENT_TRACKER_DATABASE_URL` must be an Atlas custom role granting only
+  `find` and `listIndexes` on `ar_tracker.ar_state`. The built-in database-wide
+  `read` role is broader than required and the check script rejects it. **The
+  Payment-Tracker system's own `atlasAdmin` URI must never be used here.**
+- audit-sales never writes to `ar_state`, and never creates an index on it. An
+  unsuitable index is reported to the Payment Tracker administrator as a
+  blocker, not repaired from this side.
+- Company/Personal PM2 commands are unchanged. `ecosystem.config.js` still
+  defines exactly two apps; the payment worker lives in its own file so a
+  routine restart of the sales workers cannot start it by accident.
+- A reminder is never sent on scan-time data. Every claim re-reads the source
+  and re-verifies; if the receivable was paid, the proposal is cancelled instead.
+
+### When Payment Tracker is not sending
+
+Check in this order — each has a distinct cause:
+
+| Symptom | Cause |
+|---|---|
+| `Scanning disabled` in Source verification | `PAYMENT_TRACKER_SCAN_ENABLED` is not `true` |
+| Scan refuses with wording error | wording is unsaved, or was edited and not re-approved |
+| Drafts exist but nothing sends | Payment worker state is paused (it ships paused) |
+| Claim returns `daily_cap_reached` | `PAYMENT_TRACKER_DAILY_CAP` reached for the Cambodia day |
+| Proposal stuck with `verification_state: blocked` | source unreadable/unknown status; retries after 10 min |
+| Proposal `cancelled` with `all_referenced_ars_ineligible` | the customer paid before the reminder went out — working as intended |
+
 ## Worker process management (pm2)
 
 The laptop worker runs under **pm2** (`scripts/telegram-worker/ecosystem.config.js`).

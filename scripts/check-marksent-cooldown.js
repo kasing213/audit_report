@@ -149,7 +149,9 @@ function waitForServer(child) {
 
     const resp1 = await fetch(`${BASE_URL}/crm/api/outreach/${id1}/mark-sent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AGENT_TOKEN}` },
+      // X-Org-Id is mandatory for agent requests — the worker sends it on every
+      // call via authedFetch, and the server no longer falls back to company.
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AGENT_TOKEN}`, 'X-Org-Id': 'company' },
       body: JSON.stringify({}),
     });
     check('case 1: mark-sent status', resp1.status, 200);
@@ -199,7 +201,9 @@ function waitForServer(child) {
 
     const resp2 = await fetch(`${BASE_URL}/crm/api/outreach/${id2}/mark-sent`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AGENT_TOKEN}` },
+      // X-Org-Id is mandatory for agent requests — the worker sends it on every
+      // call via authedFetch, and the server no longer falls back to company.
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${AGENT_TOKEN}`, 'X-Org-Id': 'company' },
       body: JSON.stringify({}),
     });
     check('case 2: mark-sent status', resp2.status, 200);

@@ -212,3 +212,20 @@ test('Payment worker state starts paused while sales worker defaults stay unchan
   assert.equal(defaultState('company').paused, false);
   assert.equal(defaultState('personal').paused, false);
 });
+
+test('heartbeat and inbound reject a missing or invalid workspace header', async () => {
+  // These are agentOnly routes: unlike the media/mark routes they have no
+  // browser caller at all, so requireWorkerOrg runs unconditionally and a
+  // worker that forgets the header must fail rather than beat for Company.
+  const app = express();
+  app.use(express.json());
+  app.post('/worker-heartbeat', requireWorkerOrg, (_req, res) => { res.json({ ok: true }); });
+  app.post('/report-inbound', requireWorkerOrg, (_req, res) => { res.json({ ok: true }); });
+
+  for (const path of ['/worker-heartbeat', '/report-inbound']) {
+    assert.equal((await request(app, 'POST', path, undefined, {})).status, 400);
+    assert.equal((await request(app, 'POST', path, 'not-a-workspace', {})).status, 400);
+    assert.equal((await request(app, 'POST', path, 'payment_tracker', {})).status, 200);
+    assert.equal((await request(app, 'POST', path, 'company', {})).status, 200);
+  }
+});

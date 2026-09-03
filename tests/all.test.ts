@@ -11,3 +11,4 @@ import './payment-tracker/payment-claim.test';
 import './payment-tracker/worker-isolation.test';
 import './payment-tracker/payment-ui.test';
 import './payment-tracker/payment-worker-config.test';
+import './payment-tracker/startup-config.test';
