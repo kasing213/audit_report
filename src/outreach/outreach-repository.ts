@@ -139,35 +139,7 @@ export class OutreachRepository {
   private col: ProposalCollectionPort;
 
   constructor(col?: ProposalCollectionPort) {
-    if (col) {
-      this.col = col;
-      return;
-    }
-    const db = DatabaseConnection.getInstance().getDb();
-    const collection = db.collection<OutreachProposalDocument>(COLLECTION);
-    this.col = mongoProposalPort(collection);
-    if (!indexesReady) {
-      indexesReady = true;
-      collection
-        .createIndexes([
-          { key: { status: 1 }, name: 'status_idx' },
-          { key: { org_id: 1, status: 1 }, name: 'org_status_idx' },
-          { key: { customer_phone: 1 }, name: 'phone_idx' },
-          { key: { generation_id: 1 }, name: 'generation_idx' },
-          { key: { created_at: -1 }, name: 'created_at_desc' },
-          // Payment reminders are deduplicated on (phone, exact local due date)
-          // for the lifetime of the proposal, terminal states included. Partial
-          // so legacy sales documents — which have no payment_dedupe_key — are
-          // untouched and cannot collide with each other on a null key.
-          {
-            key: { payment_dedupe_key: 1 },
-            name: 'payment_dedupe_unique',
-            unique: true,
-            partialFilterExpression: { type: 'payment', payment_dedupe_key: { $type: 'string' } },
-          },
-        ])
-        .catch((err) => Logger.error('outreach_proposals index creation failed', err as Error));
-    }
+    this.col = col ?? defaultProposalCollectionPort();
   }
 
   async insertMany(proposals: OutreachProposalDocument[]): Promise<number> {
@@ -497,6 +469,42 @@ export class OutreachRepository {
       return false;
     }
   }
+}
+
+/**
+ * The Mongo-backed port. Exported so a caller that injects its dependencies —
+ * the payment scanner does — can still run against the real collection without
+ * reimplementing the adapter.
+ */
+export function defaultProposalCollectionPort(): ProposalCollectionPort {
+  const collection = DatabaseConnection.getInstance()
+    .getDb()
+    .collection<OutreachProposalDocument>(COLLECTION);
+
+  if (!indexesReady) {
+    indexesReady = true;
+    collection
+      .createIndexes([
+        { key: { status: 1 }, name: 'status_idx' },
+        { key: { org_id: 1, status: 1 }, name: 'org_status_idx' },
+        { key: { customer_phone: 1 }, name: 'phone_idx' },
+        { key: { generation_id: 1 }, name: 'generation_idx' },
+        { key: { created_at: -1 }, name: 'created_at_desc' },
+        // Payment reminders are deduplicated on (phone, exact local due date)
+        // for the lifetime of the proposal, terminal states included. Partial
+        // so legacy sales documents — which have no payment_dedupe_key — are
+        // untouched and cannot collide with each other on a null key.
+        {
+          key: { payment_dedupe_key: 1 },
+          name: 'payment_dedupe_unique',
+          unique: true,
+          partialFilterExpression: { type: 'payment', payment_dedupe_key: { $type: 'string' } },
+        },
+      ])
+      .catch((err) => Logger.error('outreach_proposals index creation failed', err as Error));
+  }
+
+  return mongoProposalPort(collection);
 }
 
 /**
