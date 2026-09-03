@@ -33,9 +33,11 @@ Read-only inspection on 2026-09-02 established the following:
 
 The supplied `D:\Payment-Tracker\.env` credential authenticates with
 `atlasAdmin`. It must not be copied into audit-sales. Before implementation can
-connect to the source, an Atlas user restricted to the `read` role on only the
-`ar_tracker` database must be provisioned as `PAYMENT_TRACKER_DATABASE_URL`.
-Credential privilege verification is a deployment gate.
+connect to the source, an Atlas user with a custom role restricted to `find`
+and `listIndexes` on only `ar_tracker.ar_state` must be provisioned as
+`PAYMENT_TRACKER_DATABASE_URL`. MongoDB's built-in database-wide `read` role is
+broader than this requirement and is not accepted. Credential privilege
+verification is a deployment gate.
 
 ## 3. Scope and invariants
 
@@ -358,7 +360,7 @@ inbound listener, heartbeat, and failure reporting code unchanged.
 ## 15. Configuration
 
 ```text
-PAYMENT_TRACKER_DATABASE_URL=<read-only URI for ar_tracker only>
+PAYMENT_TRACKER_DATABASE_URL=<collection-scoped read-only URI for ar_tracker.ar_state>
 PAYMENT_TRACKER_SCAN_ENABLED=false
 PAYMENT_TRACKER_SCAN_TIME=10:00
 PAYMENT_TRACKER_DAILY_CAP=15
@@ -401,8 +403,9 @@ never attempts to repair it.
 ## 17. Staged rollout
 
 1. Deploy code with `PAYMENT_TRACKER_SCAN_ENABLED=false` and no Payment worker.
-2. Verify the source URI authenticates with only `read` on `ar_tracker`, can
-   read `ar_state`, and cannot administer or write through its assigned roles.
+2. Verify the source URI's effective privileges contain only `find` and
+   `listIndexes` on `ar_tracker.ar_state`, with no database-wide read, write,
+   index-creation, role-management, or administrative privilege.
 3. Re-run schema, date-type, phone/credit readiness, index, and explain checks.
 4. Configure and explicitly approve Payment wording.
 5. Generate only `telegram-string-session-payment-tracker.txt` with the guarded
