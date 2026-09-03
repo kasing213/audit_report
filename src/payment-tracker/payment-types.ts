@@ -83,3 +83,11 @@ export interface PaymentGroupingResult {
   groups: PaymentGroup[];
   errors: PaymentGroupingError[];
 }
+
+/**
+ * The per-AR snapshot persisted on a payment proposal. Identical to the
+ * validated receivable: the proposal records exactly what was read, so an
+ * audit can reconstruct why a reminder said what it said without going back
+ * to a source that may since have changed.
+ */
+export type PaymentArSnapshot = ValidatedPaymentAr;

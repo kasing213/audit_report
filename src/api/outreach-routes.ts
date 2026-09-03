@@ -9,7 +9,7 @@ import { getStaticOutreachMessage, DEFAULT_STATIC_MESSAGE } from '../outreach/st
 import { R2StorageService } from '../outreach/r2-storage-service';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
 import { resolveOrg } from '../outreach/org-context';
-import { normalizeOrg } from '../outreach/orgs';
+import { normalizeOrg, PAYMENT_TRACKER_ORG } from '../outreach/orgs';
 import { OutreachSuppressionRepository, SuppressionKind, SuppressionStatus, SuppressionListQuery } from '../outreach/outreach-suppression-repository';
 import { generateBatch } from '../outreach/outreach-agent';
 import { formatPhoneDisplay, formatTelegramLink } from '../utils/phone-utils';
@@ -813,7 +813,7 @@ router.delete('/default-text', async (req: Request, res: Response) => {
 router.post('/:id/approve', async (req: Request, res: Response) => {
   try {
     const approver = getSessionUser(req) || 'unknown';
-    const ok = await new OutreachRepository().approve(req.params.id, approver);
+    const ok = await new OutreachRepository().approve(req.params.id, resolveOrg(req), approver);
     if (!ok) { res.status(404).json({ error: 'Not pending or not found' }); return; }
     res.json({ success: true });
   } catch (err) {
@@ -826,7 +826,14 @@ router.post('/:id/approve', async (req: Request, res: Response) => {
 router.post('/:id/skip', express.json(), async (req: Request, res: Response) => {
   try {
     const reason = (req.body?.reason as string) || 'skipped by operator';
-    const ok = await new OutreachRepository().skip(req.params.id, reason);
+    const org = resolveOrg(req);
+    const repo = new OutreachRepository();
+    // Rejecting a payment draft is a cancellation, not a sales skip: it keeps
+    // payment_dedupe_key so the phone/due-date boundary stays suppressed, and
+    // records who rejected it. Company/Personal keep existing skip semantics.
+    const ok = org === PAYMENT_TRACKER_ORG
+      ? await repo.cancelPayment(req.params.id, org, reason, getSessionUser(req) || 'unknown')
+      : await repo.skip(req.params.id, org, reason);
     if (!ok) { res.status(404).json({ error: 'Not pending/approved or not found' }); return; }
     res.json({ success: true });
   } catch (err) {
@@ -847,7 +854,8 @@ router.post('/:id/image', imageUpload.single('file'), imageUploadErrorHandler, a
     }
 
     const proposalRepo = new OutreachRepository();
-    const proposal = await proposalRepo.getById(req.params.id);
+    const org = resolveOrg(req);
+    const proposal = await proposalRepo.getById(req.params.id, org);
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
     if (proposal.status !== 'pending' && proposal.status !== 'approved') {
       res.status(409).json({ error: `cannot edit image when status is ${proposal.status}` });
@@ -865,7 +873,7 @@ router.post('/:id/image', imageUpload.single('file'), imageUploadErrorHandler, a
       uploaded_by: uploadedBy,
     });
     const previousId = proposal.custom_image_id;
-    const setOk = await proposalRepo.setCustomImage(req.params.id, newId);
+    const setOk = await proposalRepo.setCustomImage(req.params.id, org, newId);
     if (!setOk) {
       // race: status flipped between getById and setCustomImage; clean up
       await imagesRepo.deleteCustom(newId);
@@ -893,14 +901,15 @@ router.post('/:id/image', imageUpload.single('file'), imageUploadErrorHandler, a
 router.delete('/:id/image', async (req: Request, res: Response) => {
   try {
     const proposalRepo = new OutreachRepository();
-    const proposal = await proposalRepo.getById(req.params.id);
+    const org = resolveOrg(req);
+    const proposal = await proposalRepo.getById(req.params.id, org);
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
     if (proposal.status !== 'pending' && proposal.status !== 'approved') {
       res.status(409).json({ error: `cannot edit image when status is ${proposal.status}` });
       return;
     }
 
-    const { ok, previous } = await proposalRepo.clearCustomImage(req.params.id);
+    const { ok, previous } = await proposalRepo.clearCustomImage(req.params.id, org);
     if (!ok) { res.status(409).json({ error: 'could not clear (status changed)' }); return; }
     if (previous) {
       await new OutreachImagesRepository().deleteCustom(previous);
@@ -922,7 +931,7 @@ router.patch('/:id', express.json(), async (req: Request, res: Response) => {
       res.status(400).json({ error: 'message required' });
       return;
     }
-    const ok = await new OutreachRepository().updateMessage(req.params.id, message.trim());
+    const ok = await new OutreachRepository().updateMessage(req.params.id, resolveOrg(req), message.trim());
     if (!ok) { res.status(404).json({ error: 'Not pending or not found' }); return; }
     res.json({ success: true });
   } catch (err) {
@@ -931,10 +940,12 @@ router.patch('/:id', express.json(), async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /crm/api/outreach/all — nuke all proposals (admin cleanup)
-router.delete('/all', async (_req: Request, res: Response) => {
+// DELETE /crm/api/outreach/all — nuke this workspace's proposals (admin cleanup).
+// Scoped to the active org: "Clear all" in Company must not wipe Personal or
+// Payment Tracker, which is what an unscoped deleteMany({}) used to do.
+router.delete('/all', async (req: Request, res: Response) => {
   try {
-    const deleted = await new OutreachRepository().deleteAll();
+    const deleted = await new OutreachRepository().deleteAll(resolveOrg(req));
     res.json({ deleted });
   } catch (err) {
     Logger.error('outreach deleteAll failed', err as Error);
@@ -1003,14 +1014,15 @@ router.post('/claim', async (req: Request, res: Response) => {
 router.post('/:id/mark-sent', async (req: Request, res: Response) => {
   try {
     const outreachRepo = new OutreachRepository();
-    const proposal = await outreachRepo.getById(req.params.id);
+    const org = resolveOrg(req);
+    const proposal = await outreachRepo.getById(req.params.id, org);
     if (!proposal) { res.status(404).json({ error: 'not found' }); return; }
     if (proposal.status !== 'in_flight') {
       res.status(409).json({ error: `status is ${proposal.status}, expected in_flight` });
       return;
     }
 
-    const ok = await outreachRepo.markSent(req.params.id);
+    const ok = await outreachRepo.markSent(req.params.id, org);
     if (!ok) { res.status(409).json({ error: 'could not mark sent' }); return; }
 
     // Count this successful delivery toward the daily delivery cap. Only sends
@@ -1077,7 +1089,8 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
   try {
     const reason = (req.body?.reason as string) || 'unspecified worker failure';
     const outreachRepo = new OutreachRepository();
-    const proposal = await outreachRepo.getById(req.params.id);
+    const org = resolveOrg(req);
+    const proposal = await outreachRepo.getById(req.params.id, org);
     if (!proposal) { res.status(404).json({ error: 'not found' }); return; }
 
     // No auto-retry of any kind (2026-08): every failure — transient worker/
@@ -1085,7 +1098,7 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
     // in via the normal claim queue; a failed proposal is never resurrected
     // automatically. (A human can still bring one back explicitly via
     // /reapprove-deferred-today.)
-    const ok = await outreachRepo.markFailed(req.params.id, reason);
+    const ok = await outreachRepo.markFailed(req.params.id, org, reason);
     if (!ok) { res.status(404).json({ error: 'not found' }); return; }
 
     // Record the failure in the phone-level suppression ledger (stops re-hammering;
@@ -1130,11 +1143,11 @@ router.post('/:id/mark-failed', express.json(), async (req: Request, res: Respon
 router.get('/:id/effective-image', async (req: Request, res: Response) => {
   try {
     const proposalRepo = new OutreachRepository();
-    const proposal = await proposalRepo.getById(req.params.id);
+    const proposalOrg = resolveOrg(req);
+    const proposal = await proposalRepo.getById(req.params.id, proposalOrg);
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
 
     const imagesRepo = new OutreachImagesRepository();
-    const proposalOrg = normalizeOrg(proposal.org_id);
     let doc: OutreachImageDocument | null = null;
     let resolvedKind: 'default' | 'proposal_custom';
     if (proposal.custom_image_id) {
@@ -1180,10 +1193,10 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
 router.get('/:id/effective-media', async (req: Request, res: Response) => {
   try {
     const proposalRepo = new OutreachRepository();
-    const proposal = await proposalRepo.getById(req.params.id);
+    const org = resolveOrg(req);
+    const proposal = await proposalRepo.getById(req.params.id, org);
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
 
-    const org = normalizeOrg(proposal.org_id);
     const imagesRepo = new OutreachImagesRepository();
     const videoRepo = new OutreachVideoRepository();
 
