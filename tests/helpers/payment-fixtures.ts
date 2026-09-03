@@ -7,6 +7,7 @@
  * base AR is due 2026-09-04 Cambodia time and sendable from 2026-09-03T17:00Z.
  */
 import { PaymentGroup, RawPaymentAr } from '../../src/payment-tracker/payment-types';
+import { PaymentTemplateDocument } from '../../src/payment-tracker/payment-template-repository';
 import { groupPaymentArs, validatePaymentAr } from '../../src/payment-tracker/payment-domain';
 
 export const NOW = new Date('2026-09-03T17:00:00.000Z');
@@ -34,4 +35,20 @@ export function paymentGroupFixture(): PaymentGroup {
   const second = validatePaymentAr(rawAr({ ar_id: 'AR-1', home_id: 'H-1', customer_name: 'Sokha', amount: { value: 80, currency: 'USD' }, credit_applied: { value: 5, currency: 'USD' } }), CUTOFF);
   if (!first.ok || !second.ok) throw new Error('invalid payment fixture');
   return groupPaymentArs([first.ar, second.ar]).groups[0];
+}
+
+/**
+ * Payment wording in one of its two meaningful states. Unapproved wording must
+ * block scanning and Payment Auto, so tests take the flag explicitly rather
+ * than defaulting to the happy path.
+ */
+export function approvedTemplateFixture(approved: boolean): PaymentTemplateDocument {
+  return {
+    _id: 'payment_tracker',
+    template_text: 'Pay {{amount_due}} {{currency}} by {{due_date}} for {{ar_references}}',
+    updated_at: new Date('2026-09-03T00:00:00.000Z'),
+    updated_by: 'developer',
+    approved_at: approved ? new Date('2026-09-03T00:01:00.000Z') : null,
+    approved_by: approved ? 'developer' : null,
+  };
 }
