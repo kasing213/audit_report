@@ -20,6 +20,7 @@ import { TelegramClient, Api } from 'telegram';
 import { StringSession } from 'telegram/sessions';
 import { NewMessage, NewMessageEvent } from 'telegram/events';
 import { LogLevel } from 'telegram/extensions/Logger';
+import { requireWorkerOrgId } from './worker-config';
 
 dotenv.config();
 
@@ -30,10 +31,12 @@ const API_ID = parseInt(process.env.TELEGRAM_API_ID || '0', 10);
 const API_HASH = process.env.TELEGRAM_API_HASH || '';
 const SESSION_PATH = process.env.STRING_SESSION_PATH || './telegram-string-session.txt';
 // Which outreach workspace this worker sends for. The server scopes every
-// claim / cap / mark-sent / inbound by this via the X-Org-Id header, so a
-// company worker and a personal worker (each its own Telegram session + this
-// env) never touch each other's proposals or daily caps. Defaults to 'company'.
-const ORG_ID = process.env.ORG_ID || 'company';
+// claim / cap / mark-sent / inbound by this via the X-Org-Id header, so each
+// worker (its own Telegram session + this env) never touches another's
+// proposals or daily caps. Required — a worker that guessed 'company' here
+// would send another workspace's messages from this account, so an unset or
+// unrecognised value exits before any network activity.
+const ORG_ID = requireWorkerOrgId(process.env.ORG_ID);
 const DAILY_CAP = intEnv('DAILY_CAP', 15);
 const MIN_DELAY_MS = intEnv('MIN_DELAY_SEC', 60) * 1000;
 const MAX_DELAY_MS = intEnv('MAX_DELAY_SEC', 180) * 1000;

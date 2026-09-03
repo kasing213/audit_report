@@ -6,7 +6,9 @@
   "type": "commonjs",
   "scripts": {
     "login": "ts-node login-tg.ts",
-    "start": "ts-node worker.ts"
+    "login:payment": "ts-node login-payment-tracker.ts",
+    "start": "ts-node worker.ts",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "dotenv": "^16.4.5",
