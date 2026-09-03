@@ -3,7 +3,7 @@ import { Logger } from '../utils/logger';
 import { generateBatch } from '../outreach/outreach-agent';
 import { OutreachRepository } from '../outreach/outreach-repository';
 import { OutreachWorkerStateRepository } from '../outreach/outreach-worker-state-repository';
-import { OUTREACH_ORGS, OrgId } from '../outreach/orgs';
+import { SALES_OUTREACH_ORGS, OrgId } from '../outreach/orgs';
 import { OutreachScheduleSettingsRepository, ScheduleSettings, DEFAULT_SCHEDULE_SETTINGS } from '../outreach/outreach-schedule-settings-repository';
 import { dailyCronAt, hourRangeCron, timeStrToMinutes, currentMinutesInTz } from '../utils/cron-time';
 
@@ -161,12 +161,14 @@ export class OutreachScheduler {
   }
 
   /**
-   * Scan every workspace. One org failing must not stop the others.
-   * NOTE: OUTREACH_ORGS is OrgDef[] ({ id, label }), not a string array — iterate
-   * the objects and pass `.id`.
+   * Scan every SALES workspace. One org failing must not stop the others.
+   * NOTE: SALES_OUTREACH_ORGS is OrgDef[] ({ id, label }), not a string array —
+   * iterate the objects and pass `.id`. It is deliberately narrower than the
+   * navigation list: payment_tracker is fed by its own receivables scanner and
+   * must never be drafted for from stale sales leads.
    */
   private async runScan(): Promise<void> {
-    for (const org of OUTREACH_ORGS) {
+    for (const org of SALES_OUTREACH_ORGS) {
       try {
         await this.runScanForOrg(org.id);
       } catch (err) {
@@ -232,7 +234,7 @@ export class OutreachScheduler {
    * huge batch at once. One org failing must not stop the others.
    */
   private async runTopUpCheck(): Promise<void> {
-    for (const org of OUTREACH_ORGS) {
+    for (const org of SALES_OUTREACH_ORGS) {
       try {
         await this.runTopUpCheckForOrg(org.id);
       } catch (err) {

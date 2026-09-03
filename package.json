@@ -10,7 +10,10 @@
     "dev": "ts-node src/index.ts",
     "watch": "ts-node --watch src/index.ts",
     "lint": "eslint src/**/*.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "node --test -r ./tests/register.js tests/all.test.ts",
+    "test:payment": "node --test -r ./tests/register.js tests/all.test.ts",
+    "typecheck:test": "tsc -p tsconfig.test.json"
   },
   "keywords": [
     "audit",

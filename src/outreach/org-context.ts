@@ -10,13 +10,14 @@
  *
  * Precedence: explicit header/query wins over the cookie, so a worker is never
  * misrouted by a stray browser cookie. Anything invalid coerces to DEFAULT_ORG.
+ * That coercion is safe for a browser but NOT for an agent — see strictWorkerOrg.
  * The shared AGENT_TOKEN is unchanged — org is a routing dimension, not an auth
  * boundary (single-operator trust model; per-org tokens are a later hardening).
  */
 
 import { Request } from 'express';
 import { parseCookies } from '../api/auth-middleware';
-import { OrgId, normalizeOrg } from './orgs';
+import { OrgId, isValidOrg, normalizeOrg } from './orgs';
 
 export const ORG_COOKIE_NAME = 'outreach_org';
 export const ORG_HEADER_NAME = 'x-org-id';
@@ -33,4 +34,17 @@ export function resolveOrg(req: Request): OrgId {
 
   const cookies = parseCookies(req.headers.cookie);
   return normalizeOrg(cookies[ORG_COOKIE_NAME]);
+}
+
+/**
+ * Agent-only workspace resolution. Unlike resolveOrg, this NEVER falls back to
+ * Company: a worker that omits X-Org-Id, sends an unregistered value, or sends
+ * the header twice (Express hands back an array) gets null and its request is
+ * rejected. Silent coercion here would let a misconfigured Payment worker claim
+ * and send Company proposals.
+ */
+export function strictWorkerOrg(header: unknown): OrgId | null {
+  return typeof header === 'string' && header.length > 0 && isValidOrg(header)
+    ? header
+    : null;
 }
