@@ -307,7 +307,7 @@ expect one DM; `pm2 start outreach-worker` to clear.
 | `outreach_worker_state` | **Per-org** (`_id: company\|personal`) heartbeat / caps / pause flag | worker, dashboard badge |
 | `outreach_settings` | **Per-org** (`_id: default:<org>`) default outreach message | `/crm/outreach`, worker text |
 | `outreach_images` | Per-org default (`_id: default:<org>`) + per-proposal custom image **bytes** | worker (`effective-image`), `/crm/outreach` |
-| `outreach_media` | **Per-org** default video **metadata** (R2 key); bytes live in Cloudflare R2 | worker (`default-video-url`), `/crm/outreach` |
+| `outreach_media` | **Per-org, one doc per queued video** (up to 5, 50 MB combined) **metadata** (R2 key); bytes live in Cloudflare R2 | worker (`default-video-url`), `/crm/outreach` |
 | `outreach_suppressions` | Phone-level failed/suppressed ledger (+ `org_id`, unique per org+phone) | mark-failed, retry scan, `/crm/failed-numbers` |
 | `inbound_messages` | Customer replies received by the worker | inbound alerts |
 | `audit_logs` | Bot action history | audit trail |
@@ -413,7 +413,51 @@ Common cases:
 | `AUTH_KEY_UNREGISTERED` / `SESSION_REVOKED` | StringSession invalidated (logged out from another device, account password changed) | Re-run `npm run login` in `scripts/telegram-worker/` |
 | `chat did not load via tgaddr …` (with `screenshot=…`) | Legacy Playwright error \| | Worker is on old code. `git pull` to get the gramjs rewrite. |
 
-### 6. Switching a worker to a different Telegram account
+### 6. High "contact import deferred by Telegram" rate (not a privacy block)
+
+**Symptom:** most attempts fail with `contact import deferred by Telegram`
+(NOT `phone number not on Telegram (or hidden by privacy)`). The two look
+similar in the logs but mean completely different things:
+
+| Failure | What it actually means |
+|---|---|
+| `phone number not on Telegram (or hidden by privacy)` | The target number really isn't reachable — not on Telegram, or has privacy settings hiding it from contact import. Permanent, correctly skipped. |
+| `contact import deferred by Telegram` | Telegram's server is throttling **our session's** `ImportContacts` RPC specifically — nothing to do with the target number. A number that gets "deferred" from the bot can often be messaged fine from the same account through the actual Telegram app. |
+
+**Root cause found 2026-08-05:** the Mac Mini migration (2026-08-01) put the
+worker on a freshly-created Telegram authorization instead of continuing the
+established one. Confirmed via `account.GetAuthorizations()` — Telegram scopes
+trust to the specific auth key (session), not the account's age. The old,
+trusted auth key (created 2026-07-17, the one with a month of clean 15/15 and
+zero deferrals — see July pm2 logs) sat idle as a separate `Windows_NT` entry
+in Settings → Devices, while a brand-new `Darwin` entry did all the post-
+migration sending and got progressively MORE throttled over the following
+days (54% deferred cumulative since the move → 85% by day 5).
+
+**Fix:** recover the OLD session file (it's still on whatever machine hosted
+the worker before — the Windows laptop, in this case, at
+`scripts/telegram-worker/telegram-string-session*.txt`) and swap it back in.
+**Don't trust file timestamps to tell old vs. new sessions apart** — a
+straight `scp`/copy can preserve or reset mtime depending on flags, and mtime
+tells you nothing about which Telegram auth key is inside the file anyway.
+Verify for real:
+
+1. Stop the pm2 worker for that org (releases the live connection so the
+   check isn't just seeing the still-running old state).
+2. Connect with the candidate file and call `account.GetAuthorizations()` —
+   look at `dateCreated` on the entry marked `current: true`. That's the auth
+   key's actual age, regardless of which machine/device label the connection
+   reports (device label is always based on whatever machine is *currently*
+   connecting, not something baked into the session).
+3. Only then restart pm2 with that file in place.
+
+If the old session isn't recoverable, there's no known way to transplant
+trust onto a fresh auth key — the account's overall age doesn't help;
+Telegram trusts sessions, not accounts. Worth trying: cut `ImportContacts`
+volume/frequency on the new session for a few days before concluding it's
+permanently stuck, since the actual throttle mechanics are undocumented.
+
+### 7. Switching a worker to a different Telegram account
 
 Each org has its own session file — re-login **the one for that org** and be
 careful with the path (see the session-path gotcha under
@@ -432,6 +476,32 @@ careful with the path (see the session-path gotcha under
 The `TELEGRAM_API_ID`/`HASH` in `.env` don't change — they're app-level, not
 account-level, and are shared by both workers.
 
+### 8. Cross-tenant video leak (fixed 2026-08-12)
+
+**Symptom:** `outreach-worker-company` sent a real customer a video that
+actually belonged to `personal` (identifiable in `~/.pm2/logs/outreach-worker-
+company-out.log` by a video byte-size that never appeared in company's send
+history before, but matches a size in `outreach-worker-personal`'s log).
+
+**Root cause, two layers:**
+
+1. The `GET /default-video-url` route (now `GET /:id/effective-video-url`)
+   resolved which org's videos to return from the *calling worker's own*
+   `X-Org-Id` header/`ORG_ID` env, instead of from the org of the specific
+   proposal being messaged — unlike `effective-image`, which was always
+   proposal-scoped. Fixed: the route now takes a proposal id and derives org
+   via `normalizeOrg(proposal.org_id)`, same as `effective-image`.
+2. `orgMatch()` (`src/outreach/orgs.ts`) gives `company` (the default org) a
+   null-fallback for legacy pre-multi-org data. A leftover `outreach_media`
+   doc from before the 2026-08-11 multi-video migration
+   (`scripts/backfill-multi-video.js`) still had no `org_id`, so it matched
+   `company`'s query and got queued alongside company's real video.
+
+**Fix:** both the route/worker code (above) and the underlying data were
+corrected; see `check-outreach-media-org-ids.js` in
+[Diagnostic scripts](#diagnostic-scripts) — run it after any future
+`outreach_media` migration to confirm no doc is missing `org_id`.
+
 ## Diagnostic scripts
 
 All under `scripts/`. Read-only unless noted. Always invoke through Railway so
@@ -449,6 +519,7 @@ railway run node scripts/<name>.js
 | `check-070.js` | Proposals/leads/suppression for the 070597666 test number, plus proposal counts by (org, status) | no |
 | `preview-pending-outreach.js` | Full message body of every claimable proposal — read before starting the worker if you're unsure what's queued | no |
 | `query-bulk.js` | Older snapshot script for the deprecated `bulk-paste` model. Mostly historical. | no |
+| `check-outreach-media-org-ids.js` | Verifies every `outreach_media` doc has an `org_id` set. Run this after any `outreach_media` migration/backfill, and if a worker ever sends the wrong org's video — see the 2026-08-12 cross-tenant video leak below. | no |
 
 ## Destructive one-shots (NOT committed)
 
@@ -470,13 +541,19 @@ Use only when you genuinely want to start from zero.
   like a password — a full account login. Don't commit, don't paste in chat.
   Mind the **session-path gotcha** under [Multi-org](#multi-org-company--personal):
   a bare `npm run login` overwrites the *company* file.
-- **Caps are enforced server-side, per org** (`deliveries_today` /
-  `claims_today` on that org's `outreach_worker_state` doc): **15 delivered** +
-  a **40 attempt** ceiling. Unreachable numbers (privacy/not-on-Telegram) burn
-  an *attempt* but not a *delivery* slot, so the worker keeps going until 15
-  land or 40 attempts are spent. Running two copies of the same org's worker
-  doesn't double its cap — they race for the same slot.
-- **`failed` is terminal.** No silent retries. Re-generate to draft again.
+- **Only one cap, enforced server-side per org**: **15 delivered**
+  (`deliveries_today` on that org's `outreach_worker_state` doc). As of
+  2026-08 there's no separate attempt ceiling — `claims_today` is tracked but
+  purely observational. Unreachable numbers (privacy/deferred/invalid) burn
+  neither a hard-capped resource; the worker keeps claiming until 15 land.
+  Running two copies of the same org's worker doesn't double its cap — they
+  race for the same slot.
+- **`failed` is terminal, for every failure kind** — privacy, invalid, AND
+  deferred (see [gotcha 6](#6-high-contact-import-deferred-by-telegram-rate-not-a-privacy-block)).
+  No auto-retry anywhere in the system. Re-generate to draft again. The
+  worker does pause itself for a while (not cap, not suppress) after 5
+  consecutive deferrals in a row — `DEFERRAL_BACKOFF_THRESHOLD`/`_MIN` env
+  vars — pure pacing so it isn't hammering Telegram's throttle every poll.
 - **Pause is server-side.** Click Pause on `/crm/outreach`; the worker reads
   the flag every iteration. No restart needed.
 - **Media sends go as SEPARATE messages, not an album.** Image and video (then

@@ -110,7 +110,10 @@ export interface ProposalFindCursor {
  */
 export interface ProposalCollectionPort {
   findOne(filter: Record<string, unknown>): Promise<OutreachProposalDocument | null>;
-  find(filter: Record<string, unknown>): ProposalFindCursor;
+  find(
+    filter: Record<string, unknown>,
+    options?: { projection?: Record<string, 0 | 1> }
+  ): ProposalFindCursor;
   insertMany(documents: OutreachProposalDocument[]): Promise<number>;
   insertOne(document: OutreachProposalDocument): Promise<OutreachProposalDocument>;
   updateOne(
@@ -238,15 +241,26 @@ export class OutreachRepository {
     }
   }
 
-  /**
-   * Approve every currently-pending proposal for a workspace in one shot.
-   * Used when a workspace switches to Auto so the batch already drafted under
-   * Manual doesn't get stranded — only future drafts are otherwise affected by
-   * the auto_approve flag.
-   */
-  async approveAllPending(orgId: OrgId, approvedBy: string): Promise<number> {
+  /** Open the next bounded window only after all approved/in-flight work settles. */
+  async approveNextPendingWindow(orgId: OrgId, approvedBy: string, limit: number): Promise<number> {
+    if (!Number.isFinite(limit) || limit <= 0) return 0;
+
+    const org = orgMatch(orgId);
+    const active = await this.col.countDocuments({
+      org_id: org,
+      status: { $in: ['approved', 'in_flight'] },
+    });
+    if (active > 0) return 0;
+
+    const pending = await this.col
+      .find({ org_id: org, status: 'pending' }, { projection: { _id: 1 } })
+      .sort({ created_at: 1 })
+      .limit(Math.floor(limit))
+      .toArray();
+    if (pending.length === 0) return 0;
+
     const result = await this.col.updateMany(
-      { org_id: orgMatch(orgId), status: 'pending' },
+      { _id: { $in: pending.map((proposal) => proposal._id!) }, status: 'pending' },
       { $set: { status: 'approved', approved_at: new Date(), approved_by: approvedBy } }
     );
     return result.modifiedCount;
@@ -719,7 +733,7 @@ function mongoProposalPort(col: Collection<OutreachProposalDocument>): ProposalC
 
   return {
     findOne: (filter) => col.findOne(asFilter(filter)) as Promise<OutreachProposalDocument | null>,
-    find: (filter) => wrapCursor(col.find(asFilter(filter))),
+    find: (filter, options) => wrapCursor(col.find(asFilter(filter), options ?? {})),
     insertMany: async (documents) => (await col.insertMany(documents)).insertedCount,
     insertOne: async (document) => {
       const result = await col.insertOne(document);

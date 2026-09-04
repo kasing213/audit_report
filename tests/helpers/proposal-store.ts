@@ -157,7 +157,9 @@ export class RecordingProposalCollection implements ProposalCollectionPort {
     return this.documents.find((document) => documentMatches(document, filter)) ?? null;
   }
 
-  find(filter: Record<string, unknown>): ProposalFindCursor {
+  // Projection is accepted and ignored: it only narrows returned fields, and
+  // every caller here reads whole documents.
+  find(filter: Record<string, unknown>, _options?: { projection?: Record<string, 0 | 1> }): ProposalFindCursor {
     this.lastFilter = filter;
     let rows = this.documents.filter((document) => documentMatches(document, filter));
     const cursor: ProposalFindCursor = {

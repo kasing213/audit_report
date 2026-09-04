@@ -228,12 +228,16 @@ channels going through the same bot.
   `phone number not on Telegram (or hidden by privacy)`. The imported contact is
   deleted afterward so the address book doesn't balloon. `PHONE_NUMBER_INVALID`
   is mapped separately to `phone number invalid (permanent)`.
-- Sending: the worker fetches the effective image (mandatory) and the default
-  video (via `default-video-url`, if set), then sends **image + video as one
-  album** (`client.sendFile(peer, { file: [img, video], … })`) with the message
-  as caption (≤ 1024 chars) or a follow-up bubble. With no video it falls back to
-  an image-only send. `SEND_TIMEOUT_SEC` (default 240 s) bounds the whole send
-  because the video is downloaded from R2 first. See `../../OUTREACH_MEDIA.md`.
+- Sending: the worker fetches the effective image and this org's queued
+  videos for the specific proposal being sent (via `:id/effective-video-url`,
+  up to 5, 50 MB combined — see `../../OUTREACH_MEDIA.md`). The message text
+  always goes out first as its own message, then every media item (image,
+  then videos) is sent bare with no caption, each as its own message
+  (sequential `client.sendFile` calls — a mixed photo+video album via
+  `messages.SendMultiMedia` can fail with `MEDIA_EMPTY`). With no image or
+  video configured it falls back to a text-only send. `SEND_TIMEOUT_SEC`
+  (default 240 s) bounds the whole send because videos are downloaded from R2
+  first.
 - On any send failure the proposal is flipped to `failed` with a reason; the
   server records it in `outreach_suppressions` so the number isn't re-hammered
   (privacy failures are retried every 60 days, up to 3 times). See

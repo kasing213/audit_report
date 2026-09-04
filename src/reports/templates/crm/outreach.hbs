@@ -296,81 +296,35 @@
   .image-bar .counter.green { color: var(--green); }
   .image-bar .counter.yellow { color: var(--yellow); }
   .image-bar .counter.red { color: var(--red); }
-  .extra-media-strip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.4rem;
-    margin-top: 0.5rem;
-    align-items: center;
-  }
-  .extra-media-item {
-    position: relative;
-    width: 48px;
-    height: 48px;
-    border-radius: 4px;
-    border: 1px solid var(--border);
-    background: var(--bg);
-    overflow: hidden;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    font-size: 0.9rem;
-  }
-  .extra-media-item img { width: 100%; height: 100%; object-fit: cover; }
-  .extra-media-item .remove-btn {
-    position: absolute;
-    top: -6px;
-    right: -6px;
-    width: 18px;
-    height: 18px;
-    border-radius: 50%;
-    background: var(--red);
-    color: #fff;
-    border: none;
-    cursor: pointer;
-    font-size: 0.7rem;
-    line-height: 1;
-  }
-  .media-budget-readout {
-    font-family: var(--font-mono);
-    font-size: 0.78rem;
-    color: var(--text-muted);
-    margin-bottom: 0.5rem;
-  }
 </style>
 
 <div class="outreach-wrap">
   {{#unless isPaymentTracker}}
-  <div class="media-budget-readout" id="media-budget-readout">Loading media usage…</div>
   <div class="default-image-card">
     <img class="default-image-thumb" id="default-image-thumb" alt="Default brand image" onclick="openLightbox()">
     <div class="default-image-meta">
       <div class="name" id="default-image-name">Loading…</div>
       <div class="sub" id="default-image-sub"></div>
-      <div class="extra-media-strip" id="extra-images-strip"></div>
     </div>
     <div class="default-image-actions">
       <input type="file" id="default-image-file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="uploadDefaultImage(event)">
       <button class="btn btn-primary" onclick="document.getElementById('default-image-file').click()">Replace image</button>
       <button class="btn btn-ghost" id="default-image-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultImage()">Remove</button>
-      <input type="file" id="extra-image-file" accept="image/jpeg,image/png,image/webp" style="display:none" onchange="addExtraImage(event)">
-      <button class="btn btn-ghost" id="add-extra-image-btn" onclick="document.getElementById('extra-image-file').click()">+ Add image</button>
     </div>
   </div>
-  <div class="default-image-card" id="default-video-card">
-    <div class="default-image-thumb empty" id="default-video-thumb">🎬</div>
-    <div class="default-image-meta">
-      <div class="name" id="default-video-name">Loading…</div>
-      <div class="sub" id="default-video-sub"></div>
-      <div class="extra-media-strip" id="extra-videos-strip"></div>
+  <div class="default-image-card" id="default-video-card" style="align-items:flex-start;flex-direction:column">
+    <div style="display:flex;align-items:center;gap:0.75rem;width:100%;flex-wrap:wrap">
+      <div class="default-image-thumb empty">🎬</div>
+      <div class="default-image-meta">
+        <div class="name">Marketing videos</div>
+        <div class="sub" id="default-video-budget">Loading…</div>
+      </div>
+      <div class="default-image-actions">
+        <input type="file" id="default-video-file" accept="video/mp4" style="display:none" onchange="uploadDefaultVideo(event)">
+        <button class="btn btn-primary" id="default-video-add-btn" onclick="document.getElementById('default-video-file').click()">Add video</button>
+      </div>
     </div>
-    <div class="default-image-actions">
-      <input type="file" id="default-video-file" accept="video/mp4" style="display:none" onchange="uploadDefaultVideo(event)">
-      <button class="btn btn-primary" onclick="document.getElementById('default-video-file').click()">Replace video</button>
-      <button class="btn btn-ghost" id="default-video-remove" style="display:none;color:var(--red);border-color:var(--red)" onclick="removeDefaultVideo()">Remove</button>
-      <input type="file" id="extra-video-file" accept="video/mp4" style="display:none" onchange="addExtraVideo(event)">
-      <button class="btn btn-ghost" id="add-extra-video-btn" onclick="document.getElementById('extra-video-file').click()">+ Add video</button>
-    </div>
+    <div id="default-video-list" style="width:100%;margin-top:0.5rem;display:flex;flex-direction:column;gap:0.4rem"></div>
   </div>
   <div class="default-image-card" id="default-text-card" style="align-items:flex-start">
     <div class="default-image-meta" style="flex:1 1 100%">
@@ -562,27 +516,46 @@
 
   const DEFAULT_VIDEO_URL = API + '/default-video';
 
+  function videoBudgetClass(usedBytes, maxBytes) {
+    const frac = maxBytes > 0 ? usedBytes / maxBytes : 0;
+    if (frac >= 0.95) return 'red';
+    if (frac >= 0.7) return 'yellow';
+    return 'green';
+  }
+
   async function refreshDefaultVideo() {
-    const thumb = document.getElementById('default-video-thumb');
-    const name = document.getElementById('default-video-name');
-    const sub = document.getElementById('default-video-sub');
-    const removeBtn = document.getElementById('default-video-remove');
+    const budget = document.getElementById('default-video-budget');
+    const list = document.getElementById('default-video-list');
+    const addBtn = document.getElementById('default-video-add-btn');
     try {
       const resp = await fetch(DEFAULT_VIDEO_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
-      if (resp.status === 404) {
-        name.textContent = 'No marketing video set';
-        sub.textContent = 'Optional — leads get image + text only';
-        thumb.textContent = '🎬';
-        removeBtn.style.display = 'none';
-        return;
-      }
       if (!resp.ok) throw new Error('GET default-video ' + resp.status);
       const data = await resp.json();
-      const sizeMb = (Number(data.size_bytes || 0) / (1024 * 1024)).toFixed(1);
-      name.textContent = data.filename || 'video.mp4';
-      sub.textContent = (data.mime_type || 'video/mp4') + ' · ' + sizeMb + ' MB';
-      thumb.textContent = '🎬';
-      removeBtn.style.display = '';
+      const videos = data.videos || [];
+      const usedMb = (Number(data.total_bytes || 0) / (1024 * 1024)).toFixed(1);
+      const maxMb = (Number(data.max_bytes || 0) / (1024 * 1024)).toFixed(0);
+      budget.innerHTML = videos.length === 0
+        ? 'No marketing videos set — leads get image + text only'
+        : '<span class="counter ' + videoBudgetClass(data.total_bytes, data.max_bytes) + '">' +
+          usedMb + ' / ' + maxMb + ' MB used · ' + videos.length + ' / ' + data.max_count + ' videos</span>';
+
+      const atLimit = videos.length >= data.max_count || data.total_bytes >= data.max_bytes;
+      addBtn.disabled = atLimit;
+      addBtn.title = atLimit ? 'Video queue is full — remove one to add another' : '';
+
+      list.innerHTML = '';
+      for (const v of videos) {
+        const sizeMb = (Number(v.size_bytes || 0) / (1024 * 1024)).toFixed(1);
+        const row = document.createElement('div');
+        row.className = 'image-bar';
+        row.innerHTML =
+          '<div class="thumb" style="display:flex;align-items:center;justify-content:center">🎬</div>' +
+          '<span class="label"></span>' +
+          '<div class="actions"><button class="icon-btn">Remove</button></div>';
+        row.querySelector('.label').textContent = (v.filename || 'video.mp4') + ' · ' + sizeMb + ' MB';
+        row.querySelector('.icon-btn').addEventListener('click', () => removeVideo(v.id));
+        list.appendChild(row);
+      }
     } catch (err) {
       console.error('refreshDefaultVideo', err);
     }
@@ -597,7 +570,7 @@
     try {
       const resp = await fetch(DEFAULT_VIDEO_URL, { method: 'POST', credentials: 'same-origin', body: fd });
       const data = await resp.json().catch(() => ({}));
-      if (resp.ok) { showToast('Marketing video updated', 'success'); refreshDefaultVideo(); }
+      if (resp.ok) { showToast('Video added', 'success'); refreshDefaultVideo(); }
       else { showToast(data.error || ('Upload failed: ' + resp.status), 'error'); }
     } catch (err) {
       showToast('Upload failed', 'error');
@@ -606,125 +579,11 @@
     }
   }
 
-  async function removeDefaultVideo() {
-    if (!confirm('Remove the marketing video? Leads will get image + text only.')) return;
+  async function removeVideo(id) {
+    if (!confirm('Remove this marketing video?')) return;
     try {
-      const resp = await fetch(DEFAULT_VIDEO_URL, { method: 'DELETE', credentials: 'same-origin' });
+      const resp = await fetch(DEFAULT_VIDEO_URL + '/' + encodeURIComponent(id), { method: 'DELETE', credentials: 'same-origin' });
       if (resp.ok) { showToast('Video removed', 'success'); refreshDefaultVideo(); }
-      else showToast('Remove failed', 'error');
-    } catch { showToast('Remove failed', 'error'); }
-  }
-
-  const EXTRA_IMAGE_URL = API + '/default-image/extra';
-  const EXTRA_VIDEO_URL = API + '/default-video/extra';
-  const MEDIA_USAGE_URL = API + '/default-media/usage';
-
-  async function refreshMediaUsage() {
-    const el = document.getElementById('media-budget-readout');
-    try {
-      const resp = await fetch(MEDIA_USAGE_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
-      if (!resp.ok) throw new Error('GET default-media/usage ' + resp.status);
-      const data = await resp.json();
-      const usedMb = (data.total_bytes / (1024 * 1024)).toFixed(1);
-      const budgetMb = Math.round(data.budget_bytes / (1024 * 1024));
-      el.textContent = usedMb + ' / ' + budgetMb + ' MB used (shared across all default images + videos)';
-      const overBudget = data.total_bytes >= data.budget_bytes;
-      const addImgBtn = document.getElementById('add-extra-image-btn');
-      const addVidBtn = document.getElementById('add-extra-video-btn');
-      if (addImgBtn) addImgBtn.disabled = overBudget;
-      if (addVidBtn) addVidBtn.disabled = overBudget;
-      if (addImgBtn) addImgBtn.title = overBudget ? 'Media budget full — remove something first' : '';
-      if (addVidBtn) addVidBtn.title = overBudget ? 'Media budget full — remove something first' : '';
-    } catch (err) {
-      console.error('refreshMediaUsage', err);
-      el.textContent = 'Media usage unavailable';
-    }
-  }
-
-  async function refreshExtraImages() {
-    const strip = document.getElementById('extra-images-strip');
-    try {
-      const resp = await fetch(EXTRA_IMAGE_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
-      if (!resp.ok) throw new Error('GET default-image/extra ' + resp.status);
-      const items = await resp.json();
-      strip.innerHTML = items.map((it) =>
-        '<div class="extra-media-item">' +
-          '<img src="' + EXTRA_IMAGE_URL + '/' + it.id + '?cb=' + Date.now() + '" alt="' + esc(it.filename) + '">' +
-          '<button class="remove-btn" onclick="removeExtraImage(\'' + it.id + '\')" title="Remove">×</button>' +
-        '</div>'
-      ).join('');
-    } catch (err) {
-      console.error('refreshExtraImages', err);
-    }
-  }
-
-  async function addExtraImage(ev) {
-    const file = ev.target.files && ev.target.files[0];
-    if (!file) return;
-    const fd = new FormData();
-    fd.append('file', file);
-    showToast('Adding image…', 'success');
-    try {
-      const resp = await fetch(EXTRA_IMAGE_URL, { method: 'POST', credentials: 'same-origin', body: fd });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok) { showToast('Image added', 'success'); refreshExtraImages(); refreshMediaUsage(); }
-      else { showToast(data.error || ('Add failed: ' + resp.status), 'error'); }
-    } catch (err) {
-      showToast('Add failed', 'error');
-    } finally {
-      ev.target.value = '';
-    }
-  }
-
-  async function removeExtraImage(id) {
-    if (!confirm('Remove this extra image?')) return;
-    try {
-      const resp = await fetch(EXTRA_IMAGE_URL + '/' + id, { method: 'DELETE', credentials: 'same-origin' });
-      if (resp.ok) { showToast('Image removed', 'success'); refreshExtraImages(); refreshMediaUsage(); }
-      else showToast('Remove failed', 'error');
-    } catch { showToast('Remove failed', 'error'); }
-  }
-
-  async function refreshExtraVideos() {
-    const strip = document.getElementById('extra-videos-strip');
-    try {
-      const resp = await fetch(EXTRA_VIDEO_URL + '?cb=' + Date.now(), { credentials: 'same-origin' });
-      if (!resp.ok) throw new Error('GET default-video/extra ' + resp.status);
-      const items = await resp.json();
-      strip.innerHTML = items.map((it) => {
-        const sizeMb = (Number(it.size_bytes || 0) / (1024 * 1024)).toFixed(1);
-        return '<div class="extra-media-item" title="' + esc(it.filename) + ' · ' + sizeMb + ' MB">🎬' +
-          '<button class="remove-btn" onclick="removeExtraVideo(\'' + it.id + '\')" title="Remove">×</button>' +
-        '</div>';
-      }).join('');
-    } catch (err) {
-      console.error('refreshExtraVideos', err);
-    }
-  }
-
-  async function addExtraVideo(ev) {
-    const file = ev.target.files && ev.target.files[0];
-    if (!file) return;
-    const fd = new FormData();
-    fd.append('file', file);
-    showToast('Adding video… (may take a moment)', 'success');
-    try {
-      const resp = await fetch(EXTRA_VIDEO_URL, { method: 'POST', credentials: 'same-origin', body: fd });
-      const data = await resp.json().catch(() => ({}));
-      if (resp.ok) { showToast('Video added', 'success'); refreshExtraVideos(); refreshMediaUsage(); }
-      else { showToast(data.error || ('Add failed: ' + resp.status), 'error'); }
-    } catch (err) {
-      showToast('Add failed', 'error');
-    } finally {
-      ev.target.value = '';
-    }
-  }
-
-  async function removeExtraVideo(id) {
-    if (!confirm('Remove this extra video?')) return;
-    try {
-      const resp = await fetch(EXTRA_VIDEO_URL + '/' + id, { method: 'DELETE', credentials: 'same-origin' });
-      if (resp.ok) { showToast('Video removed', 'success'); refreshExtraVideos(); refreshMediaUsage(); }
       else showToast('Remove failed', 'error');
     } catch { showToast('Remove failed', 'error'); }
   }
@@ -1237,8 +1096,8 @@
     const turningOn = !autoApprove;
     if (turningOn && !confirm(
       'Switch this workspace to AUTO approve?\n\n' +
-      'The daily batch will be approved and sent with no human review. ' +
-      'Any proposals currently pending for this workspace will be approved immediately. ' +
+      'Proposals will be sent with no human review in windows of 5. ' +
+      'After one window fully finishes, the next 5 pending proposals will be approved automatically. ' +
       'Only this workspace is affected.'
     )) return;
     try {
@@ -1251,7 +1110,7 @@
       if (resp.ok) {
         const data = await resp.json();
         const onMsg = data.approved_count > 0
-          ? `Auto approve ON — ${data.approved_count} pending approved`
+          ? `Auto approve ON — released ${data.approved_count} pending proposals`
           : 'Auto approve ON for this workspace';
         showToast(turningOn ? onMsg : 'Manual approve restored', 'success');
         refreshWorkerStatus();
@@ -1374,9 +1233,6 @@
     document.getElementById('default-text-input').addEventListener('input', updateDefaultTextCounter);
     refreshDefaultImage();
     refreshDefaultVideo();
-    refreshExtraImages();
-    refreshExtraVideos();
-    refreshMediaUsage();
     refreshDefaultText();
     loadScheduleSettings();
   } else {

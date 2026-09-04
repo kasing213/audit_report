@@ -3,7 +3,7 @@ import multer from 'multer';
 import { authMiddleware, getSessionUser } from './auth-middleware';
 import { OutreachRepository, defaultProposalCollectionPort } from '../outreach/outreach-repository';
 import { OutreachImagesRepository, OutreachImageDocument } from '../outreach/outreach-images-repository';
-import { OutreachVideoRepository } from '../outreach/outreach-video-repository';
+import { OutreachVideoRepository, VideoBudgetExceededError, MAX_VIDEO_COUNT, MAX_TOTAL_VIDEO_BYTES } from '../outreach/outreach-video-repository';
 import { OutreachSettingsRepository } from '../outreach/outreach-settings-repository';
 import { getStaticOutreachMessage, DEFAULT_STATIC_MESSAGE } from '../outreach/static-template';
 import { R2StorageService } from '../outreach/r2-storage-service';
@@ -33,25 +33,29 @@ import { notifyOutreachFailure, AlertKind } from '../outreach/outreach-alerts';
 import { notifyInboundReply } from '../outreach/inbound-alerts';
 import { InboundMessagesRepository } from '../database/inbound-messages-repository';
 import { ObjectId } from 'mongodb';
-import { MEDIA_BUDGET_BYTES, getMediaUsage, checkBudget } from '../outreach/outreach-media-budget';
 
 const router = express.Router();
 const LEASE_MS = 5 * 60 * 1000;
 // Short lease held while one worker re-reads the payment source.
 const PAYMENT_VERIFICATION_LEASE_MS = 60 * 1000; // 5 min
 const DEFAULT_DAILY_CAP = 15;
+const DEFAULT_AUTO_APPROVE_WINDOW = 5;
 const ALLOWED_IMAGE_MIME = ['image/jpeg', 'image/png', 'image/webp'];
-// Per-file multer ceiling matches the shared budget — a single file can never
-// legitimately exceed it. The real gate is checkBudget() inside each route,
-// which accounts for everything else already uploaded for the org.
-const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MEDIA_BUDGET_BYTES } });
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024; // 5MB
+const imageUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_IMAGE_BYTES } });
 
 const ALLOWED_VIDEO_MIME = ['video/mp4'];
-const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MEDIA_BUDGET_BYTES } });
+const MAX_VIDEO_BYTES = 50 * 1024 * 1024; // 50MB
+const videoUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_VIDEO_BYTES } });
+
+function autoApproveWindow(): number {
+  const parsed = Number(process.env.OUTREACH_AUTO_APPROVE_WINDOW);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_AUTO_APPROVE_WINDOW;
+}
 
 function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
   if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
-    res.status(413).json({ error: `File exceeds the ${Math.round(MEDIA_BUDGET_BYTES / 1024 / 1024)} MB shared media budget` });
+    res.status(413).json({ error: `File exceeds ${Math.round(MAX_IMAGE_BYTES / 1024 / 1024)} MB limit` });
     return;
   }
   if (err) {
@@ -64,7 +68,7 @@ function imageUploadErrorHandler(err: any, _req: Request, res: Response, next: N
 
 function videoUploadErrorHandler(err: any, _req: Request, res: Response, next: NextFunction): void {
   if (err && (err.code === 'LIMIT_FILE_SIZE' || err.name === 'MulterError' && err.code === 'LIMIT_FILE_SIZE')) {
-    res.status(413).json({ error: `File exceeds the ${Math.round(MEDIA_BUDGET_BYTES / 1024 / 1024)} MB shared media budget` });
+    res.status(413).json({ error: `File exceeds ${Math.round(MAX_VIDEO_BYTES / 1024 / 1024)} MB limit` });
     return;
   }
   if (err) {
@@ -183,7 +187,7 @@ router.get('/worker-status', async (req: Request, res: Response) => {
 // POST /crm/api/outreach/scheduler/run-once — fire the daily scan synchronously
 // for testing. Same code path the cron tick uses (per-org top-up against each
 // workspace's queue target and auto-approve setting, then posts the audit-chat
-// summary), so it exercises the end-to-end flow without waiting for the daily time.
+// summary), so it exercises the end-to-end flow without waiting for 9 AM.
 router.post('/scheduler/run-once', async (_req: Request, res: Response) => {
   const sched = getRegisteredOutreachScheduler();
   if (!sched) {
@@ -296,15 +300,9 @@ router.post('/auto-approve', express.json(), async (req: Request, res: Response)
 
     let approvedCount = 0;
     if (target) {
-      // Resulting state is Auto: clear whatever this workspace currently has
-      // pending, so the switch never leaves a drafted batch stranded. Runs on
-      // every ON request, not just an observed false->true transition — a
-      // transition-only check is racy against concurrent toggles/requests and
-      // silently no-ops if auto_approve was already true when new pending
-      // proposals showed up. Re-approving an already-empty pending set is a
-      // harmless no-op.
+      // Release one small window; leave the rest pending until it settles.
       const approver = getSessionUser(req) || 'auto-approve';
-      approvedCount = await new OutreachRepository().approveAllPending(org, approver);
+      approvedCount = await new OutreachRepository().approveNextPendingWindow(org, approver, autoApproveWindow());
     }
 
     Logger.info(`[outreach] auto_approve org=${org} -> ${target}${approvedCount ? ` (${approvedCount} pending approved)` : ''}`);
@@ -476,20 +474,8 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
       return;
     }
     const org = resolveOrg(req);
-    const imagesRepo = new OutreachImagesRepository();
-    const existing = await imagesRepo.getDefault(org);
-    const budget = await checkBudget(org, req.file.size, existing?.size_bytes || 0);
-    if (!budget.ok) {
-      res.status(413).json({
-        error: `Uploading this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
-        total_bytes: budget.totalBytes,
-        budget_bytes: budget.budgetBytes,
-        attempted_bytes: budget.attemptedBytes,
-      });
-      return;
-    }
     const uploadedBy = getSessionUser(req) || 'unknown';
-    await imagesRepo.setDefault({
+    await new OutreachImagesRepository().setDefault({
       filename: req.file.originalname,
       mime_type: req.file.mimetype,
       buffer: req.file.buffer,
@@ -499,92 +485,6 @@ router.post('/default-image', imageUpload.single('file'), imageUploadErrorHandle
     res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
     Logger.error('default-image POST failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// GET /crm/api/outreach/default-image/extra — list this org's extra images
-router.get('/default-image/extra', async (req: Request, res: Response) => {
-  try {
-    const org = resolveOrg(req);
-    const docs = await new OutreachImagesRepository().listExtras(org);
-    res.json(docs.map((d) => ({
-      id: String(d._id),
-      filename: d.filename,
-      mime_type: d.mime_type,
-      size_bytes: d.size_bytes,
-      uploaded_at: d.uploaded_at,
-      uploaded_by: d.uploaded_by,
-    })));
-  } catch (err) {
-    Logger.error('default-image/extra GET failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// POST /crm/api/outreach/default-image/extra — add an extra image (does not
-// replace the primary default; independently removable).
-router.post('/default-image/extra', imageUpload.single('file'), imageUploadErrorHandler, async (req: Request, res: Response) => {
-  try {
-    if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
-    if (!ALLOWED_IMAGE_MIME.includes(req.file.mimetype)) {
-      res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use JPEG, PNG, or WebP` });
-      return;
-    }
-    const org = resolveOrg(req);
-    const budget = await checkBudget(org, req.file.size);
-    if (!budget.ok) {
-      res.status(413).json({
-        error: `Adding this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
-        total_bytes: budget.totalBytes,
-        budget_bytes: budget.budgetBytes,
-        attempted_bytes: budget.attemptedBytes,
-      });
-      return;
-    }
-    const uploadedBy = getSessionUser(req) || 'unknown';
-    const id = await new OutreachImagesRepository().addExtra({
-      filename: req.file.originalname,
-      mime_type: req.file.mimetype,
-      buffer: req.file.buffer,
-      uploaded_by: uploadedBy,
-    }, org);
-    Logger.info(`outreach extra image added by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) id=${id}`);
-    res.json({ ok: true, id: String(id), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
-  } catch (err) {
-    Logger.error('default-image/extra POST failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// GET /crm/api/outreach/default-image/extra/:id — bytes for one extra image
-// (dashboard thumbnails + worker fetch via effective-media).
-router.get('/default-image/extra/:id', async (req: Request, res: Response) => {
-  try {
-    const org = orgForRequest(req, res);
-    if (!org) return;
-    const doc = await new OutreachImagesRepository().getExtraById(req.params.id, org);
-    if (!doc) { res.status(404).json({ error: 'extra image not found' }); return; }
-    res.setHeader('Content-Type', doc.mime_type);
-    res.setHeader('X-Filename', encodeURIComponent(doc.filename));
-    res.setHeader('Content-Length', String(doc.size_bytes));
-    res.setHeader('Cache-Control', 'private, max-age=60');
-    res.send(doc.data.buffer);
-  } catch (err) {
-    Logger.error('default-image/extra/:id GET failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// DELETE /crm/api/outreach/default-image/extra/:id
-router.delete('/default-image/extra/:id', async (req: Request, res: Response) => {
-  try {
-    const org = resolveOrg(req);
-    const removed = await new OutreachImagesRepository().removeExtra(req.params.id, org);
-    Logger.info(`outreach extra image removed by ${getSessionUser(req) || 'unknown'} for org=${org}: id=${req.params.id} (removed=${removed})`);
-    res.json({ ok: true, removed });
-  } catch (err) {
-    Logger.error('default-image/extra/:id DELETE failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
@@ -604,18 +504,24 @@ router.delete('/default-image', async (req: Request, res: Response) => {
   }
 });
 
-// GET /crm/api/outreach/default-video — metadata for the CRM UI (or 404)
+// GET /crm/api/outreach/default-video — the CRM UI's queued-video list + budget
 router.get('/default-video', async (req: Request, res: Response) => {
   try {
     const org = resolveOrg(req);
-    const doc = await new OutreachVideoRepository().getDefault(org);
-    if (!doc) { res.status(404).json({ error: `No default video set for the ${org} workspace` }); return; }
+    const videos = await new OutreachVideoRepository().listAll(org);
+    const total_bytes = videos.reduce((sum, v) => sum + (v.size_bytes || 0), 0);
     res.json({
-      filename: doc.filename,
-      mime_type: doc.mime_type,
-      size_bytes: doc.size_bytes,
-      uploaded_at: doc.uploaded_at,
-      uploaded_by: doc.uploaded_by,
+      videos: videos.map((v) => ({
+        id: v._id!.toString(),
+        filename: v.filename,
+        mime_type: v.mime_type,
+        size_bytes: v.size_bytes,
+        uploaded_at: v.uploaded_at,
+        uploaded_by: v.uploaded_by,
+      })),
+      total_bytes,
+      max_bytes: MAX_TOTAL_VIDEO_BYTES,
+      max_count: MAX_VIDEO_COUNT,
     });
   } catch (err) {
     Logger.error('default-video GET failed', err as Error);
@@ -623,7 +529,9 @@ router.get('/default-video', async (req: Request, res: Response) => {
   }
 });
 
-// POST /crm/api/outreach/default-video — multipart upload, replaces default (bytes → R2)
+// POST /crm/api/outreach/default-video — multipart upload, ADDS a video to the
+// org's queue (rejected with 400 before any R2 upload if it would breach the
+// count or combined-size budget).
 router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandler, async (req: Request, res: Response) => {
   try {
     const r2 = new R2StorageService();
@@ -638,162 +546,63 @@ router.post('/default-video', videoUpload.single('file'), videoUploadErrorHandle
     }
 
     const org = resolveOrg(req);
-    const videoRepo = new OutreachVideoRepository();
-    const existingVideo = await videoRepo.getDefault(org);
-    const budget = await checkBudget(org, req.file.size, existingVideo?.size_bytes || 0);
-    if (!budget.ok) {
-      res.status(413).json({
-        error: `Uploading this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
-        total_bytes: budget.totalBytes,
-        budget_bytes: budget.budgetBytes,
-        attempted_bytes: budget.attemptedBytes,
+    const uploadedBy = getSessionUser(req) || 'unknown';
+    const repo = new OutreachVideoRepository();
+
+    // Cheap pre-check against the existing queue before spending an R2 upload.
+    const existing = await repo.listAll(org);
+    const currentBytes = existing.reduce((sum, v) => sum + (v.size_bytes || 0), 0);
+    if (existing.length >= MAX_VIDEO_COUNT) {
+      res.status(400).json({ error: `Already at the ${MAX_VIDEO_COUNT}-video limit` });
+      return;
+    }
+    if (currentBytes + req.file.size > MAX_TOTAL_VIDEO_BYTES) {
+      res.status(400).json({
+        error: `Adding this ${(req.file.size / (1024 * 1024)).toFixed(1)}MB video would exceed the ` +
+          `${(MAX_TOTAL_VIDEO_BYTES / (1024 * 1024)).toFixed(0)}MB total (already using ${(currentBytes / (1024 * 1024)).toFixed(1)}MB)`,
       });
       return;
     }
-    const uploadedBy = getSessionUser(req) || 'unknown';
+
     const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
-    const previousKey = await videoRepo.setDefault({
-      r2_key: key,
-      filename: req.file.originalname,
-      mime_type: req.file.mimetype,
-      size_bytes: req.file.size,
-      uploaded_by: uploadedBy,
-    }, org);
-    // Best-effort: delete the object the metadata previously pointed at.
-    if (previousKey && previousKey !== key) {
-      await r2.deleteObject(previousKey).catch(() => {});
+    let doc;
+    try {
+      doc = await repo.add({
+        r2_key: key,
+        filename: req.file.originalname,
+        mime_type: req.file.mimetype,
+        size_bytes: req.file.size,
+        uploaded_by: uploadedBy,
+      }, org);
+    } catch (err) {
+      if (err instanceof VideoBudgetExceededError) {
+        // Lost a race against a concurrent upload — the bytes are already in
+        // R2 with nothing pointing at them; clean up before returning 400.
+        await r2.deleteObject(key).catch(() => {});
+        res.status(400).json({ error: err.message });
+        return;
+      }
+      throw err;
     }
-    Logger.info(`outreach default video replaced by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) key=${key}`);
-    res.json({ ok: true, filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
+    Logger.info(`outreach video added by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) key=${key}`);
+    res.json({ ok: true, id: doc._id!.toString(), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
   } catch (err) {
     Logger.error('default-video POST failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
 
-// DELETE /crm/api/outreach/default-video — clear default, remove object from R2
-router.delete('/default-video', async (req: Request, res: Response) => {
+// DELETE /crm/api/outreach/default-video/:id — remove one queued video, delete its R2 object
+router.delete('/default-video/:id', async (req: Request, res: Response) => {
   try {
     const org = resolveOrg(req);
-    const removedKey = await new OutreachVideoRepository().clearDefault(org);
+    const removedKey = await new OutreachVideoRepository().remove(org, req.params.id);
     if (removedKey) {
       await new R2StorageService().deleteObject(removedKey).catch(() => {});
     }
     res.json({ ok: true, removed: Boolean(removedKey) });
   } catch (err) {
     Logger.error('default-video DELETE failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// GET /crm/api/outreach/default-video/extra — list this org's extra videos
-router.get('/default-video/extra', async (req: Request, res: Response) => {
-  try {
-    const org = resolveOrg(req);
-    const docs = await new OutreachVideoRepository().listExtras(org);
-    res.json(docs.map((d) => ({
-      id: String(d._id),
-      filename: d.filename,
-      mime_type: d.mime_type,
-      size_bytes: d.size_bytes,
-      uploaded_at: d.uploaded_at,
-      uploaded_by: d.uploaded_by,
-    })));
-  } catch (err) {
-    Logger.error('default-video/extra GET failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// POST /crm/api/outreach/default-video/extra — add an extra video (R2 +
-// metadata doc). Does not replace the primary default video.
-router.post('/default-video/extra', videoUpload.single('file'), videoUploadErrorHandler, async (req: Request, res: Response) => {
-  try {
-    const r2 = new R2StorageService();
-    if (!r2.isConfigured()) {
-      res.status(503).json({ error: 'R2 storage not configured (set R2_ACCOUNT_ID / R2_ACCESS_KEY / R2_SECRET_KEY / R2_BUCKET)' });
-      return;
-    }
-    if (!req.file) { res.status(400).json({ error: 'No file uploaded (field name: file)' }); return; }
-    if (!ALLOWED_VIDEO_MIME.includes(req.file.mimetype)) {
-      res.status(400).json({ error: `Mime ${req.file.mimetype} not allowed; use MP4 (video/mp4)` });
-      return;
-    }
-    const org = resolveOrg(req);
-    const budget = await checkBudget(org, req.file.size);
-    if (!budget.ok) {
-      res.status(413).json({
-        error: `Adding this file would exceed the ${Math.round(budget.budgetBytes / 1024 / 1024)} MB shared media budget for this workspace`,
-        total_bytes: budget.totalBytes,
-        budget_bytes: budget.budgetBytes,
-        attempted_bytes: budget.attemptedBytes,
-      });
-      return;
-    }
-    const uploadedBy = getSessionUser(req) || 'unknown';
-    const key = await r2.uploadVideo(req.file.buffer, req.file.mimetype);
-    const id = await new OutreachVideoRepository().addExtra({
-      r2_key: key,
-      filename: req.file.originalname,
-      mime_type: req.file.mimetype,
-      size_bytes: req.file.size,
-      uploaded_by: uploadedBy,
-    }, org);
-    Logger.info(`outreach extra video added by ${uploadedBy} for org=${org}: ${req.file.originalname} (${req.file.size}B) key=${key} id=${id}`);
-    res.json({ ok: true, id: String(id), filename: req.file.originalname, size_bytes: req.file.size, mime_type: req.file.mimetype });
-  } catch (err) {
-    Logger.error('default-video/extra POST failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// DELETE /crm/api/outreach/default-video/extra/:id — removes metadata + R2 object
-router.delete('/default-video/extra/:id', async (req: Request, res: Response) => {
-  try {
-    const org = resolveOrg(req);
-    const removedKey = await new OutreachVideoRepository().removeExtra(req.params.id, org);
-    if (removedKey) {
-      const r2 = new R2StorageService();
-      if (r2.isConfigured()) await r2.deleteObject(removedKey).catch(() => {});
-    }
-    Logger.info(`outreach extra video removed by ${getSessionUser(req) || 'unknown'} for org=${org}: id=${req.params.id} (removed=${Boolean(removedKey)})`);
-    res.json({ ok: true, removed: Boolean(removedKey) });
-  } catch (err) {
-    Logger.error('default-video/extra/:id DELETE failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// GET /crm/api/outreach/default-media/usage — running total for the
-// dashboard's "X / 50 MB used" readout.
-router.get('/default-media/usage', async (req: Request, res: Response) => {
-  try {
-    const org = resolveOrg(req);
-    const usage = await getMediaUsage(org);
-    res.json({ total_bytes: usage.totalBytes, budget_bytes: usage.budgetBytes });
-  } catch (err) {
-    Logger.error('default-media/usage GET failed', err as Error);
-    res.status(500).json({ error: (err as Error).message });
-  }
-});
-
-// GET /crm/api/outreach/default-video-url — worker-facing: presigned GET URL for
-// the default video, or 404 when none is set (the worker's signal to send image-only).
-router.get('/default-video-url', async (req: Request, res: Response) => {
-  try {
-    const org = orgForRequest(req, res);
-    if (!org) return;
-    const doc = await new OutreachVideoRepository().getDefault(org);
-    if (!doc) { res.status(404).json({ error: 'No default video set' }); return; }
-    const r2 = new R2StorageService();
-    if (!r2.isConfigured()) {
-      res.status(503).json({ error: 'R2 storage not configured' });
-      return;
-    }
-    const url = await r2.generatePresignedGet(doc.r2_key);
-    res.json({ url, mime_type: doc.mime_type, size_bytes: doc.size_bytes });
-  } catch (err) {
-    Logger.error('default-video-url GET failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });
@@ -1179,6 +988,11 @@ router.post('/claim', async (req: Request, res: Response) => {
     }
 
     const repo = new OutreachRepository();
+    // Release only after a delivery slot is available. This avoids exposing a
+    // fresh window at the daily cap, where it would sit approved overnight.
+    if (state.auto_approve) {
+      await repo.approveNextPendingWindow(org, 'auto-approve', autoApproveWindow());
+    }
     const proposal = await repo.claimNextApproved(org, LEASE_MS, async (expired) => {
       // Capped re-leases that finally flip to failed call this hook.
       try {
@@ -1283,12 +1097,13 @@ router.get('/:id/effective-image', async (req: Request, res: Response) => {
   }
 });
 
-// GET /crm/api/outreach/:id/effective-media — worker-only. Ordered fetch
-// manifest for everything to send with this proposal: images (custom
-// override if set, else primary + extras) then videos (primary + extras).
-// Reuses /:id/effective-image for the single "primary-or-custom" image entry
-// (it already implements that exact resolution); only extras get new routes.
-router.get('/:id/effective-media', async (req: Request, res: Response) => {
+// GET /crm/api/outreach/:id/effective-video-url — worker-only
+// Presigned GET URLs for this workspace's queued videos (send order), or an
+// empty array when none are set (the worker's signal to send image-only).
+// A worker must not be able to fetch another org's videos just by asking: the
+// proposal lookup itself is scoped to the caller's declared workspace, so a
+// foreign proposal is simply not found and the org can never disagree with it.
+router.get('/:id/effective-video-url', async (req: Request, res: Response) => {
   try {
     const proposalRepo = new OutreachRepository();
     const org = orgForRequest(req, res);
@@ -1296,51 +1111,21 @@ router.get('/:id/effective-media', async (req: Request, res: Response) => {
     const proposal = await proposalRepo.getById(req.params.id, org);
     if (!proposal) { res.status(404).json({ error: 'proposal not found' }); return; }
 
-    const imagesRepo = new OutreachImagesRepository();
-    const videoRepo = new OutreachVideoRepository();
-
-    type ManifestItem = { type: 'image' | 'video'; source: string; id: string; filename: string; url: string };
-    const items: ManifestItem[] = [];
-
-    // Custom override, if it resolves — /:id/effective-image already returns
-    // the custom bytes when custom_image_id is set (with its own fallback
-    // logging), so we can just check existence here to decide whether to
-    // also list primary/extra images.
-    let usedCustom = false;
-    if (proposal.custom_image_id) {
-      const custom = await imagesRepo.getById(proposal.custom_image_id);
-      if (custom) {
-        items.push({ type: 'image', source: 'custom', id: String(custom._id), filename: custom.filename, url: `/crm/api/outreach/${req.params.id}/effective-image` });
-        usedCustom = true;
-      }
-    }
-    if (!usedCustom) {
-      const primary = await imagesRepo.getDefault(org);
-      if (primary) items.push({ type: 'image', source: 'primary', id: String(primary._id), filename: primary.filename, url: `/crm/api/outreach/${req.params.id}/effective-image` });
-      const extras = await imagesRepo.listExtras(org);
-      for (const e of extras) {
-        items.push({ type: 'image', source: 'extra', id: String(e._id), filename: e.filename, url: `/crm/api/outreach/default-image/extra/${e._id}` });
-      }
-    }
-
+    const videos = await new OutreachVideoRepository().listAll(org);
+    if (videos.length === 0) { res.json({ videos: [] }); return; }
     const r2 = new R2StorageService();
-    if (r2.isConfigured()) {
-      const primaryVideo = await videoRepo.getDefault(org);
-      if (primaryVideo) {
-        const url = await r2.generatePresignedGet(primaryVideo.r2_key);
-        items.push({ type: 'video', source: 'primary', id: 'primary', filename: primaryVideo.filename, url });
-      }
-      const extraVideos = await videoRepo.listExtras(org);
-      for (const v of extraVideos) {
-        const url = await r2.generatePresignedGet(v.r2_key);
-        items.push({ type: 'video', source: 'extra', id: String(v._id), filename: v.filename, url });
-      }
+    if (!r2.isConfigured()) {
+      res.status(503).json({ error: 'R2 storage not configured' });
+      return;
     }
-
-    Logger.info(`effective-media[${req.params.id}] org=${org} items=${items.length} types=${items.map((i) => i.type[0]).join('')}`);
-    res.json(items);
+    const urls = await Promise.all(videos.map(async (v) => ({
+      url: await r2.generatePresignedGet(v.r2_key),
+      mime_type: v.mime_type,
+      size_bytes: v.size_bytes,
+    })));
+    res.json({ videos: urls });
   } catch (err) {
-    Logger.error('effective-media GET failed', err as Error);
+    Logger.error('effective-video-url GET failed', err as Error);
     res.status(500).json({ error: (err as Error).message });
   }
 });

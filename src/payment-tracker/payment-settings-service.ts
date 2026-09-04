@@ -20,6 +20,14 @@ import { PaymentScanStateDocument } from './payment-scan-state-repository';
 /** Refusal an operator can act on. Routes map this to HTTP 409. */
 export class PaymentActivationError extends Error {}
 
+const DEFAULT_AUTO_APPROVE_WINDOW = 5;
+
+/** Same env var and fallback the sales auto-approval path uses. */
+function defaultAutoApproveWindow(): number {
+  const parsed = Number(process.env.OUTREACH_AUTO_APPROVE_WINDOW);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : DEFAULT_AUTO_APPROVE_WINDOW;
+}
+
 export interface PaymentSettingsDependencies {
   templates: PaymentTemplateRepository;
   workerState: {
@@ -28,6 +36,8 @@ export interface PaymentSettingsDependencies {
   };
   proposals: ProposalCollectionPort;
   scanState?: { get(): Promise<PaymentScanStateDocument> };
+  /** Size of one auto-approval window. Matches the sales default. */
+  autoApproveWindow?: () => number;
 }
 
 export interface PaymentSourceStatus {
@@ -78,7 +88,16 @@ export class PaymentSettingsService {
     await this.deps.workerState.setAutoApprove(PAYMENT_TRACKER_ORG, enabled);
     if (!enabled) return { approved: 0 };
 
-    const approved = await this.repo.approveAllPending(PAYMENT_TRACKER_ORG, actor);
+    // Release one bounded window rather than every pending draft, matching the
+    // sales pipeline. It matters more here, not less: these messages tell
+    // customers they owe money, so a mistake should reach a handful of people
+    // before the next window opens, not the whole ledger at once. The window
+    // only reopens once nothing is approved or in flight.
+    const approved = await this.repo.approveNextPendingWindow(
+      PAYMENT_TRACKER_ORG,
+      actor,
+      (this.deps.autoApproveWindow ?? defaultAutoApproveWindow)()
+    );
     return { approved };
   }
 

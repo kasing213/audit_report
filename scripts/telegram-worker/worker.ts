@@ -70,7 +70,8 @@ const ALERT_URL = `${BASE_URL}/crm/api/outreach/worker-alert`;
 const REPORT_INBOUND_URL = `${BASE_URL}/crm/api/outreach/report-inbound`;
 const MARK_SENT_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-sent`;
 const MARK_FAILED_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/mark-failed`;
-const EFFECTIVE_MEDIA_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-media`;
+const EFFECTIVE_IMAGE_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-image`;
+const EFFECTIVE_VIDEO_URL = (id: string) => `${BASE_URL}/crm/api/outreach/${id}/effective-video-url`;
 const SCHEDULE_URL = `${BASE_URL}/crm/api/outreach/schedule-settings`;
 // How often to poll the dashboard-configured bounce time. Cheap GET, and the
 // only thing that matters is catching the target minute within this window,
@@ -271,6 +272,24 @@ async function markFailed(id: string, reason: string): Promise<void> {
   if (!resp.ok) console.error(`mark-failed ${resp.status}: ${await resp.text()}`);
 }
 
+// Fetch the send image. Returns null when the org has NO default/custom image
+// configured (server 404) — a legitimate "send text/video only" signal, not an
+// error. Any other non-OK status throws, so a transient fetch failure fails the
+// send (and retries) rather than silently dropping an image that does exist.
+async function fetchEffectiveImage(proposalId: string): Promise<{ buffer: Buffer; filename: string; kind: string } | null> {
+  const resp = await authedFetch(EFFECTIVE_IMAGE_URL(proposalId));
+  if (resp.status === 404) return null; // no image configured for this org → text/video-only send
+  if (!resp.ok) {
+    throw new Error(`effective-image ${resp.status}: ${await resp.text().catch(() => '')}`);
+  }
+  const arr = await resp.arrayBuffer();
+  const buffer = Buffer.from(arr);
+  const rawFilename = resp.headers.get('x-filename') || 'brand.jpg';
+  const filename = (() => { try { return decodeURIComponent(rawFilename); } catch { return rawFilename; } })();
+  const kind = resp.headers.get('x-image-kind') || 'unknown';
+  return { buffer, filename, kind };
+}
+
 async function reportInbound(payload: {
   phone: string;
   telegram_message_id: number;
@@ -304,43 +323,34 @@ async function writeTemp(buffer: Buffer, ext: string): Promise<string> {
   return tmpPath;
 }
 
-interface ManifestItem {
-  type: 'image' | 'video';
-  source: string;
-  id: string;
-  filename: string;
-  url: string;
-}
-
-// Fetch the ordered media manifest for a proposal, then download every item
-// and stage it as a temp file. Images are server-relative paths (fetched
-// with our bearer token, same auth as everything else); videos are already
-// absolute, presigned R2 URLs (fetched with a plain, unauthenticated
-// request, same as today's default-video-url flow). Empty manifest is a
-// valid text-only send, not an error — matches existing behavior.
-async function fetchEffectiveMedia(proposalId: string): Promise<string[]> {
-  const resp = await authedFetch(EFFECTIVE_MEDIA_URL(proposalId));
+// Ask the server for presigned URLs to this proposal's org's queued marketing
+// videos (send order), download each, and stage them as temp files. Org is
+// derived server-side from the proposal itself, not from this worker's own
+// X-Org-Id header/env. Returns [] when no video is available to send — either
+// none are queued (server returns an empty videos array) or R2 storage isn't
+// configured yet (server 503) — the signal to fall back to an image-only
+// send. Any other failure throws, which the send's catch turns into a
+// marked-failed proposal (never a freeze — withTimeout bounds the whole send).
+async function fetchDefaultVideos(proposalId: string): Promise<Array<{ path: string; mime: string }>> {
+  const resp = await authedFetch(EFFECTIVE_VIDEO_URL(proposalId));
+  if (resp.status === 503) {
+    console.log('  video: R2 not configured on server — sending image-only');
+    return [];
+  }
   if (!resp.ok) {
-    throw new Error(`effective-media ${resp.status}: ${await resp.text().catch(() => '')}`);
+    throw new Error(`effective-video-url ${resp.status}: ${await resp.text().catch(() => '')}`);
   }
-  const manifest = (await resp.json()) as ManifestItem[];
-  const paths: string[] = [];
-  for (const item of manifest) {
-    if (item.type === 'image') {
-      const imgResp = await authedFetch(`${BASE_URL}${item.url}`);
-      if (!imgResp.ok) throw new Error(`effective-media image fetch ${imgResp.status}: ${item.url}`);
-      const buffer = Buffer.from(await imgResp.arrayBuffer());
-      const ext = item.filename.split('.').pop() || 'jpg';
-      paths.push(await writeTemp(buffer, ext));
-    } else {
-      const dl = await fetch(item.url); // presigned R2 URL — no auth header
-      if (!dl.ok) throw new Error(`effective-media video download failed: HTTP ${dl.status}`);
-      const bytes = Buffer.from(await dl.arrayBuffer());
-      paths.push(await writeTemp(bytes, 'mp4'));
-      console.log(`  video: ${bytes.length}B staged (${item.source})`);
-    }
+  const body = (await resp.json()) as { videos: Array<{ url: string; mime_type?: string }> };
+  const staged: Array<{ path: string; mime: string }> = [];
+  for (const meta of body.videos) {
+    const dl = await fetch(meta.url); // presigned R2 URL — no auth header
+    if (!dl.ok) throw new Error(`video download failed: HTTP ${dl.status}`);
+    const bytes = Buffer.from(await dl.arrayBuffer());
+    const filePath = await writeTemp(bytes, 'mp4'); // upload endpoint accepts mp4 only
+    console.log(`  video: ${bytes.length}B staged at ${path.basename(filePath)}`);
+    staged.push({ path: filePath, mime: meta.mime_type || 'video/mp4' });
   }
-  return paths;
+  return staged;
 }
 
 // ---- Telegram (MTProto via gramjs) ----
@@ -403,7 +413,8 @@ async function sendViaMTProto(
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   const phoneDigits = phone.replace(/\D/g, '');
 
-  let mediaPaths: string[] = [];
+  let imageTmpPath: string | null = null;
+  let videoTmpPaths: string[] = [];
   try {
     const outcome = await importPhoneAsPeer(client, phoneDigits, customerName || '');
     if (outcome.kind === 'deferred') {
@@ -418,40 +429,42 @@ async function sendViaMTProto(
 
     peerPhoneByUserId.set(peer.id.toString(), phoneDigits);
 
-    // Media (images + videos, primary + extras) is fully optional. The
-    // message always exists (server falls back to the built-in template), so
-    // a send with no media is a plain text message. Fetched only after the
-    // peer resolves so unreachable numbers don't cost wasted downloads.
-    mediaPaths = await fetchEffectiveMedia(proposalId);
-    if (mediaPaths.length > 0) console.log(`  media: ${mediaPaths.length} item(s) staged`);
+    // Image and video are BOTH optional. The message always exists (server
+    // falls back to the built-in template), so a send with no media is a plain
+    // text message. Media is fetched only after the peer resolves so unreachable
+    // numbers don't cost a wasted image fetch / 50MB video download.
+    const img = await fetchEffectiveImage(proposalId); // null = none configured for this org
+    if (img) console.log(`  image: ${img.kind} ${img.filename} ${img.buffer.length}B`);
+    const videos = await fetchDefaultVideos(proposalId);
 
-    const captionMode = message.length <= 1024;
+    // Stage whatever media exists as temp files, image first (legitimacy proof),
+    // then videos in queue order.
+    const mediaPaths: string[] = [];
+    if (img) { imageTmpPath = await writeTemp(img.buffer, img.filename.split('.').pop() || 'jpg'); mediaPaths.push(imageTmpPath); }
+    if (videos.length > 0) { videoTmpPaths = videos.map((v) => v.path); mediaPaths.push(...videoTmpPaths); }
 
     if (mediaPaths.length === 0) {
       // Text-only send — no image or video configured for this org.
       console.log('  send mode: text-only (no image/video configured)');
       await client.sendMessage(peer, { message });
     } else {
-      // Send each media item as its OWN message. A mixed photo+video album via
-      // messages.SendMultiMedia can fail with MEDIA_EMPTY; sequential single-file
-      // sends are reliable. The caption rides on the first item when it fits
-      // (<=1024); otherwise the text follows as its own bubble after all media.
-      const kinds = `${img ? 'image' : ''}${img && video ? '+' : ''}${video ? 'video' : ''}`;
-      console.log(`  send mode: ${mediaPaths.length} media (${kinds})${captionMode ? '+caption' : '+two_bubble'}`);
-      for (let i = 0; i < mediaPaths.length; i++) {
-        if (captionMode && i === 0) {
-          await client.sendFile(peer, { file: mediaPaths[i], caption: message, forceDocument: false, supportsStreaming: true });
-        } else {
-          await client.sendFile(peer, { file: mediaPaths[i], forceDocument: false, supportsStreaming: true });
+      // Text always goes first as its own message, then every media item is
+      // sent bare (no caption) as its own message — a mixed photo+video album
+      // via messages.SendMultiMedia can fail with MEDIA_EMPTY, so sequential
+      // single-file sends are used instead. Putting text first and leaving
+      // every media item uncaptioned keeps the format identical regardless of
+      // how many videos are queued: no "which item gets the caption"
+      // ambiguity, and no orphaned uncaptioned video sitting after the first.
+      const kinds = `${img ? 'image' : ''}${img && videos.length > 0 ? '+' : ''}${videos.length > 0 ? `video×${videos.length}` : ''}`;
+      console.log(`  send mode: text+${mediaPaths.length} media (${kinds})`);
+      await client.sendMessage(peer, { message });
+      try {
+        for (const p of mediaPaths) {
+          await client.sendFile(peer, { file: p, forceDocument: false, supportsStreaming: true });
         }
-      }
-      if (!captionMode) {
-        try {
-          await client.sendMessage(peer, { message });
-        } catch (err) {
-          const e = err as Error;
-          return { ok: false, reason: `media sent, text failed: ${e.message || String(err)}` };
-        }
+      } catch (err) {
+        const e = err as Error;
+        return { ok: false, reason: `text sent, media failed: ${e.message || String(err)}` };
       }
     }
 
@@ -470,9 +483,8 @@ async function sendViaMTProto(
     }
     return { ok: false, reason: `mtproto exception: ${msg}` };
   } finally {
-    for (const p of mediaPaths) {
-      await fs.promises.unlink(p).catch(() => {});
-    }
+    if (imageTmpPath) await fs.promises.unlink(imageTmpPath).catch(() => {});
+    await Promise.all(videoTmpPaths.map((p) => fs.promises.unlink(p).catch(() => {})));
   }
 }
 

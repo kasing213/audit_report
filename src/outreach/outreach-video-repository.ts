@@ -1,18 +1,25 @@
 // src/outreach/outreach-video-repository.ts
 /**
- * Stores METADATA for the single default marketing video — never the bytes.
- * The 50MB video lives in Cloudflare R2 (see R2StorageService); this repo holds
- * only the pointer (r2_key) plus display metadata, in the `outreach_media`
- * Mongo collection as one fixed doc `_id: 'default'`. Mirrors the shape of
- * OutreachImagesRepository minus the Binary `data` field.
+ * Stores METADATA for this org's queued marketing videos — never the bytes.
+ * Each video's 50MB-or-less file lives in Cloudflare R2 (see R2StorageService);
+ * this repo holds only the pointer (r2_key) plus display metadata, one Mongo
+ * doc per video in the `outreach_media` collection. Org scoping follows the
+ * same `org_id` + `orgMatch()` convention as OutreachSuppressionRepository
+ * (absent/null org_id belongs to the default org).
+ *
+ * Budget: an org may queue at most MAX_VIDEO_COUNT videos, and their combined
+ * size_bytes may not exceed MAX_TOTAL_VIDEO_BYTES. Both are enforced in add()
+ * before the caller uploads bytes to R2 (caller checks first with a HEAD-style
+ * dry validation, then calls add() as the authoritative check).
  */
 import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
-import { OrgId, DEFAULT_ORG, defaultDocKey } from './orgs';
+import { OrgId, DEFAULT_ORG, orgMatch } from './orgs';
 
 export interface OutreachVideoDocument {
-  _id: string; // defaultDocKey(orgId), e.g. 'default:company'
+  _id?: ObjectId;
+  org_id?: string | null;
   r2_key: string;
   filename: string;
   mime_type: string;
@@ -21,83 +28,66 @@ export interface OutreachVideoDocument {
   uploaded_by: string;
 }
 
-export interface OutreachExtraVideoDocument {
-  _id: ObjectId;
-  org_id: string;
-  r2_key: string;
-  filename: string;
-  mime_type: string;
-  size_bytes: number;
-  uploaded_at: Date;
-  uploaded_by: string;
+export const MAX_VIDEO_COUNT = 5;
+export const MAX_TOTAL_VIDEO_BYTES = 50 * 1024 * 1024; // 50MB combined per org
+
+export class VideoBudgetExceededError extends Error {
+  constructor(
+    public reason: 'count' | 'bytes',
+    public currentCount: number,
+    public currentBytes: number,
+    public incomingBytes: number
+  ) {
+    const msg =
+      reason === 'count'
+        ? `Already at the ${MAX_VIDEO_COUNT}-video limit`
+        : `Adding this ${(incomingBytes / (1024 * 1024)).toFixed(1)}MB video would exceed the ` +
+          `${(MAX_TOTAL_VIDEO_BYTES / (1024 * 1024)).toFixed(0)}MB total ` +
+          `(already using ${(currentBytes / (1024 * 1024)).toFixed(1)}MB)`;
+    super(msg);
+    this.name = 'VideoBudgetExceededError';
+  }
 }
 
 const COLLECTION = 'outreach_media';
 
 export class OutreachVideoRepository {
   private col: Collection<OutreachVideoDocument>;
-  private extraCol: Collection<OutreachExtraVideoDocument>;
 
   constructor() {
     const db = DatabaseConnection.getInstance().getDb();
     this.col = db.collection<OutreachVideoDocument>(COLLECTION);
-    this.extraCol = db.collection<OutreachExtraVideoDocument>(COLLECTION);
   }
 
-  async getDefault(orgId: OrgId = DEFAULT_ORG): Promise<OutreachVideoDocument | null> {
-    return this.col.findOne({ _id: defaultDocKey(orgId) });
+  /** All videos queued for this org, oldest first (= send order). */
+  async listAll(orgId: OrgId = DEFAULT_ORG): Promise<OutreachVideoDocument[]> {
+    return this.col.find({ org_id: orgMatch(orgId) }).sort({ uploaded_at: 1 }).toArray();
   }
 
-  /** Upsert this org's default-video metadata. Returns the previous r2_key (if
-   *  any) so the caller can delete the now-orphaned object from R2. */
-  async setDefault(input: {
-    r2_key: string;
-    filename: string;
-    mime_type: string;
-    size_bytes: number;
-    uploaded_by: string;
-  }, orgId: OrgId = DEFAULT_ORG): Promise<string | null> {
-    const previous = await this.getDefault(orgId);
-    const doc: OutreachVideoDocument = {
-      _id: defaultDocKey(orgId),
-      r2_key: input.r2_key,
-      filename: input.filename,
-      mime_type: input.mime_type,
-      size_bytes: input.size_bytes,
-      uploaded_at: new Date(),
-      uploaded_by: input.uploaded_by,
-    };
-    await this.col.replaceOne({ _id: doc._id }, doc, { upsert: true });
-    return previous?.r2_key ?? null;
+  async getTotalBytes(orgId: OrgId = DEFAULT_ORG): Promise<number> {
+    const videos = await this.listAll(orgId);
+    return videos.reduce((sum, v) => sum + (v.size_bytes || 0), 0);
   }
 
-  /** Remove this org's default-video metadata. Returns the removed r2_key (if
-   *  any) so the caller can delete the object from R2. */
-  async clearDefault(orgId: OrgId = DEFAULT_ORG): Promise<string | null> {
-    const previous = await this.getDefault(orgId);
-    if (!previous) return null;
-    const res = await this.col.deleteOne({ _id: defaultDocKey(orgId) });
-    if (res.deletedCount !== 1) {
-      Logger.warn('outreach_media clearDefault: default doc vanished between read and delete');
+  /**
+   * Queue a new video for this org. Throws VideoBudgetExceededError (without
+   * writing anything) if the count or combined-size budget would be breached.
+   * Returns the inserted doc (with its generated _id).
+   */
+  async add(
+    input: { r2_key: string; filename: string; mime_type: string; size_bytes: number; uploaded_by: string },
+    orgId: OrgId = DEFAULT_ORG
+  ): Promise<OutreachVideoDocument> {
+    const existing = await this.listAll(orgId);
+    if (existing.length >= MAX_VIDEO_COUNT) {
+      const currentBytes = existing.reduce((sum, v) => sum + (v.size_bytes || 0), 0);
+      throw new VideoBudgetExceededError('count', existing.length, currentBytes, input.size_bytes);
     }
-    return previous.r2_key;
-  }
-
-  /** List this org's extra (additional) default videos, oldest first. */
-  async listExtras(orgId: OrgId = DEFAULT_ORG): Promise<OutreachExtraVideoDocument[]> {
-    return this.extraCol.find({ org_id: orgId }).sort({ _id: 1 }).toArray();
-  }
-
-  async addExtra(input: {
-    r2_key: string;
-    filename: string;
-    mime_type: string;
-    size_bytes: number;
-    uploaded_by: string;
-  }, orgId: OrgId = DEFAULT_ORG): Promise<ObjectId> {
-    const oid = new ObjectId();
-    const doc: OutreachExtraVideoDocument = {
-      _id: oid,
+    const currentBytes = existing.reduce((sum, v) => sum + (v.size_bytes || 0), 0);
+    if (currentBytes + input.size_bytes > MAX_TOTAL_VIDEO_BYTES) {
+      throw new VideoBudgetExceededError('bytes', existing.length, currentBytes, input.size_bytes);
+    }
+    const doc: OutreachVideoDocument = {
       org_id: orgId,
       r2_key: input.r2_key,
       filename: input.filename,
@@ -106,27 +96,25 @@ export class OutreachVideoRepository {
       uploaded_at: new Date(),
       uploaded_by: input.uploaded_by,
     };
-    await this.extraCol.insertOne(doc);
-    return oid;
+    const res = await this.col.insertOne(doc);
+    return { ...doc, _id: res.insertedId };
   }
 
-  /** Removes the metadata doc; returns the removed r2_key (caller deletes
-   *  the R2 object) or null if no such extra existed. Scoped to orgId so one
-   *  workspace can't delete another's extra video by guessing/reusing an id. */
-  async removeExtra(id: string | ObjectId, orgId: OrgId = DEFAULT_ORG): Promise<string | null> {
+  /** Remove one video by id (scoped to this org). Returns its r2_key so the
+   *  caller can delete the R2 object, or null if not found / wrong org. */
+  async remove(orgId: OrgId = DEFAULT_ORG, videoId: string): Promise<string | null> {
+    let objectId: ObjectId;
     try {
-      const oid = typeof id === 'string' ? new ObjectId(id) : id;
-      const doc = await this.extraCol.findOne({ _id: oid, org_id: orgId });
-      if (!doc) return null;
-      await this.extraCol.deleteOne({ _id: oid, org_id: orgId });
-      return doc.r2_key;
+      objectId = new ObjectId(videoId);
     } catch {
       return null;
     }
-  }
-
-  async sumExtraBytes(orgId: OrgId = DEFAULT_ORG): Promise<number> {
-    const docs = await this.extraCol.find({ org_id: orgId }).project({ size_bytes: 1 }).toArray();
-    return docs.reduce((sum, d) => sum + (d.size_bytes || 0), 0);
+    const doc = await this.col.findOne({ _id: objectId, org_id: orgMatch(orgId) });
+    if (!doc) return null;
+    const res = await this.col.deleteOne({ _id: objectId });
+    if (res.deletedCount !== 1) {
+      Logger.warn(`outreach_media remove: doc ${videoId} vanished between read and delete`);
+    }
+    return doc.r2_key;
   }
 }

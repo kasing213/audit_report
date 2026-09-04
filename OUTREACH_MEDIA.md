@@ -11,35 +11,26 @@ See `OUTREACH_RUNBOOK.md` for the base pipeline, worker ops, and daily cap/pacin
 
 ---
 
-## 1. Media: image + video, one or more of each
+## 1. Media: image + videos
 
-Every send delivers all configured media as sequential messages (not a true
-Telegram album/media-group — a mixed photo+video `SendMultiMedia` album was
-found unreliable, so each item is sent as its own `sendFile` call), images
-first, then videos. All media is optional — a workspace with none configured
-sends text-only. Each workspace has:
+Every send delivers the default **image** plus this org's **queued videos** (if
+any), each as its **own** Telegram message — a mixed photo+video album via
+`messages.SendMultiMedia` can fail with `MEDIA_EMPTY` (gramjs), so the worker
+sends sequential single-file messages instead (`3f925a0`). The image is
+mandatory ("legitimacy proof"); videos are optional marketing content.
 
-- **One primary default image + any number of extra images** — bytes stored
-  in MongoDB collection `outreach_images` (`OutreachImagesRepository`).
-  JPEG/PNG/WebP. Managed on the CRM Outreach page ("Replace image" for the
-  primary, "+ Add image" for extras — each extra has its own remove button).
-- **One primary default video + any number of extra videos** — bytes stored
-  in **Cloudflare R2** (private bucket); only *metadata* (the R2 object key +
-  display fields) lives in MongoDB collection `outreach_media`
-  (`OutreachVideoRepository`). **MP4 only.** Managed on the CRM Outreach page
-  ("Replace video" for the primary, "+ Add video" for extras).
-- **Shared 50 MB budget** — not a per-file cap. Every upload (primary replace
-  or extra add, image or video) is checked against the combined size of all
-  default media (primary + extras, both types) for that workspace; an upload
-  that would push the total over 50 MB is rejected with HTTP 413. The
-  dashboard shows a running "`X / 50 MB used`" readout. See
-  `src/outreach/outreach-media-budget.ts` and
-  `docs/superpowers/specs/2026-08-10-outreach-extra-media-design.md`.
-- A proposal's per-lead **custom image override** (one custom image,
-  uploaded inline while reviewing a pending proposal — see
-  `docs/superpowers/specs/2026-05-06-outreach-image-attachment-design.md`)
-  still replaces only the image side: it swaps out the whole image list for
-  that one custom image, while default videos still send.
+- **Image** — bytes stored in MongoDB collection `outreach_images`
+  (`OutreachImagesRepository`). JPEG/PNG/WebP, ≤ 5 MB. Managed on the CRM
+  Outreach page ("Replace image").
+- **Videos** — bytes stored in **Cloudflare R2** (private bucket); only
+  *metadata* (the R2 object key + display fields) lives in MongoDB collection
+  `outreach_media` (`OutreachVideoRepository`, **one doc per video**, scoped by
+  `org_id`). An org may queue up to **5 videos**, MP4 only, whose sizes must
+  sum to **≤ 50 MB combined** (not 50 MB each — e.g. 5 + 10 + 20 MB = 35 MB
+  fits; adding a 4th that would push the total over 50 MB, or a 6th video at
+  all, is rejected with a 400 before anything is uploaded to R2). Managed on
+  the CRM Outreach page ("Add video" / per-row "Remove"). Videos are optional —
+  with none queued, sends are image-only.
 
 ### R2 configuration (server only)
 
@@ -62,62 +53,54 @@ no public access, no custom domain, no CORS needed.
 > uses `...eu.r2.cloudflarestorage.com` and will fail signing — use a standard
 > bucket.
 
-### How media reaches the worker
+### How videos reach the worker
 
-1. CRM uploads (`POST /crm/api/outreach/default-video` for the primary,
-   `POST /crm/api/outreach/default-video/extra` for extras) → bytes go to R2
-   (`outreach-media/default-video-<uuid>.mp4`), metadata upserted into
-   `outreach_media`. Images (`POST /default-image`, `POST /default-image/extra`)
-   go straight into MongoDB (`outreach_images`).
-2. At send time the worker calls `GET /crm/api/outreach/:id/effective-media`
-   once and gets back an **ordered manifest** — images first (custom override
-   if the proposal has one, else primary + extras, in add-order), then videos
-   (primary + extras, in add-order). Video entries already carry a
-   **short-lived (300 s) presigned GET URL** (signing happens server-side
-   while building the manifest — no R2 creds ever reach the worker). An empty
-   manifest is a valid text-only send, not an error.
-3. For each manifest item the worker fetches it (images with its bearer
-   token via a server-relative path; videos via the presigned URL, no auth
-   header) and stages it to a temp file, then sends every item as its own
-   sequential `sendFile` call — images before videos, add-order within each
-   group. `SEND_TIMEOUT_SEC` (default **240 s**) bounds the whole send since
-   a large video download + upload is slow.
+1. CRM upload (`POST /crm/api/outreach/default-video`, developer/manager) →
+   rejected with 400 if it would breach the 5-video count or 50 MB combined
+   budget (checked before touching R2); otherwise bytes go to R2
+   (`outreach-media/default-video-<uuid>.mp4`) and a new metadata doc is
+   inserted into `outreach_media`.
+2. At send time the worker calls `GET /crm/api/outreach/:id/effective-video-url`
+   (org derived from the proposal itself, never from the calling worker's own
+   header/env — see the cross-tenant-leak incident in `OUTREACH_RUNBOOK.md`)
+   and gets `{ videos: [...] }` — one **short-lived (300 s) presigned GET URL**
+   per queued video, oldest-first (signing is local, no creds leave the
+   server). An empty `videos` array or `503` (R2 not configured) are both the
+   worker's signal to send **image-only**.
+3. The worker downloads each presigned URL with a plain `fetch` (no auth
+   header) and stages it to a temp `.mp4`. `SEND_TIMEOUT_SEC` (default
+   **240 s**) bounds the whole send because downloading + uploading up to
+   50 MB total is slow.
 
-Worker log line: `media: N item(s) staged`, followed by one `sendFile` per
-item; caption rides the first item if the message is ≤ 1024 chars, else it
-follows as its own message after all media.
+Send order: the message text always goes out **first** as its own message,
+then every media item (image, then videos in queue order) is sent **bare, no
+caption** as its own message. Keeps the format identical regardless of media
+count — no "which item gets the caption" ambiguity, and no orphaned
+uncaptioned video sitting after the first when multiple videos are queued.
+
+Worker send-mode log strings: `text+N media (image+video×M)` when media is
+present, `text-only` when neither image nor video is configured.
 
 ### Media routes (`src/api/outreach-routes.ts`)
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/default-image` | cookie | primary default image bytes / 404 |
-| POST | `/default-image` | cookie | replace the primary (JPEG/PNG/WebP; shared 50 MB budget) |
-| DELETE | `/default-image` | cookie | clear the primary |
-| GET | `/default-image/extra` | cookie | list this org's extra images |
-| POST | `/default-image/extra` | cookie | add an extra image (does not touch the primary) |
-| GET | `/default-image/extra/:id` | cookie, **agent** | bytes for one extra image, org-scoped |
-| DELETE | `/default-image/extra/:id` | cookie | remove one extra image, org-scoped |
-| GET | `/default-video` | cookie | primary default video metadata / 404 |
-| POST | `/default-video` | cookie | replace the primary (MP4 → R2; shared 50 MB budget); 503 if R2 unconfigured |
-| DELETE | `/default-video` | cookie | clear the primary + delete its R2 object |
-| GET | `/default-video/extra` | cookie | list this org's extra videos |
-| POST | `/default-video/extra` | cookie | add an extra video (R2 + metadata; does not touch the primary) |
-| DELETE | `/default-video/extra/:id` | cookie | remove one extra video + its R2 object, org-scoped |
-| GET | `/default-media/usage` | cookie | `{ total_bytes, budget_bytes }` for the dashboard's usage readout |
-| GET | `/default-video-url` | **agent** | legacy presigned-URL endpoint; kept but no longer called by the worker (superseded by `effective-media`) |
-| GET | `/:id/effective-image` | cookie, **agent** | dashboard thumbnails/lightbox + legacy worker path (custom-or-default single image) |
-| GET | `/:id/effective-media` | **agent** | worker-facing ordered fetch manifest (images then videos) — see above |
+| GET | `/default-image` | cookie | default image bytes / 404 |
+| POST | `/default-image` | cookie | replace (JPEG/PNG/WebP, 5 MB) |
+| GET | `/default-video` | cookie | `{ videos, total_bytes, max_bytes, max_count }` for the CRM |
+| POST | `/default-video` | cookie | **adds** a video (MP4, ≤50 MB → R2); 400 if it would exceed the 5-count or 50 MB-combined budget; 503 if R2 unconfigured |
+| DELETE | `/default-video/:id` | cookie | remove one queued video + its R2 object |
+| GET | `/default-video-url` | **agent** | worker-facing `{ videos: [{url, mime_type, size_bytes}] }` array / 503 |
+| GET | `/:id/effective-image` | **agent** | worker-facing image bytes (custom-or-default) |
 
-### Agent-role allowlist (11 paths)
+### Agent-role allowlist (9 paths)
 
 The worker's `AGENT_TOKEN` may call exactly these (`src/api/auth-middleware.ts`
 `AGENT_ALLOWED`); everything else → 403:
 
 `POST /claim`, `POST /:id/mark-sent`, `POST /:id/mark-failed`,
 `POST /worker-heartbeat`, `POST /worker-alert`, `POST /report-inbound`,
-`GET /worker-status`, `GET /:id/effective-image`, `GET /default-video-url`,
-`GET /:id/effective-media`, `GET /default-image/extra/:id`.
+`GET /worker-status`, `GET /:id/effective-image`, `GET /default-video-url`.
 
 ---
 
@@ -206,8 +189,8 @@ npx ts-node scripts/backfill-suppressions.ts
 | Collection | Holds |
 |---|---|
 | `outreach_proposals` | per-send proposals (pending/approved/in_flight/sent/skipped/failed) |
-| `outreach_images` | primary default (`kind:'default'`) + extra (`kind:'extra'`) + per-proposal custom (`kind:'proposal_custom'`) image **bytes** |
-| `outreach_media` | primary default + extra video **metadata** (R2 key); bytes live in R2 |
+| `outreach_images` | default + custom image **bytes** |
+| `outreach_media` | default video **metadata** (R2 key); bytes live in R2 |
 | `outreach_suppressions` | phone-level failed/suppressed ledger + retry schedule |
 | `outreach_worker_state` | daily claim counter, pause flag, heartbeat |
 | `inbound_messages` | inbound replies captured by the worker |
