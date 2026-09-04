@@ -135,6 +135,10 @@ mode, Telegram session, PM2 process, and daily cap. Company and Personal are
 unchanged by it — the sales scanner iterates `SALES_OUTREACH_ORGS`, which does
 not include Payment Tracker.
 
+The worker runs on the **Mac**, not the Windows machine. Provisioning steps
+(session creation, pm2, boot persistence, and the macOS-specific gotchas) are in
+[PAYMENT_TRACKER_MAC_SETUP.md](PAYMENT_TRACKER_MAC_SETUP.md).
+
 ### Rollout order (do not skip ahead)
 
 Each step gates the next. Nothing sends until the last one.
