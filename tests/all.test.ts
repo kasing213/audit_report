@@ -13,3 +13,4 @@ import './payment-tracker/payment-ui.test';
 import './payment-tracker/payment-worker-config.test';
 import './payment-tracker/startup-config.test';
 import './lead-control/forecast.test';
+import './lead-control/campaign-service.test';
