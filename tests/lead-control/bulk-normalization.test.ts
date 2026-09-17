@@ -177,11 +177,13 @@ test('bulk confirmation freezes the active campaign onto each lead event for lat
 
   const response = await request(app, {
     header: { date: '2026-09-17', follower: 'Sok', page: 'Page River Homes' },
-    drafts: [{ customer_phone: '+85512345678', customer_name: 'Sok', slot: '1' }],
+    drafts: [{ customer_phone: '012 345 678', customer_name: 'Sok', slot: '1' }],
   });
 
   assert.equal(response.status, 200);
   assert.equal(savedEvents[0].campaign_id, 'campaign-river');
+  assert.equal(savedEvents[0].customer.phone, '012 345 678');
+  assert.equal(savedEvents[0].normalized_phone, '+85512345678');
 });
 
 test('bulk confirmation rejects ambiguous active campaign resolution before persisting', async () => {

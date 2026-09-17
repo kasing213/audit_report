@@ -14,6 +14,9 @@ export interface LeadEventDocument {
   // Older events legitimately have no value and remain eligible only for
   // reconciliation, never automatic sale attribution.
   campaign_id?: string | null;
+  // Stable E.164 join key for source-sale attribution. customer.phone retains
+  // the user-entered value for display and auditability.
+  normalized_phone?: string | null;
   destination?: string | null;
   follower: string | null;
   status_text: string | null;

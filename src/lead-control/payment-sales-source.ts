@@ -2,8 +2,9 @@ import { Filter, MongoClient } from 'mongodb';
 import { toInternationalPhone } from '../utils/phone-utils';
 import type { SalesSyncCursor, SalesSyncSource } from './sync-service';
 
-export const SALES_SOURCE_DB = process.env.LEAD_CONTROL_SALES_DATABASE_NAME || 'ar_tracker';
-export const SALES_SOURCE_COLLECTION = process.env.LEAD_CONTROL_SALES_COLLECTION || 'sales';
+/** Fixed external namespace. The URI supplies credentials only, never a target override. */
+export const SALES_SOURCE_DB = 'ar_tracker';
+export const SALES_SOURCE_COLLECTION = 'sales';
 
 const CONNECT_TIMEOUT_MS = 10_000;
 const PHONE_E164 = /^\+855\d{8,9}$/;
@@ -76,7 +77,7 @@ export function normalizeSalesRecord(raw: RawSalesRecord): SalesNormalizationRes
   if (!saleId) return { ok: false, saleId: null, reason: 'invalid_sale_id' };
   const status = nonEmptyString(raw.status);
   if (!status) return { ok: false, saleId, reason: 'invalid_status' };
-  const normalizedPhone = normalizePhone(raw.phone);
+  const normalizedPhone = normalizeSalesPhone(raw.phone);
   if (!normalizedPhone) return { ok: false, saleId, reason: 'no_valid_phone' };
   const bookingDate = readDate(raw.start_date ?? raw.booking_date);
   if (!bookingDate) return { ok: false, saleId, reason: 'invalid_booking_date' };
@@ -199,7 +200,8 @@ function nullableDate(value: unknown): Date | null | undefined {
   return readDate(value) ?? undefined;
 }
 
-function normalizePhone(value: unknown): string | null {
+/** Canonical Cambodia E.164 key shared by source sales and local lead projections. */
+export function normalizeSalesPhone(value: unknown): string | null {
   const candidates = Array.isArray(value) ? value : [value];
   for (const candidate of candidates) {
     if (typeof candidate !== 'string' || candidate.trim().length === 0) continue;

@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   RawSalesRecord,
   validateSalesSourcePrivileges,
 } from '../../src/lead-control/payment-sales-source';
+import { saleAttributionLeadFilter, SALES_PROJECTION_INDEXES } from '../../src/lead-control/repository';
 import {
   LeadForSaleAttribution,
   SalesProjection,
@@ -134,4 +136,38 @@ test('sales-source privilege validation rejects credentials broader than ar_trac
   assert.equal(validateSalesSourcePrivileges([
     { resource: { db: 'ar_tracker', collection: 'sales' }, actions: ['find', 'update'] },
   ]).ok, false);
+});
+
+test('sales connector ignores namespace override environment variables and permits only the fixed sales namespace', () => {
+  const output = execFileSync(process.execPath, [
+    '-r', './tests/register.js',
+    '-e', "const source = require('./src/lead-control/payment-sales-source'); process.stdout.write(JSON.stringify({ db: source.SALES_SOURCE_DB, collection: source.SALES_SOURCE_COLLECTION, rogue: source.validateSalesSourcePrivileges([{ resource: { db: 'rogue', collection: 'orders' }, actions: ['find', 'listIndexes'] }]).ok }));",
+  ], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      LEAD_CONTROL_SALES_DATABASE_NAME: 'rogue',
+      LEAD_CONTROL_SALES_COLLECTION: 'orders',
+    },
+    encoding: 'utf8',
+  });
+
+  assert.deepEqual(JSON.parse(output), { db: 'ar_tracker', collection: 'sales', rogue: false });
+});
+
+test('lead attribution queries the persisted normalized phone key and projection indexes support cancellation event reporting', () => {
+  assert.deepEqual(
+    saleAttributionLeadFilter('+85512345678', new Date('2026-09-10T09:00:00.000Z')),
+    {
+      normalized_phone: '+85512345678',
+      campaign_id: { $type: 'string' },
+      deleted: { $ne: true },
+      date: { $lt: '2026-09-10' },
+    },
+  );
+  assert.equal(
+    SALES_PROJECTION_INDEXES.some((index) => index.name === 'status_cancellation_event_lookup'
+      && JSON.stringify(index.key) === JSON.stringify({ status: 1, cancelled_date: 1 })),
+    true,
+  );
 });

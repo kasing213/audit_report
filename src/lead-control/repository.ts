@@ -53,6 +53,16 @@ const MALFORMED_SALES = 'lead_control_malformed_sales';
 const SALES_AUDIT = 'lead_control_sales_audit_events';
 const LEAD_EVENTS = 'leads_events';
 
+export const SALES_PROJECTION_INDEXES = [
+  { key: { sale_id: 1 }, name: 'sale_id_unique', unique: true },
+  { key: { normalized_phone: 1, booking_date: 1 }, name: 'phone_booking_lookup' },
+  { key: { campaign_id: 1, booking_date: 1 }, name: 'campaign_booking_lookup' },
+  { key: { attribution_kind: 1, updated_at: -1 }, name: 'unmatched_reconciliation_lookup' },
+  { key: { status: 1, booking_date: 1 }, name: 'status_booking_lookup' },
+  { key: { status: 1, cancelled_date: 1 }, name: 'status_cancellation_event_lookup' },
+  { key: { updated_at: 1, sale_id: 1 }, name: 'source_updated_cursor_lookup' },
+];
+
 interface MutationGuardDocument {
   _id: string;
   version: number;
@@ -128,19 +138,12 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
         { key: { actor: 1, occurred_at: -1 }, name: 'actor_audit_history' },
       ]),
       this.guards.createIndex({ version: 1 }, { name: 'mutation_guard_version' }),
-      this.saleProjections.createIndexes([
-        { key: { sale_id: 1 }, name: 'sale_id_unique', unique: true },
-        { key: { normalized_phone: 1, booking_date: 1 }, name: 'phone_booking_lookup' },
-        { key: { campaign_id: 1, booking_date: 1 }, name: 'campaign_booking_lookup' },
-        { key: { attribution_kind: 1, updated_at: -1 }, name: 'unmatched_reconciliation_lookup' },
-        { key: { status: 1, booking_date: 1 }, name: 'status_booking_lookup' },
-        { key: { updated_at: 1, sale_id: 1 }, name: 'source_updated_cursor_lookup' },
-      ]),
+      this.saleProjections.createIndexes(SALES_PROJECTION_INDEXES),
       this.malformedSales.createIndex({ recorded_at: -1 }, { name: 'malformed_sales_recorded_at' }),
       this.salesAudit.createIndex({ sale_id: 1, occurred_at: -1 }, { name: 'sale_audit_history' }),
       this.leadEvents.createIndex(
-        { 'customer.phone': 1, date: -1, created_at: -1 },
-        { name: 'phone_date_idx', sparse: true },
+        { normalized_phone: 1, date: -1, created_at: -1 },
+        { name: 'sale_attribution_normalized_phone_date', sparse: true },
       ),
     ]);
   }
@@ -270,13 +273,10 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
   }
 
   async findMostRecentLeadBefore(phone: string, bookingDate: Date): Promise<LeadForSaleAttribution | null> {
-    const bookingDateKey = bookingDate.toISOString().slice(0, 10);
-    const lead = await this.leadEvents.find({
-      'customer.phone': phone,
-      campaign_id: { $type: 'string' },
-      deleted: { $ne: true },
-      date: { $lt: bookingDateKey },
-    }, this.options()).sort({ date: -1, created_at: -1 }).limit(1).next();
+    const lead = await this.leadEvents.find(
+      saleAttributionLeadFilter(phone, bookingDate),
+      this.options(),
+    ).sort({ date: -1, created_at: -1 }).limit(1).next();
     if (!lead || lead._id === undefined || typeof lead.campaign_id !== 'string') return null;
     return {
       id: String(lead._id),
@@ -325,6 +325,16 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
     return this.session ? { session: this.session } : {};
   }
 
+}
+
+/** Exact indexed lookup for the newest attributable local lead before a booking date. */
+export function saleAttributionLeadFilter(phone: string, bookingDate: Date): Record<string, unknown> {
+  return {
+    normalized_phone: phone,
+    campaign_id: { $type: 'string' },
+    deleted: { $ne: true },
+    date: { $lt: bookingDate.toISOString().slice(0, 10) },
+  };
 }
 
 /**

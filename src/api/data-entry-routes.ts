@@ -10,6 +10,7 @@ import { renderPage } from './template-helper';
 import { NormalizedDailyMetrics, parseBulkReport } from '../parser/bulk-report-parser';
 import { Campaign } from '../lead-control/models';
 import { MongoLeadControlRepository } from '../lead-control/repository';
+import { normalizeSalesPhone } from '../lead-control/payment-sales-source';
 import { resolveActiveCampaignForPageAndDate } from '../lead-control/service';
 
 export interface DataEntryRouteDependencies {
@@ -401,6 +402,7 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
           name: d?.customer_name || null,
           phone
         },
+        normalized_phone: normalizeSalesPhone(phone),
         page: d?.page || header.page || null,
         campaign_id: resolvedCampaign?.id ?? null,
         destination: null,
