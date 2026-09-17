@@ -10,6 +10,14 @@ import {
 import { FunnelForecast, LeadControlStatus } from './types';
 import { SalesProjection, SalesSyncCursor } from './sync-service';
 
+const PHNOM_PENH_TIME_ZONE = 'Asia/Phnom_Penh';
+const phnomPenhDateFormatter = new Intl.DateTimeFormat('en-US', {
+  timeZone: PHNOM_PENH_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 export interface SummaryDailyDocument {
   date: string;
   campaign_id?: string | null;
@@ -144,12 +152,12 @@ export class SummaryService {
     validateMonth(query.month);
     const sales = await this.repository.listSalesProjections(query.campaignId);
     return sales
-      .filter((sale) => sale.status === 'CANCELLED' && sale.cancelledDate !== null)
-      .filter((sale) => monthOf(query.view === 'cohort' ? sale.bookingDate : sale.cancelledDate as Date) === query.month)
+      .filter((sale) => sale.status === 'CANCELLED' && phnomPenhBusinessDate(sale.cancelledDate) !== null)
+      .filter((sale) => selectedCancellationDate(sale, query.view)?.startsWith(query.month) ?? false)
       .sort((left, right) => {
-        const leftDate = query.view === 'cohort' ? left.bookingDate : left.cancelledDate as Date;
-        const rightDate = query.view === 'cohort' ? right.bookingDate : right.cancelledDate as Date;
-        return leftDate.getTime() - rightDate.getTime() || left.saleId.localeCompare(right.saleId);
+        const leftDate = selectedCancellationDate(left, query.view)!;
+        const rightDate = selectedCancellationDate(right, query.view)!;
+        return leftDate.localeCompare(rightDate) || left.saleId.localeCompare(right.saleId);
       });
   }
 
@@ -177,7 +185,10 @@ function actualSpendToDate(spends: SpendRecord[], asOf: string): number {
 
 function actuals(summaries: readonly SummaryDailyDocument[], sales: SalesProjection[], month: string, asOf: string): FunnelActuals {
   const applicableSummaries = summaries.filter((summary) => summary.date.startsWith(month) && summary.date <= asOf && summary.normalized_metrics !== undefined);
-  const applicableSales = sales.filter((sale) => monthOf(sale.bookingDate) === month && businessDate(sale.bookingDate) <= asOf);
+  const applicableSales = sales.filter((sale) => {
+    const bookedOn = phnomPenhBusinessDate(sale.bookingDate);
+    return bookedOn !== null && bookedOn.startsWith(month) && bookedOn <= asOf;
+  });
   const metrics = applicableSummaries.length === 0 ? null : applicableSummaries.reduce((total, summary) => ({
     messages: total.messages + summary.normalized_metrics!.messages,
     phoneLeads: total.phoneLeads + summary.normalized_metrics!.valid_phone_leads,
@@ -187,7 +198,10 @@ function actuals(summaries: readonly SummaryDailyDocument[], sales: SalesProject
     return { messages: metrics?.messages ?? null, phoneLeads: metrics?.phoneLeads ?? null, visits: metrics?.visits ?? null, grossBookings: null, cancellations: null, netBookings: null };
   }
   const grossBookings = applicableSales.length;
-  const cancellations = applicableSales.filter((sale) => sale.status === 'CANCELLED').length;
+  const cancellations = applicableSales.filter((sale) => {
+    const cancelledOn = phnomPenhBusinessDate(sale.cancelledDate);
+    return sale.status === 'CANCELLED' && cancelledOn !== null && cancelledOn <= asOf;
+  }).length;
   return {
     messages: metrics?.messages ?? null, phoneLeads: metrics?.phoneLeads ?? null, visits: metrics?.visits ?? null,
     grossBookings, cancellations, netBookings: grossBookings - cancellations,
@@ -248,8 +262,17 @@ function daysInMonth(month: string): number {
   return new Date(Date.UTC(year, monthNumber, 0)).getUTCDate();
 }
 
-function monthOf(value: Date): string { return value.toISOString().slice(0, 7); }
-function businessDate(value: Date): string { return value.toISOString().slice(0, 10); }
+/** Converts a source instant to the only calendar used by Lead Control reporting. */
+export function phnomPenhBusinessDate(value: Date | null): string | null {
+  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return null;
+  const parts = phnomPenhDateFormatter.formatToParts(value);
+  const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((candidate) => candidate.type === type)?.value ?? '';
+  return `${part('year')}-${part('month')}-${part('day')}`;
+}
+
+function selectedCancellationDate(sale: SalesProjection, view: CancellationView): string | null {
+  return phnomPenhBusinessDate(view === 'cohort' ? sale.bookingDate : sale.cancelledDate);
+}
 function dateAtStartOfDay(value: string): Date { return new Date(`${value}T00:00:00.000Z`); }
 function maxDate(...values: string[]): string { return values.reduce((max, value) => value > max ? value : max); }
 function minDate(...values: string[]): string { return values.reduce((min, value) => value < min ? value : min); }

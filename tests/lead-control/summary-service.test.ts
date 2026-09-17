@@ -108,3 +108,31 @@ test('presents cohort and cancellation-event views without changing frozen booki
   assert.deepEqual(await service.unmatchedSales(), []);
   assert.deepEqual(await service.syncHealth('2026-09-20'), { status: 'Healthy', cursor: repository.cursor, ageHours: 24, unmatchedSales: 0, malformedSales: 1 });
 });
+
+test('uses Phnom Penh calendar dates for cohort and cancellation-event month views at the UTC boundary', async () => {
+  const boundary = sale({
+    saleId: 'local-october', status: 'CANCELLED',
+    bookingDate: new Date('2026-09-30T18:00:00.000Z'),
+    cancelledDate: new Date('2026-09-30T18:00:00.000Z'),
+  });
+  const service = new SummaryService(new MemorySummaryRepository([campaign], [baseline], [], [], [boundary]));
+
+  assert.deepEqual((await service.cancellations({ campaignId: campaign.id, month: '2026-09', view: 'cohort' })).map((value) => value.saleId), []);
+  assert.deepEqual((await service.cancellations({ campaignId: campaign.id, month: '2026-10', view: 'cohort' })).map((value) => value.saleId), ['local-october']);
+  assert.deepEqual((await service.cancellations({ campaignId: campaign.id, month: '2026-09', view: 'event' })).map((value) => value.saleId), []);
+  assert.deepEqual((await service.cancellations({ campaignId: campaign.id, month: '2026-10', view: 'event' })).map((value) => value.saleId), ['local-october']);
+});
+
+test('counts a cancellation against the booking cohort only on or after its Phnom Penh cancellation date', async () => {
+  const delayedCancellation = sale({
+    status: 'CANCELLED', bookingDate: new Date('2026-09-10T03:00:00.000Z'), cancelledDate: new Date('2026-09-25T03:00:00.000Z'),
+  });
+  const service = new SummaryService(new MemorySummaryRepository([campaign], [baseline], [spend()], [], [delayedCancellation]));
+
+  assert.deepEqual((await service.monthly({ campaignId: campaign.id, month: '2026-09', asOf: '2026-09-20' })).actualFunnel, {
+    messages: null, phoneLeads: null, visits: null, grossBookings: 1, cancellations: 0, netBookings: 1,
+  });
+  assert.deepEqual((await service.monthly({ campaignId: campaign.id, month: '2026-09', asOf: '2026-09-30' })).actualFunnel, {
+    messages: null, phoneLeads: null, visits: null, grossBookings: 1, cancellations: 1, netBookings: 0,
+  });
+});
