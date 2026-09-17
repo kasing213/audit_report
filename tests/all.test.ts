@@ -15,3 +15,4 @@ import './payment-tracker/startup-config.test';
 import './lead-control/forecast.test';
 import './lead-control/campaign-service.test';
 import './lead-control/routes.test';
+import './lead-control/bulk-normalization.test';

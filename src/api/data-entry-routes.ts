@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, Router } from 'express';
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument, DailySummaryDocument } from '../database/models';
 import { REASON_CODES, isReasonCode } from '../constants/reason-codes';
@@ -7,12 +7,14 @@ import { GroupConfigManager } from '../utils/group-config';
 import { formatTelegramLink, formatPhoneDisplay } from '../utils/phone-utils';
 import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
-import { parseBulkReport } from '../parser/bulk-report-parser';
+import { NormalizedDailyMetrics, parseBulkReport } from '../parser/bulk-report-parser';
+import { Campaign } from '../lead-control/models';
+import { MongoLeadControlRepository } from '../lead-control/repository';
+import { resolveActiveCampaignForPageAndDate } from '../lead-control/service';
 
-const router = express.Router();
-
-function getRepository(): SalesCaseRepository {
-  return new SalesCaseRepository();
+export interface DataEntryRouteDependencies {
+  repository?: Partial<SalesCaseRepository>;
+  resolveCampaign?: (page: string | null, businessDate: string) => Promise<Campaign | null>;
 }
 
 const DATE_REGEX = /^\d{4}-\d{2}-\d{2}$/;
@@ -29,6 +31,36 @@ function buildEventSummary(event: LeadEventDocument) {
     follower: event.follower || null
   };
 }
+
+function normalizedMetrics(value: unknown): NormalizedDailyMetrics {
+  const input = (value && typeof value === 'object' ? value : {}) as Record<string, unknown>;
+  const metric = (field: keyof NormalizedDailyMetrics): number => {
+    const candidate = input[field];
+    if (!Number.isInteger(candidate) || (candidate as number) < 0) {
+      throw new RangeError(`summary.normalized_metrics.${field} must be a non-negative integer`);
+    }
+    return candidate as number;
+  };
+  return {
+    messages: metric('messages'),
+    valid_phone_leads: metric('valid_phone_leads'),
+    completed_property_visits: metric('completed_property_visits'),
+  };
+}
+
+function isAmbiguousCampaignResolution(error: unknown): boolean {
+  return error instanceof Error && error.message === 'ambiguous active campaigns for page and business date';
+}
+
+/**
+ * Production creates Mongo-backed collaborators lazily. The optional seams
+ * keep confirmation behavior testable without a live database.
+ */
+export function createDataEntryRouter(dependencies: DataEntryRouteDependencies = {}): Router {
+const router = express.Router();
+const getRepository = (): SalesCaseRepository => (dependencies.repository ?? new SalesCaseRepository()) as SalesCaseRepository;
+const resolveCampaign = dependencies.resolveCampaign ?? ((page: string | null, businessDate: string) =>
+  resolveActiveCampaignForPageAndDate(new MongoLeadControlRepository(), page, businessDate));
 
 // GET /data-entry — solo entry form was removed; redirect to bulk-only entry surface.
 router.get('/', (_req: Request, res: Response) => {
@@ -343,6 +375,14 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
       return;
     }
 
+    const rawCounters = summary?.counters && typeof summary.counters === 'object' ? summary.counters : null;
+    const hasRawCounters = rawCounters !== null && Object.keys(rawCounters).length > 0;
+    const hasNormalizedMetrics = summary?.normalized_metrics !== undefined;
+    const reviewedMetrics = hasNormalizedMetrics ? normalizedMetrics(summary.normalized_metrics) : undefined;
+    const resolvedCampaign = reviewedMetrics
+      ? await resolveCampaign(typeof header.page === 'string' ? header.page : null, header.date)
+      : null;
+
     const repository = getRepository();
     const events: LeadEventDocument[] = [];
     const ts = Date.now();
@@ -381,13 +421,17 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
     const eventIds = events.length ? await repository.saveLeadEvents(events) : [];
 
     let summaryId: string | null = null;
-    if (summary && summary.counters && Object.keys(summary.counters).length > 0) {
+    if (summary && (hasRawCounters || reviewedMetrics)) {
       const summaryDoc: DailySummaryDocument = {
         date: header.date,
         follower: header.follower || null,
         page: header.page || null,
-        counters: summary.counters,
+        counters: rawCounters || {},
         raw_text: typeof summary.raw_text === 'string' ? summary.raw_text.slice(0, 20000) : '',
+        ...(reviewedMetrics ? {
+          normalized_metrics: reviewedMetrics,
+          campaign_id: resolvedCampaign?.id ?? null,
+        } : {}),
         source: { model: 'bulk-paste' },
         created_at: new Date()
       };
@@ -426,8 +470,19 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
     });
   } catch (error) {
     Logger.error('Error in bulk confirm', error as Error);
+    if (error instanceof RangeError) {
+      res.status(400).json({ error: error.message });
+      return;
+    }
+    if (isAmbiguousCampaignResolution(error)) {
+      res.status(409).json({ error: (error as Error).message });
+      return;
+    }
     res.status(500).json({ error: 'Failed to import bulk report', message: (error as Error).message });
   }
 });
 
-export default router;
+return router;
+}
+
+export default createDataEntryRouter();

@@ -3,7 +3,7 @@ import { getSessionUser } from './auth-middleware';
 import { forecastFromBudget, budgetForNetBookings } from '../lead-control/forecast';
 import { CampaignInput, ForecastRevisionInput, SpendInput, SpendMode } from '../lead-control/models';
 import { LeadControlRepository, MongoLeadControlRepository } from '../lead-control/repository';
-import { CampaignService } from '../lead-control/service';
+import { CampaignService, normalizeCampaignPageId } from '../lead-control/service';
 import { Logger } from '../utils/logger';
 
 export interface LeadControlRouteDependencies {
@@ -33,7 +33,7 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
   router.get('/campaigns', async (req, res) => {
     try {
       const pageId = queryString(req, 'pageId');
-      res.json({ campaigns: await repository().listCampaignsForPage(pageId) });
+      res.json({ campaigns: await repository().listCampaignsForPage(normalizeCampaignPageId(pageId)) });
     } catch (error) {
       respondError(error, res, 'lead control campaign list failed');
     }

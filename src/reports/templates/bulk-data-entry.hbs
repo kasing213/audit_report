@@ -142,6 +142,10 @@
         </label>
       </h3>
       <div class="counters-grid" id="counters-grid"></div>
+      <div style="margin-top:0.9rem">
+        <div style="font-size:0.78rem;color:var(--text-muted);margin-bottom:0.4rem">Lead Control funnel metrics (editable; raw report remains unchanged)</div>
+        <div class="counters-grid" id="normalized-counters-grid"></div>
+      </div>
     </div>
 
     <div class="bulk-card">
@@ -240,6 +244,18 @@
       ).join('');
     }
 
+    const normalizedGrid = document.getElementById('normalized-counters-grid');
+    const normalized = data.summary?.normalized_metrics || {};
+    const metrics = [
+      ['messages', 'Messages'],
+      ['valid_phone_leads', 'Valid phone leads'],
+      ['completed_property_visits', 'Completed property visits']
+    ];
+    normalizedGrid.innerHTML = metrics.map(([key, label]) =>
+      '<label class="counter-row"><span class="counter-key">' + esc(label) + '</span>' +
+      '<input type="number" min="0" step="1" class="counter-val normalized-metric" data-metric="' + key + '" value="' + esc(normalized[key] || 0) + '"></label>'
+    ).join('');
+
     const tbody = document.getElementById('drafts-body');
     const drafts = data.drafts || [];
     if (drafts.length === 0) {
@@ -296,6 +312,19 @@
     return out;
   }
 
+  function collectNormalizedMetrics() {
+    const read = key => {
+      const input = document.querySelector('.normalized-metric[data-metric="' + key + '"]');
+      const value = Number(input ? input.value : 0);
+      return Number.isInteger(value) && value >= 0 ? value : 0;
+    };
+    return {
+      messages: read('messages'),
+      valid_phone_leads: read('valid_phone_leads'),
+      completed_property_visits: read('completed_property_visits')
+    };
+  }
+
   async function doConfirm() {
     if (!lastPreview) { showToast('Preview first', 'error'); return; }
     const header = {
@@ -307,8 +336,9 @@
 
     const drafts = collectDrafts();
     const saveSummary = document.getElementById('save-summary').checked;
-    const summary = saveSummary && lastPreview.summary && lastPreview.summary.counters && Object.keys(lastPreview.summary.counters).length > 0
-      ? lastPreview.summary
+    const normalizedMetrics = collectNormalizedMetrics();
+    const summary = saveSummary && lastPreview.summary
+      ? { ...lastPreview.summary, normalized_metrics: normalizedMetrics }
       : null;
 
     try {

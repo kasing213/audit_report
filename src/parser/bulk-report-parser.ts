@@ -26,6 +26,18 @@ export interface BulkReportHeader {
 export interface BulkReportSummary {
   counters: Record<string, number>;
   raw_text: string;
+  normalized_metrics: NormalizedDailyMetrics;
+}
+
+/**
+ * Funnel values are deliberately kept apart from the free-form report
+ * counters. Operators can correct these values before import without
+ * changing the source report or its parsed counter map.
+ */
+export interface NormalizedDailyMetrics {
+  messages: number;
+  valid_phone_leads: number;
+  completed_property_visits: number;
 }
 
 export interface BulkReportParseResult {
@@ -159,6 +171,19 @@ function extractCounters(section: string): Record<string, number> {
     counters[finalKey] = val;
   }
   return counters;
+}
+
+function normalizedMetric(counters: Record<string, number>, key: keyof NormalizedDailyMetrics): number {
+  const value = counters[key];
+  return Number.isInteger(value) && value >= 0 ? value : 0;
+}
+
+export function proposeNormalizedDailyMetrics(counters: Record<string, number>): NormalizedDailyMetrics {
+  return {
+    messages: normalizedMetric(counters, 'messages'),
+    valid_phone_leads: normalizedMetric(counters, 'valid_phone_leads'),
+    completed_property_visits: normalizedMetric(counters, 'completed_property_visits'),
+  };
 }
 
 function findSectionBounds(text: string): { headerEnd: number; telStart: number; datingStart: number } {
@@ -490,7 +515,8 @@ export function parseBulkReport(text: string): BulkReportParseResult {
 
   const summary: BulkReportSummary = {
     counters,
-    raw_text: normalized
+    raw_text: normalized,
+    normalized_metrics: proposeNormalizedDailyMetrics(counters),
   };
 
   return {

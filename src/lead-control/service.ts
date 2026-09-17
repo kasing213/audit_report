@@ -10,6 +10,40 @@ import {
 } from './models';
 import { LeadControlRepository } from './repository';
 
+/** Normalizes a report page label into the campaign page identifier. */
+export function normalizeCampaignPageId(page: string): string {
+  return page
+    .normalize('NFKC')
+    .trim()
+    .replace(/^🚩\s*/, '')
+    .replace(/^(?:page|pae|ផេក)\s*[:：-]?\s*/i, '')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+/**
+ * Resolves exactly one active campaign on an inclusive business-date range.
+ * The ambiguity guard remains necessary for malformed or legacy Mongo data,
+ * even though campaign mutations normally prevent overlapping ranges.
+ */
+export async function resolveActiveCampaignForPageAndDate(
+  repository: LeadControlRepository,
+  page: string | null,
+  businessDate: string,
+): Promise<Campaign | null> {
+  if (!page) return null;
+  const pageId = normalizeCampaignPageId(page);
+  if (!pageId) return null;
+
+  const matches = (await repository.listCampaignsForPage(pageId)).filter((campaign) =>
+    campaign.status === 'active'
+    && campaign.startsOn <= businessDate
+    && (campaign.endsOn === null || businessDate <= campaign.endsOn),
+  );
+  if (matches.length > 1) throw new Error('ambiguous active campaigns for page and business date');
+  return matches[0] ?? null;
+}
+
 export class CampaignService {
   constructor(
     private readonly repository: LeadControlRepository,
@@ -17,13 +51,13 @@ export class CampaignService {
   ) {}
 
   async createCampaign(input: CampaignInput, actor: string): Promise<Campaign> {
-    validateCampaign(input);
-    return this.repository.runAtomic([pageKey(input.pageId)], async (repository) => {
+    const normalizedInput = { ...input, pageId: normalizeCampaignPageId(input.pageId) };
+    validateCampaign(normalizedInput);
+    return this.repository.runAtomic([pageKey(normalizedInput.pageId)], async (repository) => {
       const occurredAt = this.now();
       const campaign = await repository.createCampaign({
-        ...input,
-        name: input.name.trim(),
-        pageId: input.pageId.trim(),
+        ...normalizedInput,
+        name: normalizedInput.name.trim(),
         status: 'draft',
         createdAt: occurredAt,
         createdBy: actor,
@@ -36,13 +70,14 @@ export class CampaignService {
   }
 
   async updateCampaign(id: string, input: CampaignInput, actor: string): Promise<Campaign> {
-    validateCampaign(input);
+    const normalizedInput = { ...input, pageId: normalizeCampaignPageId(input.pageId) };
+    validateCampaign(normalizedInput);
     const original = await this.requireCampaign(id);
-    return this.repository.runAtomic([pageKey(original.pageId), pageKey(input.pageId)], async (repository) => {
+    return this.repository.runAtomic([pageKey(original.pageId), pageKey(normalizedInput.pageId)], async (repository) => {
     const existing = await this.requireCampaign(id, repository);
     if (existing.status === 'archived') throw new Error('archived campaigns cannot be edited');
-    if (existing.status === 'active') await this.assertNoActivePageOverlap(input.pageId, input.startsOn, input.endsOn, id, repository);
-    const campaign: Campaign = { ...existing, ...input, name: input.name.trim(), pageId: input.pageId.trim() };
+    if (existing.status === 'active') await this.assertNoActivePageOverlap(normalizedInput.pageId, normalizedInput.startsOn, normalizedInput.endsOn, id, repository);
+    const campaign: Campaign = { ...existing, ...normalizedInput, name: normalizedInput.name.trim() };
     await repository.updateCampaign(campaign);
     await this.audit(repository, 'campaign.updated', actor, 'campaign', id, { pageId: campaign.pageId });
     return campaign;
@@ -292,7 +327,7 @@ export class CampaignService {
     excludingId?: string,
     repository = this.repository,
   ): Promise<void> {
-    const campaigns = await repository.listCampaignsForPage(pageId.trim());
+    const campaigns = await repository.listCampaignsForPage(normalizeCampaignPageId(pageId));
     const overlaps = campaigns.some((campaign) =>
       campaign.id !== excludingId && campaign.status === 'active' && datesOverlap(startsOn, endsOn, campaign.startsOn, campaign.endsOn),
     );
@@ -375,7 +410,7 @@ function datesOverlap(firstStart: string, firstEnd: string | null, secondStart: 
 }
 
 function pageKey(pageId: string): string {
-  return `page:${pageId.trim()}`;
+  return `page:${normalizeCampaignPageId(pageId)}`;
 }
 
 function spendKey(campaignId: string, month: string): string {

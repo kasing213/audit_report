@@ -71,6 +71,16 @@ export interface DailySummaryDocument {
   page: string | null;
   counters: Record<string, number>;
   raw_text: string;
+  // These user-reviewed funnel metrics intentionally remain independent from
+  // the parser's raw counter map and source text.
+  normalized_metrics?: {
+    messages: number;
+    valid_phone_leads: number;
+    completed_property_visits: number;
+  };
+  // Null is an intentional, compatible outcome when no active campaign
+  // covers this report's normalized page and business date.
+  campaign_id?: string | null;
   source: {
     model: string;
   };
