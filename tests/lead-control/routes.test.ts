@@ -10,6 +10,7 @@ import {
 } from '../../src/lead-control/models';
 import { LeadControlRepository } from '../../src/lead-control/repository';
 import { CampaignService } from '../../src/lead-control/service';
+import { SummaryDataRepository, SummaryService } from '../../src/lead-control/summary-service';
 import { createLeadControlRouter } from '../../src/api/lead-control-routes';
 import { ApiServer } from '../../src/api/server';
 import { createSessionCookie } from '../../src/api/auth-middleware';
@@ -180,6 +181,33 @@ test('calculator routes calculate results from budget and budget from a net-book
   assert.equal(fromBudget.body.forecast.messages, 10000 / 150);
   const toBudget = await request(app, 'POST', '/lead-control/calculator/target-to-budget', { targetNetBookings: 10, ...forecast });
   assert.deepEqual(toBudget.body, { budgetCents: 15_000 });
+});
+
+test('summary routes expose the injected monthly, cancellation, reconciliation, and sync-health queries', async () => {
+  const { app } = fixture();
+  const summaryCampaign: Campaign = { id: 'summary-campaign', name: 'Summary', pageId: 'page-a', startsOn: '2026-09-01', endsOn: null, status: 'active', createdAt: new Date(), createdBy: 'developer', archivedAt: null, archivedBy: null };
+  const summaryRepository: SummaryDataRepository = {
+    getCampaign: async (id) => id === summaryCampaign.id ? summaryCampaign : null,
+    listRevisions: async () => [{ id: 'summary-revision', campaignId: summaryCampaign.id, ...forecast, revisionNumber: 1, kind: 'baseline', status: 'approved', createdAt: new Date(), createdBy: 'developer', approvedAt: new Date(), approvedBy: 'developer' }],
+    listSpend: async () => [], listDailySummaries: async () => [], listSalesProjections: async () => [], listUnmatchedSales: async () => [], getSalesSyncCursor: async () => null, countMalformedSales: async () => 0,
+  };
+  app.use('/summary-test', createLeadControlRouter({ summaryService: new SummaryService(summaryRepository) }));
+
+  const summary = await request(app, 'GET', '/summary-test/campaigns/summary-campaign/summary?month=2026-09&asOf=2026-09-20');
+  assert.equal(summary.status, 200);
+  assert.equal(summary.body.summary.campaign.id, 'summary-campaign');
+  assert.deepEqual((await request(app, 'GET', '/summary-test/campaigns/summary-campaign/cancellations?month=2026-09&view=cohort')).body.cancellations, []);
+  assert.deepEqual((await request(app, 'GET', '/summary-test/reconciliation/unmatched')).body.sales, []);
+  assert.equal((await request(app, 'GET', '/summary-test/sync/health?asOf=2026-09-20')).body.health.status, 'Pending');
+});
+
+test('manual attribution is routed through the injected atomic sales service with the authenticated actor', async () => {
+  const { app } = fixture();
+  const calls: Array<{ saleId: string; campaignId: string; actor: string }> = [];
+  app.use('/attribution-test', createLeadControlRouter({ salesService: { manuallyAttribute: async (saleId, campaignId, actor) => { calls.push({ saleId, campaignId, actor }); } } }));
+
+  assert.equal((await request(app, 'POST', '/attribution-test/sales/sale-7/attribution', { campaignId: 'campaign-7' })).status, 204);
+  assert.deepEqual(calls, [{ saleId: 'sale-7', campaignId: 'campaign-7', actor: 'developer' }]);
 });
 
 test('routes return stable validation, missing, conflict, and forbidden responses', async () => {

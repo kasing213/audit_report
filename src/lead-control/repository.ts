@@ -1,5 +1,5 @@
 import { ClientSession, Collection, Db, ObjectId } from 'mongodb';
-import { LeadEventDocument } from '../database/models';
+import { DailySummaryDocument, LeadEventDocument } from '../database/models';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
 import {
@@ -22,6 +22,7 @@ import {
   SalesProjectionRepository,
   SalesSyncCursor,
 } from './sync-service';
+import { SummaryDataRepository } from './summary-service';
 
 export interface LeadControlRepository {
   createCampaign(campaign: Omit<Campaign, 'id'>): Promise<Campaign>;
@@ -52,6 +53,11 @@ const SALES_CURSOR = 'lead_control_sales_sync_cursor';
 const MALFORMED_SALES = 'lead_control_malformed_sales';
 const SALES_AUDIT = 'lead_control_sales_audit_events';
 const LEAD_EVENTS = 'leads_events';
+const DAILY_SUMMARIES = 'daily_summaries';
+
+export const DAILY_SUMMARY_INDEXES = [
+  { key: { campaign_id: 1, date: 1 }, name: 'campaign_month_summary_lookup' },
+];
 
 export const SALES_PROJECTION_INDEXES = [
   { key: { sale_id: 1 }, name: 'sale_id_unique', unique: true },
@@ -70,7 +76,7 @@ interface MutationGuardDocument {
 
 const indexInitialization = new WeakMap<Db, Promise<void>>();
 
-export class MongoLeadControlRepository implements LeadControlRepository, SalesProjectionRepository {
+export class MongoLeadControlRepository implements LeadControlRepository, SalesProjectionRepository, SummaryDataRepository {
   private readonly campaigns: Collection<CampaignDocument>;
   private readonly revisions: Collection<ForecastRevisionDocument>;
   private readonly spend: Collection<SpendRecordDocument>;
@@ -81,6 +87,7 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
   private readonly malformedSales: Collection<MalformedSalesRecordDocument>;
   private readonly salesAudit: Collection<SalesAuditEventDocument>;
   private readonly leadEvents: Collection<LeadEventDocument>;
+  private readonly dailySummaries: Collection<DailySummaryDocument>;
 
   constructor(
     private readonly db: Db = DatabaseConnection.getInstance().getDb(),
@@ -96,6 +103,7 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
     this.malformedSales = db.collection<MalformedSalesRecordDocument>(MALFORMED_SALES);
     this.salesAudit = db.collection<SalesAuditEventDocument>(SALES_AUDIT);
     this.leadEvents = db.collection<LeadEventDocument>(LEAD_EVENTS);
+    this.dailySummaries = db.collection<DailySummaryDocument>(DAILY_SUMMARIES);
     if (!session) {
       void this.ensureIndexes().catch((error: unknown) => Logger.error('Lead Control index creation failed', error as Error));
     }
@@ -145,6 +153,7 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
         { normalized_phone: 1, date: -1, created_at: -1 },
         { name: 'sale_attribution_normalized_phone_date', sparse: true },
       ),
+      this.dailySummaries.createIndexes(DAILY_SUMMARY_INDEXES),
     ]);
   }
 
@@ -235,6 +244,26 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
       occurred_at: event.occurredAt,
       details: event.details,
     }, this.options());
+  }
+
+  async listDailySummaries(campaignId: string, month: string): Promise<DailySummaryDocument[]> {
+    const nextMonth = followingMonth(month);
+    return this.dailySummaries.find({
+      campaign_id: campaignId,
+      date: { $gte: `${month}-01`, $lt: `${nextMonth}-01` },
+    }, this.options()).sort({ date: 1 }).toArray();
+  }
+
+  async listSalesProjections(campaignId: string): Promise<SalesProjection[]> {
+    return (await this.saleProjections.find({ campaign_id: campaignId }, this.options()).sort({ booking_date: 1, sale_id: 1 }).toArray()).map(saleProjectionFromDocument);
+  }
+
+  async listUnmatchedSales(): Promise<SalesProjection[]> {
+    return (await this.saleProjections.find({ attribution_kind: 'unmatched' }, this.options()).sort({ updated_at: -1, sale_id: 1 }).toArray()).map(saleProjectionFromDocument);
+  }
+
+  async countMalformedSales(): Promise<number> {
+    return this.malformedSales.countDocuments({}, this.options());
   }
 
   async getSalesSyncCursor(): Promise<SalesSyncCursor | null> {
@@ -350,6 +379,13 @@ export function pageIdCompatibilityPattern(canonicalPageId: string): RegExp {
 
 function escapeRegex(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function followingMonth(month: string): string {
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) throw new RangeError('month must be YYYY-MM');
+  const [year, monthNumber] = month.split('-').map(Number);
+  const value = new Date(Date.UTC(year, monthNumber, 1));
+  return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, '0')}`;
 }
 
 function objectId(id: string): ObjectId {

@@ -4,11 +4,15 @@ import { forecastFromBudget, budgetForNetBookings } from '../lead-control/foreca
 import { CampaignInput, ForecastRevisionInput, SpendInput, SpendMode } from '../lead-control/models';
 import { LeadControlRepository, MongoLeadControlRepository } from '../lead-control/repository';
 import { CampaignService, normalizeCampaignPageId } from '../lead-control/service';
+import { SalesProjectionRepository, SyncSalesService } from '../lead-control/sync-service';
+import { SummaryService } from '../lead-control/summary-service';
 import { Logger } from '../utils/logger';
 
 export interface LeadControlRouteDependencies {
   service?: CampaignService;
   repository?: LeadControlRepository;
+  summaryService?: SummaryService;
+  salesService?: Pick<SyncSalesService, 'manuallyAttribute'>;
 }
 
 /**
@@ -19,6 +23,8 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
   const router = express.Router();
   const repository = () => dependencies.repository ?? new MongoLeadControlRepository();
   const service = () => dependencies.service ?? new CampaignService(repository());
+  const summaryService = () => dependencies.summaryService ?? new SummaryService(repository() as unknown as import('../lead-control/summary-service').SummaryDataRepository);
+  const salesService = () => dependencies.salesService ?? new SyncSalesService({ listSalesAfter: async () => [] }, repository() as unknown as SalesProjectionRepository);
 
   router.use((req, res, next) => {
     const role = getSessionUser(req);
@@ -139,6 +145,56 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
       res.status(204).end();
     } catch (error) {
       respondError(error, res, 'lead control spend mode switch failed');
+    }
+  });
+
+  router.get('/campaigns/:id/summary', async (req, res) => {
+    try {
+      res.json({ summary: await summaryService().monthly({ campaignId: req.params.id, month: queryString(req, 'month'), asOf: queryString(req, 'asOf') }) });
+    } catch (error) {
+      respondError(error, res, 'lead control monthly summary failed');
+    }
+  });
+
+  router.get('/campaigns/:id/cancellations', async (req, res) => {
+    try {
+      res.json({ cancellations: await summaryService().cancellations({ campaignId: req.params.id, month: queryString(req, 'month'), view: cancellationView(queryString(req, 'view')) }) });
+    } catch (error) {
+      respondError(error, res, 'lead control cancellation view failed');
+    }
+  });
+
+  router.get('/campaigns/:id/revisions', async (req, res) => {
+    try {
+      res.json({ revisions: await repository().listRevisions(req.params.id, queryString(req, 'month')) });
+    } catch (error) {
+      respondError(error, res, 'lead control revision history failed');
+    }
+  });
+
+  router.get('/reconciliation/unmatched', async (_req, res) => {
+    try {
+      res.json({ sales: await summaryService().unmatchedSales() });
+    } catch (error) {
+      respondError(error, res, 'lead control unmatched reconciliation failed');
+    }
+  });
+
+  router.get('/sync/health', async (req, res) => {
+    try {
+      res.json({ health: await summaryService().syncHealth(queryString(req, 'asOf')) });
+    } catch (error) {
+      respondError(error, res, 'lead control sync health failed');
+    }
+  });
+
+  router.post('/sales/:saleId/attribution', async (req, res) => {
+    try {
+      const body = objectBody(req.body);
+      await salesService().manuallyAttribute(req.params.saleId, stringValue(body.campaignId, 'campaignId'), actor(res));
+      res.status(204).end();
+    } catch (error) {
+      respondError(error, res, 'lead control manual sale attribution failed');
     }
   });
 
@@ -266,6 +322,11 @@ function spendInput(value: unknown): SpendInput {
 
 function spendMode(value: unknown): SpendMode {
   if (value !== 'daily' && value !== 'monthly') throw new RangeError('targetMode must be daily or monthly');
+  return value;
+}
+
+function cancellationView(value: string): 'cohort' | 'event' {
+  if (value !== 'cohort' && value !== 'event') throw new RangeError('view must be cohort or event');
   return value;
 }
 

@@ -5,7 +5,7 @@ import {
   RawSalesRecord,
   validateSalesSourcePrivileges,
 } from '../../src/lead-control/payment-sales-source';
-import { saleAttributionLeadFilter, SALES_PROJECTION_INDEXES } from '../../src/lead-control/repository';
+import { DAILY_SUMMARY_INDEXES, saleAttributionLeadFilter, SALES_PROJECTION_INDEXES } from '../../src/lead-control/repository';
 import {
   LeadForSaleAttribution,
   SalesProjection,
@@ -168,6 +168,11 @@ test('lead attribution queries the persisted normalized phone key and projection
   assert.equal(
     SALES_PROJECTION_INDEXES.some((index) => index.name === 'status_cancellation_event_lookup'
       && JSON.stringify(index.key) === JSON.stringify({ status: 1, cancelled_date: 1 })),
+    true,
+  );
+  assert.equal(
+    DAILY_SUMMARY_INDEXES.some((index) => index.name === 'campaign_month_summary_lookup'
+      && JSON.stringify(index.key) === JSON.stringify({ campaign_id: 1, date: 1 })),
     true,
   );
 });
