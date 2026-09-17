@@ -74,6 +74,42 @@ export type LeadControlAuditAction =
   | 'spend.deleted'
   | 'spend.mode_switched';
 
+export interface SalesProjectionDocument {
+  _id: ObjectId;
+  sale_id: string;
+  status: string;
+  normalized_phone: string;
+  booking_date: Date;
+  completed_date: Date | null;
+  cancelled_date: Date | null;
+  updated_at: Date;
+  campaign_id: string | null;
+  attributed_lead_id: string | null;
+  attribution_kind: 'automatic' | 'manual' | 'unmatched';
+  attributed_at: Date | null;
+}
+
+export interface SalesSyncCursorDocument {
+  _id: 'sales';
+  updated_at: Date;
+  sale_id: string;
+}
+
+export interface MalformedSalesRecordDocument {
+  _id: string;
+  sale_id: string | null;
+  reason: string;
+  recorded_at: Date;
+}
+
+export interface SalesAuditEventDocument {
+  _id: ObjectId;
+  sale_id: string;
+  action: string;
+  actor: string;
+  occurred_at: Date;
+}
+
 export interface AuditEvent {
   id: string;
   action: LeadControlAuditAction;

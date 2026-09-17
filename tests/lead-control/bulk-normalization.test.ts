@@ -162,6 +162,28 @@ test('bulk confirmation saves unassigned normalized metrics when no campaign mat
   assert.deepEqual(saved[0].normalized_metrics, { messages: 17, valid_phone_leads: 5, completed_property_visits: 3 });
 });
 
+test('bulk confirmation freezes the active campaign onto each lead event for later sales attribution', async () => {
+  const savedEvents: any[] = [];
+  const app = express();
+  app.use('/data-entry', createDataEntryRouter({
+    repository: {
+      saveLeadEvents: async (events: unknown[]) => { savedEvents.push(...events); return ['lead-1']; },
+      saveDailySummary: async () => 'unexpected',
+      saveChangeLog: async () => undefined,
+      logAudit: async () => undefined,
+    },
+    resolveCampaign: async () => activeCampaign,
+  }));
+
+  const response = await request(app, {
+    header: { date: '2026-09-17', follower: 'Sok', page: 'Page River Homes' },
+    drafts: [{ customer_phone: '+85512345678', customer_name: 'Sok', slot: '1' }],
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(savedEvents[0].campaign_id, 'campaign-river');
+});
+
 test('bulk confirmation rejects ambiguous active campaign resolution before persisting', async () => {
   let saves = 0;
   const app = express();

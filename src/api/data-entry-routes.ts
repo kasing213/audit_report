@@ -379,7 +379,7 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
     const hasRawCounters = rawCounters !== null && Object.keys(rawCounters).length > 0;
     const hasNormalizedMetrics = summary?.normalized_metrics !== undefined;
     const reviewedMetrics = hasNormalizedMetrics ? normalizedMetrics(summary.normalized_metrics) : undefined;
-    const resolvedCampaign = reviewedMetrics
+    const resolvedCampaign = (reviewedMetrics || drafts.length > 0)
       ? await resolveCampaign(typeof header.page === 'string' ? header.page : null, header.date)
       : null;
 
@@ -402,6 +402,7 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
           phone
         },
         page: d?.page || header.page || null,
+        campaign_id: resolvedCampaign?.id ?? null,
         destination: null,
         follower: d?.follower || header.follower || null,
         status_text: null,

@@ -1,4 +1,5 @@
 import { ClientSession, Collection, Db, ObjectId } from 'mongodb';
+import { LeadEventDocument } from '../database/models';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
 import {
@@ -10,7 +11,17 @@ import {
   ForecastRevisionDocument,
   SpendRecord,
   SpendRecordDocument,
+  SalesProjectionDocument,
+  SalesSyncCursorDocument,
+  MalformedSalesRecordDocument,
+  SalesAuditEventDocument,
 } from './models';
+import {
+  LeadForSaleAttribution,
+  SalesProjection,
+  SalesProjectionRepository,
+  SalesSyncCursor,
+} from './sync-service';
 
 export interface LeadControlRepository {
   createCampaign(campaign: Omit<Campaign, 'id'>): Promise<Campaign>;
@@ -36,6 +47,11 @@ const REVISIONS = 'lead_control_forecast_revisions';
 const SPEND = 'lead_control_spend_records';
 const EVENTS = 'lead_control_audit_events';
 const GUARDS = 'lead_control_mutation_guards';
+const SALES_PROJECTIONS = 'lead_control_sales_projections';
+const SALES_CURSOR = 'lead_control_sales_sync_cursor';
+const MALFORMED_SALES = 'lead_control_malformed_sales';
+const SALES_AUDIT = 'lead_control_sales_audit_events';
+const LEAD_EVENTS = 'leads_events';
 
 interface MutationGuardDocument {
   _id: string;
@@ -44,12 +60,17 @@ interface MutationGuardDocument {
 
 const indexInitialization = new WeakMap<Db, Promise<void>>();
 
-export class MongoLeadControlRepository implements LeadControlRepository {
+export class MongoLeadControlRepository implements LeadControlRepository, SalesProjectionRepository {
   private readonly campaigns: Collection<CampaignDocument>;
   private readonly revisions: Collection<ForecastRevisionDocument>;
   private readonly spend: Collection<SpendRecordDocument>;
   private readonly events: Collection<AuditEventDocument>;
   private readonly guards: Collection<MutationGuardDocument>;
+  private readonly saleProjections: Collection<SalesProjectionDocument>;
+  private readonly salesCursor: Collection<SalesSyncCursorDocument>;
+  private readonly malformedSales: Collection<MalformedSalesRecordDocument>;
+  private readonly salesAudit: Collection<SalesAuditEventDocument>;
+  private readonly leadEvents: Collection<LeadEventDocument>;
 
   constructor(
     private readonly db: Db = DatabaseConnection.getInstance().getDb(),
@@ -60,6 +81,11 @@ export class MongoLeadControlRepository implements LeadControlRepository {
     this.spend = db.collection<SpendRecordDocument>(SPEND);
     this.events = db.collection<AuditEventDocument>(EVENTS);
     this.guards = db.collection<MutationGuardDocument>(GUARDS);
+    this.saleProjections = db.collection<SalesProjectionDocument>(SALES_PROJECTIONS);
+    this.salesCursor = db.collection<SalesSyncCursorDocument>(SALES_CURSOR);
+    this.malformedSales = db.collection<MalformedSalesRecordDocument>(MALFORMED_SALES);
+    this.salesAudit = db.collection<SalesAuditEventDocument>(SALES_AUDIT);
+    this.leadEvents = db.collection<LeadEventDocument>(LEAD_EVENTS);
     if (!session) {
       void this.ensureIndexes().catch((error: unknown) => Logger.error('Lead Control index creation failed', error as Error));
     }
@@ -102,6 +128,20 @@ export class MongoLeadControlRepository implements LeadControlRepository {
         { key: { actor: 1, occurred_at: -1 }, name: 'actor_audit_history' },
       ]),
       this.guards.createIndex({ version: 1 }, { name: 'mutation_guard_version' }),
+      this.saleProjections.createIndexes([
+        { key: { sale_id: 1 }, name: 'sale_id_unique', unique: true },
+        { key: { normalized_phone: 1, booking_date: 1 }, name: 'phone_booking_lookup' },
+        { key: { campaign_id: 1, booking_date: 1 }, name: 'campaign_booking_lookup' },
+        { key: { attribution_kind: 1, updated_at: -1 }, name: 'unmatched_reconciliation_lookup' },
+        { key: { status: 1, booking_date: 1 }, name: 'status_booking_lookup' },
+        { key: { updated_at: 1, sale_id: 1 }, name: 'source_updated_cursor_lookup' },
+      ]),
+      this.malformedSales.createIndex({ recorded_at: -1 }, { name: 'malformed_sales_recorded_at' }),
+      this.salesAudit.createIndex({ sale_id: 1, occurred_at: -1 }, { name: 'sale_audit_history' }),
+      this.leadEvents.createIndex(
+        { 'customer.phone': 1, date: -1, created_at: -1 },
+        { name: 'phone_date_idx', sparse: true },
+      ),
     ]);
   }
 
@@ -192,6 +232,72 @@ export class MongoLeadControlRepository implements LeadControlRepository {
       occurred_at: event.occurredAt,
       details: event.details,
     }, this.options());
+  }
+
+  async getSalesSyncCursor(): Promise<SalesSyncCursor | null> {
+    const cursor = await this.salesCursor.findOne({ _id: 'sales' }, this.options());
+    return cursor ? { updatedAt: cursor.updated_at, saleId: cursor.sale_id } : null;
+  }
+
+  async saveSalesSyncCursor(cursor: SalesSyncCursor): Promise<void> {
+    await this.salesCursor.updateOne(
+      { _id: 'sales' },
+      { $set: { updated_at: cursor.updatedAt, sale_id: cursor.saleId } },
+      { upsert: true, ...this.options() },
+    );
+  }
+
+  async getSaleProjection(saleId: string): Promise<SalesProjection | null> {
+    const sale = await this.saleProjections.findOne({ sale_id: saleId }, this.options());
+    return sale ? saleProjectionFromDocument(sale) : null;
+  }
+
+  async saveSaleProjection(sale: SalesProjection): Promise<void> {
+    await this.saleProjections.updateOne(
+      { sale_id: sale.saleId },
+      { $set: saleProjectionDocument(sale) },
+      { upsert: true, ...this.options() },
+    );
+  }
+
+  async recordMalformedSale(saleId: string | null, reason: string): Promise<void> {
+    const key = `${saleId ?? '<missing>'}:${reason}`;
+    await this.malformedSales.updateOne(
+      { _id: key },
+      { $setOnInsert: { sale_id: saleId, reason, recorded_at: new Date() } },
+      { upsert: true, ...this.options() },
+    );
+  }
+
+  async findMostRecentLeadBefore(phone: string, bookingDate: Date): Promise<LeadForSaleAttribution | null> {
+    const bookingDateKey = bookingDate.toISOString().slice(0, 10);
+    const lead = await this.leadEvents.find({
+      'customer.phone': phone,
+      campaign_id: { $type: 'string' },
+      deleted: { $ne: true },
+      date: { $lt: bookingDateKey },
+    }, this.options()).sort({ date: -1, created_at: -1 }).limit(1).next();
+    if (!lead || lead._id === undefined || typeof lead.campaign_id !== 'string') return null;
+    return {
+      id: String(lead._id),
+      normalizedPhone: phone,
+      occurredAt: lead.created_at,
+      campaignId: lead.campaign_id,
+    };
+  }
+
+  async appendSalesAudit(action: string, actor: string, saleId: string): Promise<void> {
+    await this.salesAudit.insertOne({
+      _id: new ObjectId(),
+      sale_id: saleId,
+      action,
+      actor,
+      occurred_at: new Date(),
+    }, this.options());
+  }
+
+  async runSalesAtomic<T>(keys: readonly string[], operation: (repository: SalesProjectionRepository) => Promise<T>): Promise<T> {
+    return this.runAtomic(keys, async (repository) => operation(repository as unknown as SalesProjectionRepository));
   }
 
   async runAtomic<T>(keys: readonly string[], operation: (repository: LeadControlRepository) => Promise<T>): Promise<T> {
@@ -343,5 +449,37 @@ function spendFromDocument(document: SpendRecordDocument): SpendRecord {
     createdBy: document.created_by,
     archivedAt: document.archived_at,
     archivedBy: document.archived_by,
+  };
+}
+
+function saleProjectionDocument(sale: SalesProjection): Omit<SalesProjectionDocument, '_id'> {
+  return {
+    sale_id: sale.saleId,
+    status: sale.status,
+    normalized_phone: sale.normalizedPhone,
+    booking_date: sale.bookingDate,
+    completed_date: sale.completedDate,
+    cancelled_date: sale.cancelledDate,
+    updated_at: sale.updatedAt,
+    campaign_id: sale.campaignId,
+    attributed_lead_id: sale.attributedLeadId,
+    attribution_kind: sale.attributionKind,
+    attributed_at: sale.attributedAt,
+  };
+}
+
+function saleProjectionFromDocument(document: SalesProjectionDocument): SalesProjection {
+  return {
+    saleId: document.sale_id,
+    status: document.status,
+    normalizedPhone: document.normalized_phone,
+    bookingDate: document.booking_date,
+    completedDate: document.completed_date,
+    cancelledDate: document.cancelled_date,
+    updatedAt: document.updated_at,
+    campaignId: document.campaign_id,
+    attributedLeadId: document.attributed_lead_id,
+    attributionKind: document.attribution_kind,
+    attributedAt: document.attributed_at,
   };
 }

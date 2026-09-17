@@ -10,6 +10,10 @@ export interface LeadEventDocument {
     phone: string | null;
   };
   page: string | null;
+  // The campaign that was active for this lead when it entered Audit Sales.
+  // Older events legitimately have no value and remain eligible only for
+  // reconciliation, never automatic sale attribution.
+  campaign_id?: string | null;
   destination?: string | null;
   follower: string | null;
   status_text: string | null;
