@@ -177,7 +177,7 @@ export class CampaignService {
   async recordSpend(input: SpendInput, actor: string): Promise<SpendRecord> {
     validateSpend(input);
     const mode: SpendMode = input.businessDate === null ? 'monthly' : 'daily';
-    return this.repository.runAtomic([spendKey(input.campaignId, input.month)], async (repository) => {
+    return this.repository.runAtomic([`campaign:${input.campaignId}`, spendKey(input.campaignId, input.month)], async (repository) => {
     await this.requireCampaign(input.campaignId, repository);
     const existing = await repository.listSpend(input.campaignId, input.month);
     const active = existing.filter((spend) => spend.status === 'active');

@@ -291,6 +291,21 @@ test('serializes concurrent activation and spend-mode writes so one conflict win
   assert.equal(repo.spends.filter((item) => item.status === 'active').length, 1);
 });
 
+test('serializes draft deletion with first spend creation so no orphan spend can persist', async () => {
+  const { service, repo } = buildService();
+  const campaign = await service.createCampaign(campaignInput, 'manager');
+
+  const results = await Promise.allSettled([
+    service.deleteCampaign(campaign.id, 'manager'),
+    service.recordSpend({ campaignId: campaign.id, month: '2026-09', businessDate: null, amountCents: 100_000 }, 'manager'),
+  ]);
+
+  const campaignStillExists = repo.campaigns.some((item) => item.id === campaign.id);
+  const spendExists = repo.spends.some((item) => item.campaignId === campaign.id);
+  assert.equal(campaignStillExists, spendExists);
+  assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
+});
+
 test('rolls back a state mutation when its audit event cannot be persisted', async () => {
   const { service, repo } = buildService();
   const campaign = await service.createCampaign(campaignInput, 'manager');

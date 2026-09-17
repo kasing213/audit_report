@@ -35,12 +35,11 @@ const CAMPAIGNS = 'lead_control_campaigns';
 const REVISIONS = 'lead_control_forecast_revisions';
 const SPEND = 'lead_control_spend_records';
 const EVENTS = 'lead_control_audit_events';
-const LOCKS = 'lead_control_mutation_locks';
+const GUARDS = 'lead_control_mutation_guards';
 
-interface MutationLockDocument {
+interface MutationGuardDocument {
   _id: string;
-  owner: string;
-  expires_at: Date;
+  version: number;
 }
 
 const indexInitialization = new WeakMap<Db, Promise<void>>();
@@ -50,7 +49,7 @@ export class MongoLeadControlRepository implements LeadControlRepository {
   private readonly revisions: Collection<ForecastRevisionDocument>;
   private readonly spend: Collection<SpendRecordDocument>;
   private readonly events: Collection<AuditEventDocument>;
-  private readonly locks: Collection<MutationLockDocument>;
+  private readonly guards: Collection<MutationGuardDocument>;
 
   constructor(
     private readonly db: Db = DatabaseConnection.getInstance().getDb(),
@@ -60,7 +59,7 @@ export class MongoLeadControlRepository implements LeadControlRepository {
     this.revisions = db.collection<ForecastRevisionDocument>(REVISIONS);
     this.spend = db.collection<SpendRecordDocument>(SPEND);
     this.events = db.collection<AuditEventDocument>(EVENTS);
-    this.locks = db.collection<MutationLockDocument>(LOCKS);
+    this.guards = db.collection<MutationGuardDocument>(GUARDS);
     if (!session) {
       void this.ensureIndexes().catch((error: unknown) => Logger.error('Lead Control index creation failed', error as Error));
     }
@@ -102,7 +101,7 @@ export class MongoLeadControlRepository implements LeadControlRepository {
         { key: { entity_type: 1, entity_id: 1, occurred_at: -1 }, name: 'entity_audit_history' },
         { key: { actor: 1, occurred_at: -1 }, name: 'actor_audit_history' },
       ]),
-      this.locks.createIndex({ expires_at: 1 }, { name: 'mutation_lock_expiry', expireAfterSeconds: 0 }),
+      this.guards.createIndex({ version: 1 }, { name: 'mutation_guard_version' }),
     ]);
   }
 
@@ -191,19 +190,23 @@ export class MongoLeadControlRepository implements LeadControlRepository {
   }
 
   async runAtomic<T>(keys: readonly string[], operation: (repository: LeadControlRepository) => Promise<T>): Promise<T> {
-    const owner = new ObjectId().toHexString();
     const lockKeys = [...new Set(keys)].sort();
-    await this.acquireLocks(lockKeys, owner);
     const session = this.db.client.startSession();
     try {
       let result!: T;
       await session.withTransaction(async () => {
+        for (const key of lockKeys) {
+          await this.guards.updateOne(
+            { _id: key },
+            { $inc: { version: 1 } },
+            { upsert: true, session },
+          );
+        }
         result = await operation(new MongoLeadControlRepository(this.db, session));
       });
       return result;
     } finally {
       await session.endSession();
-      await this.locks.deleteMany({ _id: { $in: lockKeys }, owner });
     }
   }
 
@@ -211,24 +214,6 @@ export class MongoLeadControlRepository implements LeadControlRepository {
     return this.session ? { session: this.session } : {};
   }
 
-  private async acquireLocks(keys: readonly string[], owner: string): Promise<void> {
-    for (const key of keys) {
-      for (;;) {
-        const now = new Date();
-        try {
-          const lock = await this.locks.findOneAndUpdate(
-            { _id: key, $or: [{ expires_at: { $lte: now } }, { owner }] },
-            { $set: { owner, expires_at: new Date(now.getTime() + 30_000) } },
-            { upsert: true, returnDocument: 'after' },
-          );
-          if (lock?.owner === owner) break;
-        } catch (error: unknown) {
-          if (!(error instanceof Error) || !/duplicate key/i.test(error.message)) throw error;
-        }
-        await new Promise<void>((resolve) => setTimeout(resolve, 10));
-      }
-    }
-  }
 }
 
 function objectId(id: string): ObjectId {
