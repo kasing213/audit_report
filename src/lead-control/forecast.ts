@@ -1,5 +1,8 @@
 import {
   BudgetForecastInput,
+  BudgetPacing,
+  BudgetPacingInput,
+  DerivedCostPerResultCents,
   FunnelForecast,
   FunnelRates,
   LeadControlStatus,
@@ -15,13 +18,15 @@ export function forecastFromBudget(input: BudgetForecastInput): FunnelForecast {
   const phoneLeads = messages * input.messageToPhoneRate;
   const visits = phoneLeads * input.phoneToVisitRate;
   const grossBookings = visits * input.visitToBookingRate;
+  const cancellations = grossBookings * input.cancellationRate;
 
   return {
     messages,
     phoneLeads,
     visits,
     grossBookings,
-    netBookings: grossBookings * (1 - input.cancellationRate),
+    cancellations,
+    netBookings: grossBookings - cancellations,
   };
 }
 
@@ -72,7 +77,24 @@ export function proratedMonthlyBudgetCents(
   return Math.round(monthlyBudgetCents * activeDays / daysInMonth);
 }
 
-export function costPerResultCents(spendCents: UsdCents, results: number): UsdCents | null {
+export function compareBudgetPacing(input: BudgetPacingInput): BudgetPacing {
+  validateBudgetCents(input.actualSpendCents, 'actualSpendCents');
+  const plannedSpendCents = proratedMonthlyBudgetCents(
+    input.monthlyBudgetCents,
+    input.activeDays,
+    input.daysInMonth,
+  );
+  const varianceCents = input.actualSpendCents - plannedSpendCents;
+
+  return {
+    plannedSpendCents,
+    actualSpendCents: input.actualSpendCents,
+    varianceCents,
+    state: varianceCents > 0 ? 'Ahead' : varianceCents < 0 ? 'Behind' : 'On pace',
+  };
+}
+
+export function costPerResultCents(spendCents: UsdCents, results: number): DerivedCostPerResultCents | null {
   validateBudgetCents(spendCents, 'spendCents');
   validateNonNegativeNumber(results, 'results');
   return results === 0 ? null : spendCents / results;
@@ -81,7 +103,9 @@ export function costPerResultCents(spendCents: UsdCents, results: number): UsdCe
 export function rate(numerator: number, denominator: number): number | null {
   validateNonNegativeNumber(numerator, 'numerator');
   validateNonNegativeNumber(denominator, 'denominator');
-  return denominator === 0 ? null : numerator / denominator;
+  if (denominator === 0) return null;
+  if (numerator > denominator) throw new RangeError('numerator cannot exceed denominator');
+  return numerator / denominator;
 }
 
 export function classifyOutcome(actual: number | null, target: number): LeadControlStatus {
@@ -91,10 +115,13 @@ export function classifyOutcome(actual: number | null, target: number): LeadCont
   return actual >= target ? 'Good' : 'Bad';
 }
 
-export function classifyCostPerResult(actualCents: UsdCents | null, targetCents: UsdCents): LeadControlStatus {
+export function classifyCostPerResult(
+  actualCents: DerivedCostPerResultCents | null,
+  targetCents: UsdCents,
+): LeadControlStatus {
   validateBudgetCents(targetCents, 'targetCents');
   if (actualCents === null) return 'Pending';
-  validateBudgetCents(actualCents, 'actualCents');
+  validateNonNegativeNumber(actualCents, 'actualCents');
   return actualCents <= targetCents ? 'Good' : 'Bad';
 }
 

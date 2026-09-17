@@ -5,6 +5,7 @@ import {
   classifyCancellationRate,
   classifyCostPerResult,
   classifyOutcome,
+  compareBudgetPacing,
   costPerResultCents,
   forecastFromBudget,
   formatBudgetToMessages,
@@ -29,7 +30,8 @@ test('forecasts every funnel stage from an integer-cent budget', () => {
   assert.equal(forecast.phoneLeads, 10000 / 150 * 0.5);
   assert.equal(forecast.visits, 10000 / 150 * 0.5 * 0.5);
   assert.equal(forecast.grossBookings, 10000 / 150 * 0.5 * 0.5 * 0.5);
-  assert.equal(forecast.netBookings, 10000 / 150 * 0.5 * 0.5 * 0.5 * 0.8);
+  assert.equal(forecast.cancellations, 10000 / 150 * 0.5 * 0.5 * 0.5 * 0.2);
+  assert.equal(forecast.netBookings, forecast.grossBookings - forecast.cancellations);
 });
 
 test('formats the budget-to-message calculation as $100 / $1.50 = 66.7 messages', () => {
@@ -59,9 +61,33 @@ test('prorates a monthly cent budget across active calendar days', () => {
   assert.throws(() => proratedMonthlyBudgetCents(10000, 32, 31), /activeDays/);
 });
 
+test('compares actual spend with active-day planned spend for budget pacing', () => {
+  assert.deepEqual(
+    compareBudgetPacing({ monthlyBudgetCents: 310000, activeDays: 10, daysInMonth: 31, actualSpendCents: 90000 }),
+    { plannedSpendCents: 100000, actualSpendCents: 90000, varianceCents: -10000, state: 'Behind' },
+  );
+  assert.equal(
+    compareBudgetPacing({ monthlyBudgetCents: 310000, activeDays: 10, daysInMonth: 31, actualSpendCents: 100000 }).state,
+    'On pace',
+  );
+  assert.equal(
+    compareBudgetPacing({ monthlyBudgetCents: 310000, activeDays: 10, daysInMonth: 31, actualSpendCents: 110000 }).state,
+    'Ahead',
+  );
+});
+
 test('returns null instead of dividing by zero', () => {
   assert.equal(costPerResultCents(10000, 0), null);
   assert.equal(rate(1, 0), null);
+});
+
+test('keeps derived cost per result fractional while persisted cents remain whole', () => {
+  assert.equal(costPerResultCents(10000, 3), 10000 / 3);
+  assert.equal(classifyCostPerResult(costPerResultCents(10000, 3), 3400), 'Good');
+});
+
+test('rejects rates whose numerator exceeds the denominator', () => {
+  assert.throws(() => rate(2, 1), /numerator/);
 });
 
 test('classifies outcome achievement directly', () => {
