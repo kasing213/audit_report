@@ -1,4 +1,4 @@
-import { Collection, Db, ObjectId } from 'mongodb';
+import { ClientSession, Collection, Db, ObjectId } from 'mongodb';
 import DatabaseConnection from '../database/connection';
 import { Logger } from '../utils/logger';
 import {
@@ -25,35 +25,61 @@ export interface LeadControlRepository {
   deleteRevision(id: string): Promise<void>;
   createSpend(spend: Omit<SpendRecord, 'id'>): Promise<SpendRecord>;
   updateSpend(spend: SpendRecord): Promise<void>;
+  getSpend(id: string): Promise<SpendRecord | null>;
   listSpend(campaignId: string, month?: string): Promise<SpendRecord[]>;
   appendAuditEvent(event: Omit<AuditEvent, 'id'>): Promise<void>;
+  runAtomic<T>(keys: readonly string[], operation: (repository: LeadControlRepository) => Promise<T>): Promise<T>;
 }
 
 const CAMPAIGNS = 'lead_control_campaigns';
 const REVISIONS = 'lead_control_forecast_revisions';
 const SPEND = 'lead_control_spend_records';
 const EVENTS = 'lead_control_audit_events';
+const LOCKS = 'lead_control_mutation_locks';
 
-let indexesReady = false;
+interface MutationLockDocument {
+  _id: string;
+  owner: string;
+  expires_at: Date;
+}
+
+const indexInitialization = new WeakMap<Db, Promise<void>>();
 
 export class MongoLeadControlRepository implements LeadControlRepository {
   private readonly campaigns: Collection<CampaignDocument>;
   private readonly revisions: Collection<ForecastRevisionDocument>;
   private readonly spend: Collection<SpendRecordDocument>;
   private readonly events: Collection<AuditEventDocument>;
+  private readonly locks: Collection<MutationLockDocument>;
 
-  constructor(db: Db = DatabaseConnection.getInstance().getDb()) {
+  constructor(
+    private readonly db: Db = DatabaseConnection.getInstance().getDb(),
+    private readonly session?: ClientSession,
+  ) {
     this.campaigns = db.collection<CampaignDocument>(CAMPAIGNS);
     this.revisions = db.collection<ForecastRevisionDocument>(REVISIONS);
     this.spend = db.collection<SpendRecordDocument>(SPEND);
     this.events = db.collection<AuditEventDocument>(EVENTS);
-    if (!indexesReady) {
-      indexesReady = true;
+    this.locks = db.collection<MutationLockDocument>(LOCKS);
+    if (!session) {
       void this.ensureIndexes().catch((error: unknown) => Logger.error('Lead Control index creation failed', error as Error));
     }
   }
 
   async ensureIndexes(): Promise<void> {
+    const existing = indexInitialization.get(this.db);
+    if (existing) return existing;
+    const initialization = this.createIndexes();
+    indexInitialization.set(this.db, initialization);
+    try {
+      await initialization;
+    } catch (error) {
+      if (indexInitialization.get(this.db) === initialization) indexInitialization.delete(this.db);
+      throw error;
+    }
+  }
+
+  private async createIndexes(): Promise<void> {
     await Promise.all([
       this.campaigns.createIndexes([
         { key: { page_id: 1, status: 1, starts_on: 1, ends_on: 1 }, name: 'active_page_date_lookup' },
@@ -76,72 +102,80 @@ export class MongoLeadControlRepository implements LeadControlRepository {
         { key: { entity_type: 1, entity_id: 1, occurred_at: -1 }, name: 'entity_audit_history' },
         { key: { actor: 1, occurred_at: -1 }, name: 'actor_audit_history' },
       ]),
+      this.locks.createIndex({ expires_at: 1 }, { name: 'mutation_lock_expiry', expireAfterSeconds: 0 }),
     ]);
   }
 
   async createCampaign(campaign: Omit<Campaign, 'id'>): Promise<Campaign> {
-    const result = await this.campaigns.insertOne({ _id: new ObjectId(), ...campaignDocument(campaign) });
+    const result = await this.campaigns.insertOne({ _id: new ObjectId(), ...campaignDocument(campaign) }, this.options());
     return { ...campaign, id: result.insertedId.toHexString() };
   }
 
   async updateCampaign(campaign: Campaign): Promise<void> {
-    await this.campaigns.replaceOne({ _id: objectId(campaign.id) }, campaignDocument(campaign));
+    await this.campaigns.replaceOne({ _id: objectId(campaign.id) }, campaignDocument(campaign), this.options());
   }
 
   async getCampaign(id: string): Promise<Campaign | null> {
     const identifier = objectIdOrNull(id);
     if (!identifier) return null;
-    const document = await this.campaigns.findOne({ _id: identifier });
+    const document = await this.campaigns.findOne({ _id: identifier }, this.options());
     return document ? campaignFromDocument(document) : null;
   }
 
   async listCampaignsForPage(pageId: string): Promise<Campaign[]> {
-    return (await this.campaigns.find({ page_id: pageId }).toArray()).map(campaignFromDocument);
+    return (await this.campaigns.find({ page_id: pageId }, this.options()).toArray()).map(campaignFromDocument);
   }
 
   async deleteCampaign(id: string): Promise<void> {
-    await this.campaigns.deleteOne({ _id: objectId(id) });
+    await this.campaigns.deleteOne({ _id: objectId(id) }, this.options());
   }
 
   async createRevision(revision: Omit<ForecastRevision, 'id'>): Promise<ForecastRevision> {
-    const result = await this.revisions.insertOne({ _id: new ObjectId(), ...revisionDocument(revision) });
+    const result = await this.revisions.insertOne({ _id: new ObjectId(), ...revisionDocument(revision) }, this.options());
     return { ...revision, id: result.insertedId.toHexString() };
   }
 
   async updateRevision(revision: ForecastRevision): Promise<void> {
-    await this.revisions.replaceOne({ _id: objectId(revision.id) }, revisionDocument(revision));
+    await this.revisions.replaceOne({ _id: objectId(revision.id) }, revisionDocument(revision), this.options());
   }
 
   async getRevision(id: string): Promise<ForecastRevision | null> {
     const identifier = objectIdOrNull(id);
     if (!identifier) return null;
-    const document = await this.revisions.findOne({ _id: identifier });
+    const document = await this.revisions.findOne({ _id: identifier }, this.options());
     return document ? revisionFromDocument(document) : null;
   }
 
   async listRevisions(campaignId: string, month?: string): Promise<ForecastRevision[]> {
     const identifier = objectIdOrNull(campaignId);
     if (!identifier) return [];
-    return (await this.revisions.find({ campaign_id: identifier, ...(month === undefined ? {} : { month }) }).toArray()).map(revisionFromDocument);
+    return (await this.revisions.find({ campaign_id: identifier, ...(month === undefined ? {} : { month }) }, this.options()).toArray()).map(revisionFromDocument);
   }
 
   async deleteRevision(id: string): Promise<void> {
-    await this.revisions.deleteOne({ _id: objectId(id) });
+    await this.revisions.deleteOne({ _id: objectId(id) }, this.options());
   }
 
   async createSpend(spend: Omit<SpendRecord, 'id'>): Promise<SpendRecord> {
-    const result = await this.spend.insertOne({ _id: new ObjectId(), ...spendDocument(spend) });
+    const result = await this.spend.insertOne({ _id: new ObjectId(), ...spendDocument(spend) }, this.options());
     return { ...spend, id: result.insertedId.toHexString() };
   }
 
   async updateSpend(spend: SpendRecord): Promise<void> {
-    await this.spend.replaceOne({ _id: objectId(spend.id) }, spendDocument(spend));
+    await this.spend.replaceOne({ _id: objectId(spend.id) }, spendDocument(spend), this.options());
+  }
+
+  async getSpend(id: string): Promise<SpendRecord | null> {
+    const identifier = objectIdOrNull(id);
+    if (!identifier) return null;
+    const document = await this.spend.findOne({ _id: identifier }, this.options());
+    return document ? spendFromDocument(document) : null;
   }
 
   async listSpend(campaignId: string, month?: string): Promise<SpendRecord[]> {
     const identifier = objectIdOrNull(campaignId);
     if (!identifier) return [];
-    return (await this.spend.find({ campaign_id: identifier, ...(month === undefined ? {} : { month }) }).toArray()).map(spendFromDocument);
+    return (await this.spend.find({ campaign_id: identifier, ...(month === undefined ? {} : { month }) }, this.options()).toArray()).map(spendFromDocument);
   }
 
   async appendAuditEvent(event: Omit<AuditEvent, 'id'>): Promise<void> {
@@ -153,7 +187,47 @@ export class MongoLeadControlRepository implements LeadControlRepository {
       entity_id: objectId(event.entityId),
       occurred_at: event.occurredAt,
       details: event.details,
-    });
+    }, this.options());
+  }
+
+  async runAtomic<T>(keys: readonly string[], operation: (repository: LeadControlRepository) => Promise<T>): Promise<T> {
+    const owner = new ObjectId().toHexString();
+    const lockKeys = [...new Set(keys)].sort();
+    await this.acquireLocks(lockKeys, owner);
+    const session = this.db.client.startSession();
+    try {
+      let result!: T;
+      await session.withTransaction(async () => {
+        result = await operation(new MongoLeadControlRepository(this.db, session));
+      });
+      return result;
+    } finally {
+      await session.endSession();
+      await this.locks.deleteMany({ _id: { $in: lockKeys }, owner });
+    }
+  }
+
+  private options(): { session?: ClientSession } {
+    return this.session ? { session: this.session } : {};
+  }
+
+  private async acquireLocks(keys: readonly string[], owner: string): Promise<void> {
+    for (const key of keys) {
+      for (;;) {
+        const now = new Date();
+        try {
+          const lock = await this.locks.findOneAndUpdate(
+            { _id: key, $or: [{ expires_at: { $lte: now } }, { owner }] },
+            { $set: { owner, expires_at: new Date(now.getTime() + 30_000) } },
+            { upsert: true, returnDocument: 'after' },
+          );
+          if (lock?.owner === owner) break;
+        } catch (error: unknown) {
+          if (!(error instanceof Error) || !/duplicate key/i.test(error.message)) throw error;
+        }
+        await new Promise<void>((resolve) => setTimeout(resolve, 10));
+      }
+    }
   }
 }
 

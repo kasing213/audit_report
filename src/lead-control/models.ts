@@ -2,7 +2,7 @@ import { ObjectId } from 'mongodb';
 import { FunnelRates, UsdCents } from './types';
 
 export type BusinessDate = string;
-export type CampaignStatus = 'active' | 'archived';
+export type CampaignStatus = 'draft' | 'active' | 'archived';
 export type ForecastRevisionStatus = 'draft' | 'approved';
 export type ForecastRevisionKind = 'baseline' | 'revision';
 export type SpendStatus = 'active' | 'archived';
@@ -61,6 +61,7 @@ export interface SpendRecord extends SpendInput {
 export type LeadControlAuditAction =
   | 'campaign.created'
   | 'campaign.updated'
+  | 'campaign.activated'
   | 'campaign.deleted'
   | 'campaign.archived'
   | 'forecast.draft_created'
@@ -69,6 +70,7 @@ export type LeadControlAuditAction =
   | 'forecast.approved'
   | 'forecast.revision_created'
   | 'spend.recorded'
+  | 'spend.updated'
   | 'spend.mode_switched';
 
 export interface AuditEvent {

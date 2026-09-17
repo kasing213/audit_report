@@ -16,7 +16,9 @@ class InMemoryLeadControlRepository implements LeadControlRepository {
   revisions: ForecastRevision[] = [];
   spends: SpendRecord[] = [];
   events: AuditEvent[] = [];
+  failNextAudit = false;
   private nextId = 1;
+  private readonly lockTails = new Map<string, Promise<void>>();
 
   async createCampaign(input: Omit<Campaign, 'id'>): Promise<Campaign> {
     const campaign = { ...input, id: this.id() };
@@ -72,12 +74,54 @@ class InMemoryLeadControlRepository implements LeadControlRepository {
     this.spends.splice(this.spends.findIndex((item) => item.id === spend.id), 1, spend);
   }
 
+  async getSpend(id: string): Promise<SpendRecord | null> {
+    return this.spends.find((spend) => spend.id === id) ?? null;
+  }
+
   async listSpend(campaignId: string, month?: string): Promise<SpendRecord[]> {
     return this.spends.filter((spend) => spend.campaignId === campaignId && (month === undefined || spend.month === month));
   }
 
   async appendAuditEvent(event: Omit<AuditEvent, 'id'>): Promise<void> {
+    if (this.failNextAudit) {
+      this.failNextAudit = false;
+      throw new Error('audit write failed');
+    }
     this.events.push({ ...event, id: this.id() });
+  }
+
+  async runAtomic<T>(keys: readonly string[], operation: (repository: LeadControlRepository) => Promise<T>): Promise<T> {
+    const release = await this.acquire([...new Set(keys)].sort());
+    const snapshot = {
+      campaigns: structuredClone(this.campaigns),
+      revisions: structuredClone(this.revisions),
+      spends: structuredClone(this.spends),
+      events: structuredClone(this.events),
+    };
+    try {
+      return await operation(this);
+    } catch (error) {
+      this.campaigns = snapshot.campaigns;
+      this.revisions = snapshot.revisions;
+      this.spends = snapshot.spends;
+      this.events = snapshot.events;
+      throw error;
+    } finally {
+      release();
+    }
+  }
+
+  private async acquire(keys: string[]): Promise<() => void> {
+    const releases: Array<() => void> = [];
+    for (const key of keys) {
+      const previous = this.lockTails.get(key) ?? Promise.resolve();
+      let releaseCurrent!: () => void;
+      const current = new Promise<void>((resolve) => { releaseCurrent = resolve; });
+      this.lockTails.set(key, previous.then(() => current));
+      await previous;
+      releases.push(releaseCurrent);
+    }
+    return () => releases.reverse().forEach((release) => release());
   }
 
   private id(): string {
@@ -118,31 +162,46 @@ test('validates campaign names, business dates, and date order', async () => {
 test('rejects same-page date overlap including a shared boundary and open-ended range', async () => {
   const { service } = buildService();
 
-  await service.createCampaign(campaignInput, 'manager');
+  const first = await service.createCampaign(campaignInput, 'manager');
+  await service.activateCampaign(first.id, 'manager');
+  const boundary = await service.createCampaign({ ...campaignInput, name: 'Boundary', startsOn: '2026-09-30', endsOn: '2026-10-15' }, 'manager');
   await assert.rejects(
-    service.createCampaign({ ...campaignInput, name: 'Boundary', startsOn: '2026-09-30', endsOn: '2026-10-15' }, 'manager'),
+    service.activateCampaign(boundary.id, 'manager'),
     /overlap/,
   );
+  const openEnded = await service.createCampaign({ ...campaignInput, name: 'Open ended', startsOn: '2026-09-15', endsOn: null }, 'manager');
   await assert.rejects(
-    service.createCampaign({ ...campaignInput, name: 'Open ended', startsOn: '2026-09-15', endsOn: null }, 'manager'),
+    service.activateCampaign(openEnded.id, 'manager'),
     /overlap/,
   );
-  await service.createCampaign({ ...campaignInput, name: 'Other page', pageId: 'page-b', startsOn: '2026-09-15', endsOn: null }, 'manager');
+  const otherPage = await service.createCampaign({ ...campaignInput, name: 'Other page', pageId: 'page-b', startsOn: '2026-09-15', endsOn: null }, 'manager');
+  await service.activateCampaign(otherPage.id, 'manager');
 });
 
 test('deletes an unprotected draft campaign and records its audit event', async () => {
   const { service, repo } = buildService();
   const campaign = await service.createCampaign(campaignInput, 'manager');
 
+  assert.equal(campaign.status, 'draft');
   await service.deleteCampaign(campaign.id, 'manager');
 
   assert.equal(repo.campaigns.length, 0);
   assert.deepEqual(repo.events.map((event) => event.action), ['campaign.created', 'campaign.deleted']);
 });
 
+test('rejects hard deletion for active and archived campaigns even without protected history', async () => {
+  const { service } = buildService();
+  const active = await service.createCampaign(campaignInput, 'manager');
+  await service.activateCampaign(active.id, 'manager');
+  await assert.rejects(service.deleteCampaign(active.id, 'manager'), /draft/);
+  await service.archiveCampaign(active.id, 'manager');
+  await assert.rejects(service.deleteCampaign(active.id, 'manager'), /draft/);
+});
+
 test('deletes a draft forecast but preserves an approved baseline', async () => {
   const { service, repo } = buildService();
   const campaign = await service.createCampaign(campaignInput, 'manager');
+  await service.activateCampaign(campaign.id, 'manager');
   const draft = await service.createForecastDraft(campaign.id, forecastInput, 'manager');
 
   await service.deleteForecastDraft(draft.id, 'manager');
@@ -171,28 +230,77 @@ test('only archives campaigns once an approved forecast or actual spend exists',
 });
 
 test('approves an immutable baseline and creates a later editable revision', async () => {
-  const { service } = buildService();
+  const { service, repo } = buildService();
   const campaign = await service.createCampaign(campaignInput, 'manager');
   const baseline = await service.createForecastDraft(campaign.id, forecastInput, 'manager');
 
   const approved = await service.approveForecast(baseline.id, 'manager');
+  assert.deepEqual(repo.events.at(-1), {
+    id: repo.events.at(-1)?.id,
+    action: 'forecast.approved',
+    actor: 'manager',
+    entityType: 'forecast_revision',
+    entityId: baseline.id,
+    occurredAt: new Date('2026-09-01T00:00:00.000Z'),
+    details: { campaignId: campaign.id, month: '2026-09' },
+  });
   await assert.rejects(service.updateForecastDraft(approved.id, { ...forecastInput, monthlyBudgetCents: 120_000 }, 'manager'), /immutable/);
 
   const revision = await service.createForecastRevision(approved.id, { ...forecastInput, monthlyBudgetCents: 120_000 }, 'manager');
   assert.equal(revision.kind, 'revision');
   assert.equal(revision.revisionNumber, 2);
   assert.equal(revision.status, 'draft');
+  assert.equal(repo.events.at(-1)?.action, 'forecast.revision_created');
+  assert.equal(repo.events.at(-1)?.details.sourceRevisionId, approved.id);
 });
 
 test('keeps daily and monthly spend exclusive per campaign-month', async () => {
-  const { service } = buildService();
+  const { service, repo } = buildService();
   const campaign = await service.createCampaign(campaignInput, 'manager');
 
-  await service.recordSpend({ campaignId: campaign.id, month: '2026-09', businessDate: '2026-09-01', amountCents: 10_000 }, 'manager');
+  const daily = await service.recordSpend({ campaignId: campaign.id, month: '2026-09', businessDate: '2026-09-01', amountCents: 10_000 }, 'manager');
+  assert.equal(repo.events.at(-1)?.action, 'spend.recorded');
+  assert.deepEqual(repo.events.at(-1)?.details, { campaignId: campaign.id, month: '2026-09', mode: 'daily' });
   await assert.rejects(
     service.recordSpend({ campaignId: campaign.id, month: '2026-09', businessDate: null, amountCents: 100_000 }, 'manager'),
     /daily.*monthly/i,
   );
+  const updated = await service.updateSpend(daily.id, { ...daily, amountCents: 12_000 }, 'manager');
+  assert.equal(updated.amountCents, 12_000);
+  assert.equal(repo.events.at(-1)?.action, 'spend.updated');
+  await assert.rejects(service.updateSpend(daily.id, { ...daily, businessDate: null }, 'manager'), /mode/);
+});
+
+test('serializes concurrent activation and spend-mode writes so one conflict wins', async () => {
+  const { service, repo } = buildService();
+  const first = await service.createCampaign(campaignInput, 'manager');
+  const second = await service.createCampaign({ ...campaignInput, name: 'Competing' }, 'manager');
+  const activation = await Promise.allSettled([
+    service.activateCampaign(first.id, 'manager'),
+    service.activateCampaign(second.id, 'manager'),
+  ]);
+  assert.equal(activation.filter((result) => result.status === 'fulfilled').length, 1);
+
+  const active = repo.campaigns.find((campaign) => campaign.status === 'active');
+  assert.ok(active);
+  const spend = await Promise.allSettled([
+    service.recordSpend({ campaignId: active.id, month: '2026-09', businessDate: '2026-09-01', amountCents: 10_000 }, 'manager'),
+    service.recordSpend({ campaignId: active.id, month: '2026-09', businessDate: null, amountCents: 100_000 }, 'manager'),
+  ]);
+  assert.equal(spend.filter((result) => result.status === 'fulfilled').length, 1);
+  assert.equal(repo.spends.filter((item) => item.status === 'active').length, 1);
+});
+
+test('rolls back a state mutation when its audit event cannot be persisted', async () => {
+  const { service, repo } = buildService();
+  const campaign = await service.createCampaign(campaignInput, 'manager');
+  const draft = await service.createForecastDraft(campaign.id, forecastInput, 'manager');
+  repo.failNextAudit = true;
+
+  await assert.rejects(service.approveForecast(draft.id, 'manager'), /audit write failed/);
+
+  assert.equal(repo.revisions.find((revision) => revision.id === draft.id)?.status, 'draft');
+  assert.equal(repo.events.some((event) => event.action === 'forecast.approved'), false);
 });
 
 test('archives prior mode records only after a confirmed spend-mode switch and preserves audit history', async () => {
