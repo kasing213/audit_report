@@ -122,7 +122,12 @@ export class MongoLeadControlRepository implements LeadControlRepository {
   }
 
   async listCampaignsForPage(pageId: string): Promise<Campaign[]> {
-    return (await this.campaigns.find({ page_id: pageId }, this.options()).toArray()).map(campaignFromDocument);
+    return (await this.campaigns.find({
+      $or: [
+        { page_id: pageId },
+        { page_id: pageIdCompatibilityPattern(pageId) },
+      ],
+    }, this.options()).toArray()).map(campaignFromDocument);
   }
 
   async deleteCampaign(id: string): Promise<void> {
@@ -214,6 +219,21 @@ export class MongoLeadControlRepository implements LeadControlRepository {
     return this.session ? { session: this.session } : {};
   }
 
+}
+
+/**
+ * Compatibility lookup for campaigns saved before page IDs were canonicalized.
+ * Exact canonical matches still use the indexed branch; this regex is only a
+ * bounded fallback for legacy casing, whitespace, and report-style prefixes.
+ */
+export function pageIdCompatibilityPattern(canonicalPageId: string): RegExp {
+  const tokens = canonicalPageId.trim().split(/\s+/).filter(Boolean).map(escapeRegex);
+  const value = tokens.join('\\s+');
+  return new RegExp(`^\\s*(?:🚩\\s*)?(?:(?:page|pae|ផេក)\\s*[:：-]?\\s*)?${value}\\s*$`, 'iu');
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function objectId(id: string): ObjectId {

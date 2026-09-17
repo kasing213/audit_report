@@ -6,7 +6,7 @@ import { parseBulkReport } from '../../src/parser/bulk-report-parser';
 import { createDataEntryRouter } from '../../src/api/data-entry-routes';
 import { Campaign } from '../../src/lead-control/models';
 import { resolveActiveCampaignForPageAndDate } from '../../src/lead-control/service';
-import { LeadControlRepository } from '../../src/lead-control/repository';
+import { LeadControlRepository, pageIdCompatibilityPattern } from '../../src/lead-control/repository';
 
 test('bulk parser keeps raw report counters while proposing separate normalized funnel metrics', () => {
   const rawReport = [
@@ -73,6 +73,14 @@ test('campaign resolution normalizes the page and uses active inclusive business
   assert.equal((await resolveActiveCampaignForPageAndDate(repository, 'Page River Homes', '2026-09-30'))?.id, 'campaign-river');
   assert.equal(await resolveActiveCampaignForPageAndDate(repository, 'Page River Homes', '2026-10-01'), null);
   assert.equal(await resolveActiveCampaignForPageAndDate(repository, null, '2026-09-17'), null);
+});
+
+test('legacy campaign page identifiers remain compatible with normalized report pages', () => {
+  const pattern = pageIdCompatibilityPattern('river homes');
+  assert.match('River Homes', pattern);
+  assert.match('  🚩 Page RIVER   HOMES  ', pattern);
+  assert.match('ផេក River Homes', pattern);
+  assert.doesNotMatch('Other River Homes', pattern);
 });
 
 test('campaign resolution rejects multiple active page matches for one business date', async () => {
