@@ -237,6 +237,15 @@ export class CampaignService {
     });
   }
 
+  async getSpend(id: string): Promise<SpendRecord> {
+    return this.requireSpend(id);
+  }
+
+  async listSpend(campaignId: string, month: string): Promise<SpendRecord[]> {
+    validateMonth(month);
+    return this.repository.listSpend(campaignId, month);
+  }
+
   async switchSpendMode(
     campaignId: string,
     month: string,

@@ -95,7 +95,11 @@ export class ApiServer {
     });
 
     // Error handler
-    this.app.use((err: Error, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+    this.app.use((err: Error & { status?: number; type?: string }, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+      if (err instanceof SyntaxError && err.status === 400 && err.type === 'entity.parse.failed') {
+        res.status(400).json({ error: 'Invalid JSON' });
+        return;
+      }
       Logger.error('API Error', err);
       res.status(500).json({
         error: 'Internal server error',

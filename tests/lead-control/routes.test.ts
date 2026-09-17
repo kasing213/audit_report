@@ -11,6 +11,8 @@ import {
 import { LeadControlRepository } from '../../src/lead-control/repository';
 import { CampaignService } from '../../src/lead-control/service';
 import { createLeadControlRouter } from '../../src/api/lead-control-routes';
+import { ApiServer } from '../../src/api/server';
+import { createSessionCookie } from '../../src/api/auth-middleware';
 
 const ACTOR_TOKEN = 'lead-control-developer-token';
 const AGENT_TOKEN = 'lead-control-agent-token';
@@ -43,16 +45,26 @@ class InMemoryLeadControlRepository implements LeadControlRepository {
   private id(): string { return String(this.nextId++); }
 }
 
-function fixture(): { app: Express; repository: InMemoryLeadControlRepository } {
+function fixture(): { app: Express; repository: InMemoryLeadControlRepository; service: CampaignService } {
   const repository = new InMemoryLeadControlRepository();
   const service = new CampaignService(repository, () => new Date('2026-09-01T00:00:00.000Z'));
   const app = express();
   app.use(express.json());
   app.use('/lead-control', createLeadControlRouter({ service, repository }));
-  return { app, repository };
+  return { app, repository, service };
 }
 
 async function request(app: Express, method: string, path: string, body?: unknown, token = ACTOR_TOKEN): Promise<{ status: number; body: any }> {
+  return requestWithHeaders(app, method, path, body, { Authorization: `Bearer ${token}` });
+}
+
+async function requestWithHeaders(
+  app: Express,
+  method: string,
+  path: string,
+  body: unknown,
+  headers: Record<string, string>,
+): Promise<{ status: number; body: any }> {
   const server = http.createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   try {
@@ -60,10 +72,27 @@ async function request(app: Express, method: string, path: string, body?: unknow
     if (!address || typeof address === 'string') throw new Error('test server address unavailable');
     const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
       method,
-      headers: { Authorization: `Bearer ${token}`, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
+      headers: { ...headers, ...(body === undefined ? {} : { 'Content-Type': 'application/json' }) },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
     return { status: response.status, body: await response.json().catch(() => null) };
+  } finally {
+    await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+}
+
+async function malformedJsonRequest(app: Express, path: string): Promise<{ status: number; body: any }> {
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+    const response = await fetch(`http://127.0.0.1:${address.port}${path}`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${ACTOR_TOKEN}`, 'Content-Type': 'application/json' },
+      body: '{not json',
+    });
+    return { status: response.status, body: await response.json() };
   } finally {
     await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
   }
@@ -117,6 +146,33 @@ test('actual spend routes create, update, delete, and require confirmation befor
   assert.equal((await request(app, 'DELETE', `/lead-control/spend/${daily.body.spend.id}`)).status, 204);
 });
 
+test('spend read routes return populated, empty, and missing results', async () => {
+  const { app } = fixture();
+  const campaignId = (await request(app, 'POST', '/lead-control/campaigns', campaign)).body.campaign.id;
+  const created = await request(app, 'POST', '/lead-control/spend', { campaignId, month: '2026-09', businessDate: null, amountCents: 100_000 });
+
+  assert.deepEqual(await request(app, 'GET', `/lead-control/spend/${created.body.spend.id}`), {
+    status: 200,
+    body: { spend: created.body.spend },
+  });
+  assert.deepEqual(await request(app, 'GET', `/lead-control/spend?campaignId=${campaignId}&month=2026-09`), {
+    status: 200,
+    body: { spends: [created.body.spend] },
+  });
+  assert.deepEqual(await request(app, 'GET', `/lead-control/spend?campaignId=${campaignId}&month=2026-10`), {
+    status: 200,
+    body: { spends: [] },
+  });
+  assert.deepEqual(await request(app, 'GET', '/lead-control/spend/missing'), {
+    status: 404,
+    body: { error: 'spend record not found' },
+  });
+  assert.deepEqual(await request(app, 'GET', '/lead-control/spend?month=2026-09'), {
+    status: 400,
+    body: { error: 'campaignId query parameter is required' },
+  });
+});
+
 test('calculator routes calculate results from budget and budget from a net-booking target', async () => {
   const { app } = fixture();
   const fromBudget = await request(app, 'POST', '/lead-control/calculator/budget-to-results', { budgetCents: 10_000, ...forecast });
@@ -134,4 +190,34 @@ test('routes return stable validation, missing, conflict, and forbidden response
   await request(app, 'POST', `/lead-control/campaigns/${first.body.campaign.id}/forecasts`, forecast);
   assert.deepEqual(await request(app, 'POST', `/lead-control/campaigns/${first.body.campaign.id}/forecasts`, forecast), { status: 409, body: { error: 'baseline already exists; create a revision' } });
   assert.deepEqual(await request(app, 'GET', '/lead-control/campaigns?pageId=page-a', undefined, AGENT_TOKEN), { status: 403, body: { error: 'lead control role required' } });
+});
+
+test('campaign activation and active campaign updates report overlap conflicts as 409', async () => {
+  const { app, service } = fixture();
+  const first = await request(app, 'POST', '/lead-control/campaigns', campaign);
+  await service.activateCampaign(first.body.campaign.id, 'developer');
+  const second = await request(app, 'POST', '/lead-control/campaigns', { ...campaign, name: 'October leads', startsOn: '2026-10-01', endsOn: '2026-10-31' });
+  await service.activateCampaign(second.body.campaign.id, 'developer');
+  const overlapping = await request(app, 'POST', '/lead-control/campaigns', { ...campaign, name: 'Overlap', startsOn: '2026-09-15', endsOn: '2026-09-20' });
+
+  assert.deepEqual(await request(app, 'POST', `/lead-control/campaigns/${overlapping.body.campaign.id}/activate`), {
+    status: 409,
+    body: { error: 'campaign dates overlap an active campaign for this page' },
+  });
+  assert.deepEqual(await request(app, 'PUT', `/lead-control/campaigns/${second.body.campaign.id}`, { ...campaign, name: 'October leads', startsOn: '2026-09-15', endsOn: '2026-10-31' }), {
+    status: 409,
+    body: { error: 'campaign dates overlap an active campaign for this page' },
+  });
+});
+
+test('the production mount authorizes a manager, denies an agent, and reports malformed JSON as 400', async () => {
+  const app = new ApiServer().getApp() as unknown as Express;
+  const managerCookie = `audit_session=${encodeURIComponent(createSessionCookie('manager'))}`;
+
+  assert.equal((await requestWithHeaders(app, 'GET', '/lead-control/campaigns', undefined, { Cookie: managerCookie })).status, 400);
+  assert.equal((await requestWithHeaders(app, 'GET', '/lead-control/campaigns?pageId=page-a', undefined, { Authorization: `Bearer ${AGENT_TOKEN}` })).status, 403);
+  assert.deepEqual(await malformedJsonRequest(app, '/lead-control/campaigns'), {
+    status: 400,
+    body: { error: 'Invalid JSON' },
+  });
 });

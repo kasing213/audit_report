@@ -77,6 +77,14 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
     }
   });
 
+  router.post('/campaigns/:id/activate', async (req, res) => {
+    try {
+      res.json({ campaign: await service().activateCampaign(req.params.id, actor(res)) });
+    } catch (error) {
+      respondError(error, res, 'lead control campaign activation failed');
+    }
+  });
+
   router.delete('/campaigns/:id', async (req, res) => {
     try {
       await service().deleteCampaign(req.params.id, actor(res));
@@ -139,6 +147,24 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
       res.status(201).json({ spend: await service().recordSpend(spendInput(req.body), actor(res)) });
     } catch (error) {
       respondError(error, res, 'lead control spend create failed');
+    }
+  });
+
+  router.get('/spend', async (req, res) => {
+    try {
+      const campaignId = queryString(req, 'campaignId');
+      const month = queryString(req, 'month');
+      res.json({ spends: await service().listSpend(campaignId, month) });
+    } catch (error) {
+      respondError(error, res, 'lead control spend list failed');
+    }
+  });
+
+  router.get('/spend/:id', async (req, res) => {
+    try {
+      res.json({ spend: await service().getSpend(req.params.id) });
+    } catch (error) {
+      respondError(error, res, 'lead control spend read failed');
     }
   });
 
@@ -255,14 +281,38 @@ function respondError(error: unknown, res: Response, context: string): void {
     res.status(400).json({ error: message });
     return;
   }
-  if (message.endsWith('not found')) {
+  if (NOT_FOUND_MESSAGES.has(message)) {
     res.status(404).json({ error: message });
     return;
   }
-  if (/already|only |cannot |must be |mutually exclusive|confirm |protected history|immutable/.test(message)) {
+  if (CONFLICT_MESSAGES.has(message)) {
     res.status(409).json({ error: message });
     return;
   }
   Logger.error(context, error as Error);
   res.status(500).json({ error: 'Internal server error' });
 }
+
+const NOT_FOUND_MESSAGES = new Set([
+  'campaign not found',
+  'forecast revision not found',
+  'spend record not found',
+]);
+
+const CONFLICT_MESSAGES = new Set([
+  'campaign dates overlap an active campaign for this page',
+  'only draft campaigns can be activated',
+  'archived campaigns cannot be edited',
+  'only draft campaigns can be deleted',
+  'campaign has protected history and must be archived',
+  'baseline already exists; create a revision',
+  'approved forecasts are immutable',
+  'forecast month cannot be changed',
+  'approved forecasts cannot be deleted',
+  'forecast must be approved before a revision can be created',
+  'forecast revision month must match baseline',
+  'daily and monthly spend records are mutually exclusive',
+  'an active spend record already exists for this campaign-month date',
+  'spend campaign, month, and mode cannot be changed',
+  'confirm spend mode switch before replacing records',
+]);
