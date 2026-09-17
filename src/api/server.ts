@@ -7,6 +7,7 @@ import brainRoutes from './brain-routes';
 import { loginRouter } from './login-routes';
 import metaWebhookRoutes from './meta-webhook-routes';
 import { authMiddleware } from './auth-middleware';
+import { createLeadControlRouter } from './lead-control-routes';
 import { Logger } from '../utils/logger';
 
 export class ApiServer {
@@ -81,6 +82,9 @@ export class ApiServer {
 
     // Data Entry dashboard (auth-protected)
     this.app.use('/data-entry', authMiddleware, dataEntryRoutes);
+
+    // Lead Control is a dashboard-only operational surface.
+    this.app.use('/lead-control', authMiddleware, createLeadControlRouter());
 
     // 404 handler
     this.app.use('*', (req, res) => {

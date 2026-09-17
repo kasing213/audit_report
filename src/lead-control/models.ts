@@ -71,6 +71,7 @@ export type LeadControlAuditAction =
   | 'forecast.revision_created'
   | 'spend.recorded'
   | 'spend.updated'
+  | 'spend.deleted'
   | 'spend.mode_switched';
 
 export interface AuditEvent {

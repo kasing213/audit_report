@@ -221,6 +221,22 @@ export class CampaignService {
     });
   }
 
+  /** Soft-delete preserves the immutable spend and audit history for reporting. */
+  async deleteSpend(id: string, actor: string): Promise<void> {
+    const before = await this.requireSpend(id);
+    await this.repository.runAtomic([spendKey(before.campaignId, before.month)], async (repository) => {
+      const existing = await this.requireSpend(id, repository);
+      if (existing.status === 'archived') return;
+      const archivedAt = this.now();
+      await repository.updateSpend({ ...existing, status: 'archived', archivedAt, archivedBy: actor });
+      await this.audit(repository, 'spend.deleted', actor, 'spend', id, {
+        campaignId: existing.campaignId,
+        month: existing.month,
+        mode: existing.mode,
+      });
+    });
+  }
+
   async switchSpendMode(
     campaignId: string,
     month: string,
