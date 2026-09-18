@@ -18,3 +18,4 @@ import './lead-control/routes.test';
 import './lead-control/bulk-normalization.test';
 import './lead-control/sync-service.test';
 import './lead-control/summary-service.test';
+import './lead-control/ui.test';

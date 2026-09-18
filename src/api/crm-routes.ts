@@ -12,6 +12,7 @@ import { OUTREACH_ORGS, PAYMENT_TRACKER_ORG, normalizeOrg } from '../outreach/or
 import { OutreachSuppressionRepository } from '../outreach/outreach-suppression-repository';
 import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
+import { getSessionUser } from './auth-middleware';
 import { readHeaders, hasPhoneColumn, parsePhoneSheet } from './import-parser';
 
 const router = express.Router();
@@ -28,12 +29,14 @@ function withOrg(req: Request): {
   activeOrg: string;
   orgs: typeof OUTREACH_ORGS;
   isPaymentTracker: boolean;
+  canLeadControl: boolean;
 } {
   const activeOrg = resolveOrg(req);
   // Payment Tracker shares the outreach page but not its controls: it is fed by
   // receivables, not stale leads, so the sales generation and schedule controls
   // are meaningless there and are hidden server-side rather than by JS.
-  return { activeOrg, orgs: OUTREACH_ORGS, isPaymentTracker: activeOrg === PAYMENT_TRACKER_ORG };
+  const role = getSessionUser(req);
+  return { activeOrg, orgs: OUTREACH_ORGS, isPaymentTracker: activeOrg === PAYMENT_TRACKER_ORG, canLeadControl: role === 'developer' || role === 'manager' };
 }
 
 // GET /crm/set-org?org=personal — flip the active workspace, then return to the

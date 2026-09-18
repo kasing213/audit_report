@@ -71,6 +71,7 @@
     </div>
     <nav class="main-nav">
       <a href="/crm" class="nav-link{{#if (eq activeNav "customers")}} active{{/if}}">Customers</a>
+      {{#if canLeadControl}}<a href="/lead-control" class="nav-link{{#if (eq activeNav "lead-control")}} active{{/if}}">Lead Control</a>{{/if}}
       <a href="/crm/quickbook-customers" class="nav-link{{#if (eq activeNav "quickbook-customers")}} active{{/if}}">QuickBook Old</a>
       <a href="/crm/groups" class="nav-link{{#if (eq activeNav "groups")}} active{{/if}}">Groups</a>
       <a href="/crm/reports" class="nav-link{{#if (eq activeNav "reports")}} active{{/if}}">Reports</a>

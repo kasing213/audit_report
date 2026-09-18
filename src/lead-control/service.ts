@@ -51,7 +51,7 @@ export class CampaignService {
   ) {}
 
   async createCampaign(input: CampaignInput, actor: string): Promise<Campaign> {
-    const normalizedInput = { ...input, pageId: normalizeCampaignPageId(input.pageId) };
+    const normalizedInput = normalizedCampaignInput(input);
     validateCampaign(normalizedInput);
     return this.repository.runAtomic([pageKey(normalizedInput.pageId)], async (repository) => {
       const occurredAt = this.now();
@@ -70,7 +70,7 @@ export class CampaignService {
   }
 
   async updateCampaign(id: string, input: CampaignInput, actor: string): Promise<Campaign> {
-    const normalizedInput = { ...input, pageId: normalizeCampaignPageId(input.pageId) };
+    const normalizedInput = normalizedCampaignInput(input);
     validateCampaign(normalizedInput);
     const original = await this.requireCampaign(id);
     return this.repository.runAtomic([pageKey(original.pageId), pageKey(normalizedInput.pageId)], async (repository) => {
@@ -356,11 +356,26 @@ export class CampaignService {
 function validateCampaign(input: CampaignInput): void {
   if (input.name.trim().length === 0) throw new RangeError('name is required');
   if (input.pageId.trim().length === 0) throw new RangeError('pageId is required');
+  for (const [name, value] of [['propertyProject', input.propertyProject], ['objective', input.objective], ['audience', input.audience]] as const) {
+    if (value !== undefined && value.trim().length === 0) throw new RangeError(`${name} cannot be empty`);
+  }
+  if (input.spendMode !== undefined && input.spendMode !== 'daily' && input.spendMode !== 'monthly') throw new RangeError('spendMode must be daily or monthly');
   validateBusinessDate(input.startsOn, 'startsOn');
   if (input.endsOn !== null) {
     validateBusinessDate(input.endsOn, 'endsOn');
     if (input.endsOn < input.startsOn) throw new RangeError('endsOn cannot be before startsOn');
   }
+}
+
+function normalizedCampaignInput(input: CampaignInput): CampaignInput {
+  return {
+    ...input,
+    name: input.name.trim(),
+    pageId: normalizeCampaignPageId(input.pageId),
+    ...(input.propertyProject === undefined ? {} : { propertyProject: input.propertyProject.trim() }),
+    ...(input.objective === undefined ? {} : { objective: input.objective.trim() }),
+    ...(input.audience === undefined ? {} : { audience: input.audience.trim() }),
+  };
 }
 
 function validateForecast(input: ForecastRevisionInput): void {

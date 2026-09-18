@@ -7,6 +7,8 @@ import { CampaignService, normalizeCampaignPageId } from '../lead-control/servic
 import { SalesProjectionRepository, SyncSalesService } from '../lead-control/sync-service';
 import { SummaryService } from '../lead-control/summary-service';
 import { Logger } from '../utils/logger';
+import path from 'path';
+import { renderPage } from './template-helper';
 
 export interface LeadControlRouteDependencies {
   service?: CampaignService;
@@ -35,6 +37,13 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
     res.locals.leadControlActor = role;
     next();
   });
+
+  router.get('/', async (_req, res) => {
+    try {
+      res.type('html').send(await renderPage('lead-control', { canLeadControl: true }));
+    } catch (error) { respondError(error, res, 'lead control page failed'); }
+  });
+  router.use('/assets', express.static(path.join(__dirname, '..', 'reports', 'templates', 'lead-control-assets')));
 
   router.get('/campaigns', async (req, res) => {
     try {
@@ -290,6 +299,10 @@ function campaignInput(value: unknown): CampaignInput {
   const body = objectBody(value);
   return {
     name: stringValue(body.name, 'name'), pageId: stringValue(body.pageId, 'pageId'),
+    ...(typeof body.propertyProject === 'string' ? { propertyProject: body.propertyProject } : {}),
+    ...(typeof body.objective === 'string' ? { objective: body.objective } : {}),
+    ...(typeof body.audience === 'string' ? { audience: body.audience } : {}),
+    ...(body.spendMode === 'daily' || body.spendMode === 'monthly' ? { spendMode: body.spendMode } : {}),
     startsOn: stringValue(body.startsOn, 'startsOn'), endsOn: nullableStringValue(body.endsOn, 'endsOn'),
   };
 }

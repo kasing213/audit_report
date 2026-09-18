@@ -11,6 +11,10 @@ export type SpendMode = 'daily' | 'monthly';
 export interface CampaignInput {
   name: string;
   pageId: string;
+  propertyProject?: string;
+  objective?: string;
+  audience?: string;
+  spendMode?: SpendMode;
   startsOn: BusinessDate;
   endsOn: BusinessDate | null;
 }
@@ -124,6 +128,10 @@ export interface CampaignDocument {
   _id: ObjectId;
   name: string;
   page_id: string;
+  property_project?: string;
+  objective?: string;
+  audience?: string;
+  spend_mode?: SpendMode;
   starts_on: BusinessDate;
   ends_on: BusinessDate | null;
   status: CampaignStatus;
