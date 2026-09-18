@@ -12,6 +12,8 @@ import { setInboundAlertSender } from './outreach/inbound-alerts';
 import DatabaseConnection from './database/connection';
 import { Logger } from './utils/logger';
 import { readPaymentTrackerConfig } from './payment-tracker/payment-config';
+import { readLeadControlConfig } from './lead-control/config';
+import { LeadControlSalesScheduler } from './scheduler/lead-control-sales-scheduler';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -24,7 +26,10 @@ async function main(): Promise<void> {
     // Start API server first for health checks (non-blocking)
     Logger.info('Starting API server...');
     const port = parseInt(process.env.PORT || '3001', 10);
-    const apiServer = new ApiServer(port);
+    const leadControlConfig = readLeadControlConfig(process.env);
+    const apiServer = new ApiServer(port, {
+      leadControlWritesEnabled: leadControlConfig.writesEnabled,
+    });
     apiServer.start();
     Logger.info('API server started successfully');
 
@@ -32,6 +37,15 @@ async function main(): Promise<void> {
     const db = DatabaseConnection.getInstance();
     await db.connect();
     Logger.info('Database connected successfully');
+
+    // Lead Control's local projection repository is constructed only after the
+    // Audit Sales database is available. Source sync remains inert unless its
+    // exact opt-in flag is true.
+    const leadControlSalesScheduler = new LeadControlSalesScheduler(leadControlConfig);
+    leadControlSalesScheduler.start();
+    Logger.info(
+      `- Lead Control: ${leadControlConfig.writesEnabled ? 'writes enabled' : 'read-only comparison'}; ${leadControlConfig.syncEnabled ? `sales sync every ${leadControlConfig.syncIntervalMinutes} minutes` : 'sales sync disabled'}`,
+    );
 
     Logger.info('Starting Telegram bot...');
     const telegramBot = new TelegrafBotService();
@@ -133,6 +147,9 @@ async function main(): Promise<void> {
       // deployment with scanning disabled never touches that client.
       await paymentTrackerScheduler.disconnectSource().catch((err) =>
         Logger.warn(`payment source disconnect: ${(err as Error).message}`)
+      );
+      await leadControlSalesScheduler.stop().catch((err) =>
+        Logger.warn(`Lead Control sales source shutdown: ${(err as Error).message}`)
       );
       await db.disconnect();
       process.exit(0);

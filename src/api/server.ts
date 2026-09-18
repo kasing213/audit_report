@@ -10,11 +10,15 @@ import { authMiddleware } from './auth-middleware';
 import { createLeadControlRouter } from './lead-control-routes';
 import { Logger } from '../utils/logger';
 
+export interface ApiServerOptions {
+  leadControlWritesEnabled?: boolean;
+}
+
 export class ApiServer {
   private app: express.Application;
   private port: number;
 
-  constructor(port: number = 3001) {
+  constructor(port: number = 3001, private readonly options: ApiServerOptions = {}) {
     this.app = express();
     this.port = port;
     this.setupMiddleware();
@@ -84,7 +88,9 @@ export class ApiServer {
     this.app.use('/data-entry', authMiddleware, dataEntryRoutes);
 
     // Lead Control is a dashboard-only operational surface.
-    this.app.use('/lead-control', authMiddleware, createLeadControlRouter());
+    this.app.use('/lead-control', authMiddleware, createLeadControlRouter({
+      writesEnabled: this.options.leadControlWritesEnabled === true,
+    }));
 
     // 404 handler
     this.app.use('*', (req, res) => {

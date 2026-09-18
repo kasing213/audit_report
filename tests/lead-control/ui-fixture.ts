@@ -56,7 +56,7 @@ export async function startUiFixture() {
     countMalformedSales: async () => 0,
   });
   const service = new CampaignService(repository, () => now);
-  app.use('/lead-control', createLeadControlRouter({ repository, service, summaryService, salesService: { manuallyAttribute: async () => { unmatched = []; } } }));
+  app.use('/lead-control', createLeadControlRouter({ writesEnabled: true, repository, service, summaryService, salesService: { manuallyAttribute: async () => { unmatched = []; } } }));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   return { url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, repository, month,

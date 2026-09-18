@@ -11,6 +11,7 @@ import path from 'path';
 import { renderPage } from './template-helper';
 
 export interface LeadControlRouteDependencies {
+  writesEnabled?: boolean;
   service?: CampaignService;
   repository?: LeadControlRepository;
   summaryService?: SummaryService;
@@ -23,6 +24,7 @@ export interface LeadControlRouteDependencies {
  */
 export function createLeadControlRouter(dependencies: LeadControlRouteDependencies = {}): Router {
   const router = express.Router();
+  const writesEnabled = dependencies.writesEnabled === true;
   const repository = () => dependencies.repository ?? new MongoLeadControlRepository();
   const service = () => dependencies.service ?? new CampaignService(repository());
   const summaryService = () => dependencies.summaryService ?? new SummaryService(repository() as unknown as import('../lead-control/summary-service').SummaryDataRepository);
@@ -38,9 +40,28 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
     next();
   });
 
+  router.use((req, res, next) => {
+    if (writesEnabled || req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+      next();
+      return;
+    }
+    if (req.method === 'POST' && READ_ONLY_CALCULATOR_PATHS.has(req.path)) {
+      next();
+      return;
+    }
+    if (req.method === 'POST' || req.method === 'PUT' || req.method === 'DELETE' || req.method === 'PATCH') {
+      res.status(403).json({ error: READ_ONLY_ERROR });
+      return;
+    }
+    next();
+  });
+
   router.get('/', async (_req, res) => {
     try {
-      res.type('html').send(await renderPage('lead-control', { canLeadControl: true }));
+      res.type('html').send(await renderPage('lead-control', {
+        canLeadControl: true,
+        leadControlWritesEnabled: writesEnabled,
+      }));
     } catch (error) { respondError(error, res, 'lead control page failed'); }
   });
   router.use('/assets', express.static(path.join(__dirname, '..', 'reports', 'templates', 'lead-control-assets')));
@@ -389,4 +410,10 @@ const CONFLICT_MESSAGES = new Set([
   'an active spend record already exists for this campaign-month date',
   'spend campaign, month, and mode cannot be changed',
   'confirm spend mode switch before replacing records',
+]);
+
+const READ_ONLY_ERROR = 'Lead Control is in read-only comparison mode';
+const READ_ONLY_CALCULATOR_PATHS = new Set([
+  '/calculator/budget-to-results',
+  '/calculator/target-to-budget',
 ]);

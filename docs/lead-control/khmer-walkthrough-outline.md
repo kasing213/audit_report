@@ -26,19 +26,19 @@
 
 5. **Cancellations និង Sync health**
    - ប្តូរ dropdown ពី `Booking cohort` ទៅ `Cancellation event month`; បង្ហាញ `Sync health`។
-   - Narration: “អាចមើល cancellation តាមខែ booking ឬខែដែល cancel។ `Pending` មានន័យថាមិនទាន់មាន sync cursor; `Stale` មានន័យថាទិន្នន័យចាស់ជាង 24 ម៉ោង។ Payment Tracker នៅតែជាប្រភពសិទ្ធិពិត។”
+   - Narration: “អាចមើល cancellation តាមខែ booking ឬខែដែល cancel។ `Pending` មានន័យថាមិនទាន់មាន sync cursor; `Stale` មានន័យថាទិន្នន័យចាស់ជាង 24 ម៉ោង។ Sync បើកតែពេល `LEAD_CONTROL_SYNC_ENABLED=true` ហើយ Payment Tracker នៅតែជាប្រភពសិទ្ធិពិត។”
 
 6. **Reconciliation**
-   - បង្ហាញ unmatched sale និងប៊ូតុង `Assign to this campaign` ដោយមិនចុចក្នុងរបៀប rollout read-only។
-   - Narration: “ពិនិត្យ sale ក្នុង Payment Tracker ជាមុន។ បើ assign រួច attribution នឹង freeze ហើយការកែនេះធ្វើតែក្នុង Lead Control ប៉ុណ្ណោះ មិនសរសេរទៅ Payment Tracker ទេ।”
+   - បង្ហាញ unmatched sale។ ក្នុង read-only mode ប៊ូតុង `Assign to this campaign` ត្រូវបានលាក់។
+   - Narration: “ពិនិត្យ sale ក្នុង Payment Tracker ជាមុន។ ប៊ូតុង assign បង្ហាញតែពេល boss អនុម័ត និង `LEAD_CONTROL_WRITES_ENABLED=true`; attribution នឹង freeze ហើយមិនសរសេរទៅ Payment Tracker ទេ।”
 
 7. **Calculator validation (read-only phase)**
-   - នៅលើ worksheet/recording aid ដែលគ្មាន secret បង្ហាញ `$100`, `$1.50`, និងលទ្ធផល `66.7 messages`; អាចបង្ហាញ Expectations step ជា preview ប៉ុន្តែមិន save។
-   - Narration: “ឧទាហរណ៍ `$100 ÷ $1.50 = 66.7 messages`។ ក្នុងដំណាក់កាលដំបូង យើងប្រៀបធៀបលទ្ធផលជាមួយ Excel ប៉ុណ្ណោះ; មិនបង្កើត campaign និងមិនកត់ actual spend ទេ।”
+   - បង្ហាញ banner `Read-only comparison mode` និង calculator ដែលនៅតែអាចប្រើបាន។ បញ្ចូល `$100`, `$1.50`, និងបង្ហាញ `66.7 messages` ដោយមិន save។
+   - Narration: “ឧទាហរណ៍ `$100 ÷ $1.50 = 66.7 messages`។ ក្នុងដំណាក់កាលដំបូង app បិទ write ដោយខ្លួនឯង; យើងប្រៀបធៀបជាមួយ Excel ប៉ុណ្ណោះ។”
 
 8. **Campaign setup wizard — បង្ហាញតែបន្ទាប់ពី boss អនុម័ត**
-   - បង្ហាញលំដាប់ 1. Campaign, 2. Budget, 3. Expectations, 4. Review។ នៅ Review បង្ហាញ `Save draft` និង `Save and approve` តែឈប់មុនចុច ប្រសិនបើវីដេអូសម្រាប់ Phase 1។
-   - Narration: “បន្ទាប់ពី boss បញ្ជាក់ជាលាយលក្ខណ៍អក្សរ ទើបអាចបង្កើត និង approve forecast បាន។ Approval lock baseline; ការកែបន្ទាប់គឺ revision ថ្មី។”
+   - បន្ទាប់ពី deploy ជាមួយ `LEAD_CONTROL_WRITES_ENABLED=true` បង្ហាញលំដាប់ 1. Campaign, 2. Budget, 3. Expectations, 4. Review និងប៊ូតុង `Save draft` / `Save and approve`។
+   - Narration: “បន្ទាប់ពី boss បញ្ជាក់ជាលាយលក្ខណ៍អក្សរ និងបើក flag ទើប controls សរសេរបង្ហាញ។ Approval lock baseline; ការកែបន្ទាប់គឺ revision ថ្មី។”
 
 9. **Actual spend**
    - បង្ហាញ Daily និង Monthly total, checkbox សម្រាប់ switch mode, និងប្រវត្តិ status។
@@ -56,7 +56,7 @@
 - [ ] បង្ហាញ developer/manager access និងពិពណ៌នាថា agent ត្រូវបានបដិសេធ; កុំថត password ឬ session cookie។
 - [ ] បង្ហាញ `$100 / $1.50 = 66.7 messages` និងបញ្ជាក់ USD cents នៅពេលនិយាយអំពី API/data handling។
 - [ ] បង្ហាញ baseline approved មិនអាច overwrite, revision history, spend mode confirmation, archive-only rule, cancellation views, sync health, និង unmatched reconciliation។
-- [ ] សម្រាប់ Phase 1 កុំចុចប៊ូតុង write: Set up campaign, Save draft, Save and approve, Activate campaign, Record spend, Assign to this campaign។
+- [ ] សម្រាប់ Phase 1 បង្ហាញ `Read-only comparison mode`; controls សរសេរទាំងអស់ត្រូវបានលាក់ ហើយ calculator/read views នៅប្រើបាន។
 - [ ] ប្រសិនបើថត Phase 2 ត្រូវដាក់ title card ថា “Boss confirmation complete” ហើយបង្ហាញតែ test/sanitized data និង audit outcome។
-- [ ] កុំអះអាងថា sync ស្វ័យប្រវត្តិ: release នេះមិនមាន scheduler/runner ដែលបានភ្ជាប់ក្នុង startup ទេ។
+- [ ] បញ្ជាក់ថា scheduler ភ្ជាប់ក្នុង startup ប៉ុន្តែ disabled ជា default; sync ដំណើរការតែពេល `LEAD_CONTROL_SYNC_ENABLED=true` និង credential មានសិទ្ធិ `find`/`listIndexes` លើ `ar_tracker.sales` ប៉ុណ្ណោះ។
 - [ ] ពិនិត្យ captions ភាសាខ្មែរ, សំឡេង narration, លំដាប់អេក្រង់ 1–10, និងគ្មានព័ត៌មានសម្ងាត់ មុន approve recording។

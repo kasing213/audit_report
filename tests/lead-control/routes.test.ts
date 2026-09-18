@@ -51,7 +51,7 @@ function fixture(): { app: Express; repository: InMemoryLeadControlRepository; s
   const service = new CampaignService(repository, () => new Date('2026-09-01T00:00:00.000Z'));
   const app = express();
   app.use(express.json());
-  app.use('/lead-control', createLeadControlRouter({ service, repository }));
+  app.use('/lead-control', createLeadControlRouter({ service, repository, writesEnabled: true }));
   return { app, repository, service };
 }
 
@@ -204,7 +204,7 @@ test('summary routes expose the injected monthly, cancellation, reconciliation, 
 test('manual attribution is routed through the injected atomic sales service with the authenticated actor', async () => {
   const { app } = fixture();
   const calls: Array<{ saleId: string; campaignId: string; actor: string }> = [];
-  app.use('/attribution-test', createLeadControlRouter({ salesService: { manuallyAttribute: async (saleId, campaignId, actor) => { calls.push({ saleId, campaignId, actor }); } } }));
+  app.use('/attribution-test', createLeadControlRouter({ writesEnabled: true, salesService: { manuallyAttribute: async (saleId, campaignId, actor) => { calls.push({ saleId, campaignId, actor }); } } }));
 
   assert.equal((await request(app, 'POST', '/attribution-test/sales/sale-7/attribution', { campaignId: 'campaign-7' })).status, 204);
   assert.deepEqual(calls, [{ saleId: 'sale-7', campaignId: 'campaign-7', actor: 'developer' }]);
@@ -247,5 +247,79 @@ test('the production mount authorizes a manager, denies an agent, and reports ma
   assert.deepEqual(await malformedJsonRequest(app, '/lead-control/campaigns'), {
     status: 400,
     body: { error: 'Invalid JSON' },
+  });
+});
+
+// Production mutation caught: ApiServer forgets to pass the runtime write setting to its Lead Control mount.
+test('ApiServer passes the configured Lead Control write gate into the production router', async () => {
+  const managerCookie = `audit_session=${encodeURIComponent(createSessionCookie('manager'))}`;
+  const readOnly = new ApiServer(3001, { leadControlWritesEnabled: false }).getApp() as unknown as Express;
+  const writable = new ApiServer(3001, { leadControlWritesEnabled: true }).getApp() as unknown as Express;
+
+  assert.deepEqual(
+    await requestWithHeaders(readOnly, 'POST', '/lead-control/not-a-route', {}, { Cookie: managerCookie }),
+    { status: 403, body: { error: 'Lead Control is in read-only comparison mode' } },
+  );
+  assert.deepEqual(
+    await requestWithHeaders(writable, 'POST', '/lead-control/not-a-route', {}, { Cookie: managerCookie }),
+    { status: 404, body: { error: 'Not found', path: '/lead-control/not-a-route' } },
+  );
+});
+
+// Production mutation caught: any persistence route bypasses the default read-only gate or invokes its service.
+test('read-only gate blocks every Lead Control mutation family before service mutation', async () => {
+  const repository = new InMemoryLeadControlRepository();
+  const service = new CampaignService(repository, () => new Date('2026-09-01T00:00:00.000Z'));
+  const attributionCalls: string[] = [];
+  const app = express();
+  app.use(express.json());
+  app.use('/lead-control', createLeadControlRouter({
+    repository,
+    service,
+    writesEnabled: false,
+    salesService: { manuallyAttribute: async (saleId) => { attributionCalls.push(saleId); } },
+  }));
+  const expected = { status: 403, body: { error: 'Lead Control is in read-only comparison mode' } };
+  const mutations: Array<[string, string]> = [
+    ['POST', '/lead-control/campaigns'],
+    ['PUT', '/lead-control/campaigns/c1'],
+    ['POST', '/lead-control/campaigns/c1/archive'],
+    ['POST', '/lead-control/campaigns/c1/activate'],
+    ['DELETE', '/lead-control/campaigns/c1'],
+    ['POST', '/lead-control/campaigns/c1/forecasts'],
+    ['PUT', '/lead-control/forecasts/f1'],
+    ['POST', '/lead-control/forecasts/f1/approve'],
+    ['POST', '/lead-control/forecasts/f1/revisions'],
+    ['POST', '/lead-control/spend/mode-switch'],
+    ['POST', '/lead-control/spend'],
+    ['PUT', '/lead-control/spend/s1'],
+    ['DELETE', '/lead-control/spend/s1'],
+    ['POST', '/lead-control/sales/sale-1/attribution'],
+  ];
+
+  for (const [method, path] of mutations) {
+    assert.deepEqual(await request(app, method, path, {}), expected, `${method} ${path}`);
+  }
+  assert.deepEqual(repository.campaigns, []);
+  assert.deepEqual(repository.revisions, []);
+  assert.deepEqual(repository.spends, []);
+  assert.deepEqual(repository.events, []);
+  assert.deepEqual(attributionCalls, []);
+});
+
+// Production mutation caught: the gate blocks comparison calculators or read-only HTTP methods.
+test('read-only gate keeps GET, HEAD, and only the two calculator POSTs available', async () => {
+  const app = express();
+  app.use(express.json());
+  app.use('/lead-control', createLeadControlRouter({ repository: new InMemoryLeadControlRepository(), writesEnabled: false }));
+  const calculatorInput = { budgetCents: 10_000, targetNetBookings: 10, ...forecast };
+
+  assert.equal((await request(app, 'GET', '/lead-control/campaigns?pageId=page-a')).status, 200);
+  assert.equal((await request(app, 'HEAD', '/lead-control/campaigns?pageId=page-a')).status, 200);
+  assert.equal((await request(app, 'POST', '/lead-control/calculator/budget-to-results', calculatorInput)).status, 200);
+  assert.equal((await request(app, 'POST', '/lead-control/calculator/target-to-budget', calculatorInput)).status, 200);
+  assert.deepEqual(await request(app, 'POST', '/lead-control/calculator/not-approved', calculatorInput), {
+    status: 403,
+    body: { error: 'Lead Control is in read-only comparison mode' },
   });
 });

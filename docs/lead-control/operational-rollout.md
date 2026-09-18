@@ -46,7 +46,7 @@ Raw data remains intact. Lead Control reads `daily_summaries.normalized_metrics`
 
 ## Sync, health, and reconciliation
 
-The implemented pieces are `PaymentSalesSourceRepository` and `SyncSalesService`. A controlled runner, once separately implemented and reviewed, must: (1) load the secret; (2) call `PaymentSalesSourceConnection.connect()` and stop on a privilege error; (3) build the adapter from `connection.collection()`; (4) call `SyncSalesService.sync()` against `MongoLeadControlRepository`; (5) log only `read`, `saved`, and `malformed` counts; and (6) disconnect in `finally`.
+Audit Sales now owns a dedicated Lead Control scheduler. It remains disabled unless `LEAD_CONTROL_SYNC_ENABLED` is exactly `true`; while disabled it registers no cron and opens no Payment Tracker source connection. When enabled, it runs at `LEAD_CONTROL_SYNC_INTERVAL_MINUTES` (default 15, valid integer range 5–60) in `Asia/Phnom_Penh`, permits only one in-flight run, validates the source credential through `PaymentSalesSourceConnection`, and composes `PaymentSalesSourceRepository`, `SyncSalesService`, and `MongoLeadControlRepository`. A tick failure is contained and logged; successful logs contain only `read`, `saved`, and `malformed` counts. Shutdown stops cron, waits for an in-flight run, and disconnects the source.
 
 Synchronization orders by `{ updated_at: 1, sale_id: 1 }` and resumes after the local `{ updated_at, sale_id }` cursor. Malformed rows retain a local reason but do not enter the projection. A valid projection preserves the first non-null campaign attribution across later source updates. Automatic attribution uses the most recent qualifying local lead with the same normalized Cambodian phone before booking. Unmatched sales remain queryable; automatic or manual attribution is frozen.
 
@@ -60,9 +60,7 @@ Synchronization orders by `{ updated_at: 1, sale_id: 1 }` and resumes after the 
 
 `Pending` means no cursor. `Stale` means a cursor older than 24 hours as of the requested Cambodia business date. Reconcile source facts in Payment Tracker by sale ID; never alter a source record from Lead Control. `POST /lead-control/sales/:saleId/attribution` is the only local resolution and must follow source review.
 
-### Current release limitation
-
-`src/index.ts` does not construct `PaymentSalesSourceConnection`, `PaymentSalesSourceRepository`, or `SyncSalesService`; it starts no Lead Control source scheduler or CLI. This release therefore must not be described as automatically synchronized. Health remains `Pending` until a separately reviewed runner is implemented and deployed. Do not invent a cron job or call the source with an ad-hoc shell command.
+Synchronization remains off by default. Enable it only after the narrow source credential is provisioned and checked; do not call the source with an ad-hoc shell command. With sync disabled, health remains `Pending` until an approved enabled deployment completes its first successful tick.
 
 ## Audit, immutability, and archive rules
 
@@ -76,24 +74,27 @@ An approved forecast cannot be changed or deleted. Later work creates a new draf
 
 1. Take a tested, restorable Audit Sales database backup/snapshot. Record backup ID, deployment time, and application revision in the change ticket.
 2. Deploy normally; check `/health` and `/reports/health`, sign in as a manager, and confirm **Lead Control** is in the existing Audit Sales navigation at `/lead-control`. Confirm `agent` is rejected.
-3. Keep the source URI only in the secret store. Do not enable a source runner in this release.
+3. Set `LEAD_CONTROL_WRITES_ENABLED=false` and `LEAD_CONTROL_SYNC_ENABLED=false`. Keep the source URI only in the secret store.
 4. Configure the Phase 1 gateway allowlist before production users enter.
+5. Run `npm run verify:lead-control-indexes` with the local Audit Sales `DATABASE_URL` and attach the successful count to the change ticket. This reads MongoDB `listIndexes` for every named index in the table above and fails with each missing `collection.index`.
 
 ### Phase 1 — required read-only comparison
 
-Allow `GET`/`HEAD` under `/lead-control` and its assets. If path-specific POST rules are supported, allow only non-persisting calculator calls: `POST /lead-control/calculator/budget-to-results` and `POST /lead-control/calculator/target-to-budget`. Deny every other `POST`, every `PUT`, and every `DELETE` under `/lead-control` at the proxy/API gateway.
+Keep `LEAD_CONTROL_WRITES_ENABLED=false`. The application returns `403` with `Lead Control is in read-only comparison mode` for every persistence `POST`, `PUT`, `PATCH`, and `DELETE`; only `GET`/`HEAD`, assets, and the two non-persisting calculator calls remain available. A gateway allowlist using the same policy is recommended defense in depth.
 
-Do not click **Set up campaign**, **Save draft**, **Save and approve**, **Activate campaign**, **Record spend**, or **Assign to this campaign**. The current UI still renders those controls, so the gateway restriction is mandatory: this code has no `LEAD_CONTROL_ENABLED` or mutation feature flag.
+The page clearly labels this phase **Read-only comparison mode**, hides campaign setup/edit/activation, spend recording, approval, and manual-attribution controls, and keeps the comparison calculator and read views available.
 
 For every boss-selected historical campaign, compare approved Excel inputs and formula results with the calculator and any existing local summary: budget, cost/message, messages, phones, visits, gross bookings, cancellations, net bookings, actual spend, and pacing. Apply identical Cambodia month/date boundaries. Retain a signed comparison row with reviewer, source spreadsheet version, results, variance explanation, and the `$100 / $1.50 = 66.7 messages` control. Stop at Phase 1 if a material difference is unexplained.
 
 ### Phase 2 — operational writes after boss confirmation
 
-Only after written boss confirmation of the historical comparisons, credential review, backup, and named manager/developer operators may the deployment owner remove the mutation deny rules. Keep use limited to existing developer/manager accounts. Enable campaign/forecast approval first and verify its audit event and immutable baseline. Then allow a small named campaign's spend recording and verify cents, selected daily/monthly mode, pacing, and audit event. Source sync remains disabled until its separate runner is reviewed.
+Only after written boss confirmation of the historical comparisons, credential review, backup, and named manager/developer operators may the deployment owner set `LEAD_CONTROL_WRITES_ENABLED=true` and restart Audit Sales. Keep use limited to existing developer/manager accounts. Enable campaign/forecast approval first and verify its audit event and immutable baseline. Then allow a small named campaign's spend recording and verify cents, selected daily/monthly mode, pacing, and audit event.
+
+Source sync is a separate decision. After verifying the collection-scoped `ar_tracker.sales` credential, set `LEAD_CONTROL_SYNC_ENABLED=true`, optionally set the validated interval, restart Audit Sales, and confirm the first count-only completion log plus `GET /lead-control/sync/health`. Writes may remain disabled while sync runs.
 
 ### Disable and rollback
 
-Immediately restore the Phase 1 gateway deny rules and revoke the source credential or its network access. This stops new Lead Control writes and source reads without modifying Payment Tracker. Roll back the Audit Sales application to the recorded revision if needed. Never delete Lead Control collections as rollback: retain audit, projections, malformed rows, spend history, and baselines. Restore local collections only from the verified pre-change backup after an incident decision; never overwrite Payment Tracker from this system.
+Immediately set `LEAD_CONTROL_WRITES_ENABLED=false` and `LEAD_CONTROL_SYNC_ENABLED=false`, restart Audit Sales, restore the Phase 1 gateway deny rules, and revoke the source credential or its network access if source access must be terminated independently. This stops new Lead Control writes and source reads without modifying Payment Tracker. Roll back the Audit Sales application to the recorded revision if needed. Never delete Lead Control collections as rollback: retain audit, projections, malformed rows, spend history, and baselines. Restore local collections only from the verified pre-change backup after an incident decision; never overwrite Payment Tracker from this system.
 
 ## Verification
 
@@ -104,5 +105,6 @@ Run before deployment and attach results to the internal change record:
     npm run typecheck
     npm run build
     git diff --check
+    npm run verify:lead-control-indexes
 
-Also verify role enforcement, embedded navigation, responsive UI, calculator control, approved-baseline immutability, archive-only protected campaigns, spend-mode exclusivity, preservation of raw source data, and Phase 1 gateway denial of every mutation route. Test backup restoration outside production before it is ever needed.
+The database-backed index command is mandatory in the target pre-release environment; its success confirms all 20 named indexes from the local collections table, including the two existing-collection lookup indexes. Also verify role enforcement, embedded navigation, responsive UI, calculator control, approved-baseline immutability, archive-only protected campaigns, spend-mode exclusivity, preservation of raw source data, application-level Phase 1 denial of every mutation route, and optional matching gateway denial. Test backup restoration outside production before it is ever needed.

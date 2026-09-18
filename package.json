@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node --test -r ./tests/register.js tests/all.test.ts",
     "test:payment": "node --test -r ./tests/register.js tests/all.test.ts",
-    "typecheck:test": "tsc -p tsconfig.test.json"
+    "typecheck:test": "tsc -p tsconfig.test.json",
+    "verify:lead-control-indexes": "ts-node src/scripts/verify-lead-control-indexes.ts"
   },
   "keywords": [
     "audit",

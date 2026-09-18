@@ -32,6 +32,40 @@ test('Lead Control HTML and assets require dashboard authority; navigation hides
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); }
 });
 
+// Production mutation caught: read-only deployments still render mutation controls or lose calculator access.
+test('read-only comparison page hides mutation affordances and keeps both calculators usable', async () => {
+  process.env.DASHBOARD_TOKEN = 'ui-test-token';
+  const app = express();
+  app.use(express.json());
+  app.use('/lead-control', createLeadControlRouter({ writesEnabled: false }));
+  const server = app.listen(0, '127.0.0.1');
+  await new Promise<void>(resolve => server.once('listening', resolve));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const browser = await puppeteer.launch({ headless: 'new', executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', args: ['--no-sandbox'] });
+  const page = await browser.newPage();
+  const errors: string[] = [];
+  page.on('pageerror', error => errors.push(String(error)));
+  await page.setCookie({ name: 'audit_session', value: createSessionCookie('manager'), url: base });
+  try {
+    await page.goto(`${base}/lead-control`);
+    assert.match(await page.$eval('#read-only-mode', el => el.textContent || ''), /read-only comparison mode/i);
+    for (const selector of ['#new-campaign', '#edit-campaign', '#activate-campaign', '#spend-form', '#save-draft', '#save-approve']) {
+      assert.equal(await page.$(selector), null, selector);
+    }
+    await page.click('#comparison-calculate');
+    await page.waitForFunction(() => document.querySelector('#comparison-results')?.textContent?.includes('66.7'));
+    assert.match(await page.$eval('#comparison-results', el => el.textContent || ''), /66\.7 messages/);
+    await page.type('#comparison-target-net', '10');
+    await page.click('#comparison-calculate');
+    await page.waitForFunction(() => document.querySelector('#comparison-results')?.textContent?.includes('$150.00'));
+    assert.deepEqual(errors, []);
+  } finally {
+    await browser.close();
+    server.closeAllConnections();
+    await new Promise<void>(resolve => server.close(() => resolve()));
+  }
+});
+
 test('browser setup creates a reviewed forecast with cents and percentage conversion; summary and editing remain usable on narrow screens', async () => {
   process.env.DASHBOARD_TOKEN = 'ui-test-token';
   const { startUiFixture } = await import('./ui-fixture');

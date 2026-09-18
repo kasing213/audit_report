@@ -2,23 +2,43 @@
 <link rel="stylesheet" href="/lead-control/assets/lead-control.css">
 {{> nav activeNav="lead-control"}}
 <a class="lc-skip" href="#lead-main">Skip to Lead Control</a>
-<main id="lead-main" class="lc">
-  <header class="lc-heading"><div><h1>Lead Control</h1><p>From campaign budget to net bookings.</p></div><button id="new-campaign" class="primary">Set up campaign</button></header>
+<main id="lead-main" class="lc" data-writes-enabled="{{leadControlWritesEnabled}}">
+  <header class="lc-heading"><div><h1>Lead Control</h1><p>From campaign budget to net bookings.</p></div>{{#if leadControlWritesEnabled}}<button id="new-campaign" class="primary">Set up campaign</button>{{/if}}</header>
+  {{#unless leadControlWritesEnabled}}
+  <section id="read-only-mode" class="lc-read-only" aria-labelledby="read-only-title">
+    <h2 id="read-only-title">Read-only comparison mode</h2>
+    <p>Campaigns, forecasts, spend, and reconciliation are view-only. Use the calculator below to compare approved spreadsheet assumptions; no data will be saved.</p>
+  </section>
+  <section id="comparison-calculator" class="lc-section lc-comparison" aria-labelledby="comparison-title">
+    <div><h2 id="comparison-title">Forecast comparison calculator</h2><p>Enter USD values and conversion rates. Both calculations remain available while writes are disabled.</p></div>
+    <form id="comparison-form" class="lc-comparison-form">
+      <label>Budget (USD)<input id="comparison-budget" type="number" min="0" step="0.01" value="100" required></label>
+      <label>Cost per message (USD)<input id="comparison-cost" type="number" min="0.01" step="0.01" value="1.50" required></label>
+      <label>Messages → phones (%)<input id="comparison-message-rate" type="number" min="0" max="100" step="0.01" value="50" required></label>
+      <label>Phones → visits (%)<input id="comparison-visit-rate" type="number" min="0" max="100" step="0.01" value="50" required></label>
+      <label>Visits → bookings (%)<input id="comparison-booking-rate" type="number" min="0" max="100" step="0.01" value="50" required></label>
+      <label>Cancellations (%)<input id="comparison-cancel-rate" type="number" min="0" max="100" step="0.01" value="20" required></label>
+      <label>Target net bookings (optional)<input id="comparison-target-net" type="number" min="0" step="1"></label>
+      <button id="comparison-calculate" class="primary" type="submit">Calculate comparison</button>
+    </form>
+    <p id="comparison-results" role="status" aria-live="polite">$100.00 ÷ $1.50 = 66.7 messages.</p>
+  </section>
+  {{/unless}}
   <p id="notice" role="status" aria-live="polite"></p><p id="error" role="alert" hidden></p>
   <section id="workspace">
     <form id="campaign-filter" class="lc-toolbar"><label>Page name<input id="page-filter" required placeholder="e.g. North residences"></label><button id="load-campaigns">Load campaigns</button><label>Reporting month<input id="month" type="month" required></label></form>
     <div id="campaign-list" aria-live="polite"><p class="lc-empty">Enter a page name to find its campaigns, or set up a new campaign.</p></div>
     <section id="detail" hidden>
-      <header class="lc-heading"><div><h2 id="campaign-title"></h2><p id="campaign-state"></p></div><div class="lc-actions"><button id="edit-campaign">Edit / revise forecast</button><button id="activate-campaign" hidden>Activate campaign</button><button id="refresh-summary">Refresh</button></div></header>
+      <header class="lc-heading"><div><h2 id="campaign-title"></h2><p id="campaign-state"></p></div><div class="lc-actions">{{#if leadControlWritesEnabled}}<button id="edit-campaign">Edit / revise forecast</button><button id="activate-campaign" hidden>Activate campaign</button>{{/if}}<button id="refresh-summary">Refresh</button></div></header>
       <div id="summary" aria-live="polite"></div>
       <section class="lc-section"><h3>Forecast history</h3><p id="revision-context"></p><div class="lc-scroll" tabindex="0" aria-label="Forecast history table"><table><thead><tr><th>Version</th><th>State</th><th>Monthly budget</th><th>Cost / message</th><th>Approved by</th><th>Approved at</th></tr></thead><tbody id="history"></tbody></table></div></section>
-      <section class="lc-section"><h3>Actual spend</h3><p>Choose one recording mode per month. A mode change requires explicit confirmation before existing entries are archived.</p><form id="spend-form" class="lc-toolbar"><label>Mode<select id="spend-mode"><option value="daily">Daily</option><option value="monthly">Monthly total</option></select></label><label id="spend-date-label">Business date<input id="spend-date" type="date" required></label><label>Amount (USD)<input id="spend-amount" type="number" min="0" step="0.01" required></label><button>Record spend</button></form><label id="switch-confirm-label" hidden><input type="checkbox" id="switch-confirm">Archive existing spend entries and switch this month's mode</label><div id="spend-list"></div></section>
+      <section class="lc-section"><h3>Actual spend</h3>{{#if leadControlWritesEnabled}}<p>Choose one recording mode per month. A mode change requires explicit confirmation before existing entries are archived.</p><form id="spend-form" class="lc-toolbar"><label>Mode<select id="spend-mode"><option value="daily">Daily</option><option value="monthly">Monthly total</option></select></label><label id="spend-date-label">Business date<input id="spend-date" type="date" required></label><label>Amount (USD)<input id="spend-amount" type="number" min="0" step="0.01" required></label><button>Record spend</button></form><label id="switch-confirm-label" hidden><input type="checkbox" id="switch-confirm">Archive existing spend entries and switch this month's mode</label>{{else}}<p>Recorded spend is shown for comparison. Recording and mode changes are disabled.</p>{{/if}}<div id="spend-list"></div></section>
       <section class="lc-section"><div class="lc-heading"><h3>Cancellations</h3><label>View<select id="cancellation-view"><option value="cohort">Booking cohort</option><option value="event">Cancellation event month</option></select></label></div><p id="cancellation-help">Sales booked this month that have since cancelled.</p><div id="cancellations"></div></section>
       <section class="lc-section"><h3>Reconciliation</h3><p id="attribution-help">Assign an unmatched sale to the selected campaign only after checking its source.</p><div id="unmatched"></div></section>
       <section class="lc-section"><h3>Sync health</h3><p id="sync-health"></p></section>
     </section>
   </section>
-  <section id="wizard" hidden aria-labelledby="wizard-title">
+  {{#if leadControlWritesEnabled}}<section id="wizard" hidden aria-labelledby="wizard-title">
     <header class="lc-heading"><div><h2 id="wizard-title">Set up campaign</h2><p id="revision-message">Save a draft or approve the forecast after review.</p></div><button id="wizard-cancel">Close setup</button></header>
     <ol class="lc-steps" aria-label="Campaign setup steps"><li aria-current="step">1. Campaign</li><li>2. Budget</li><li>3. Expectations</li><li>4. Review</li></ol>
     <div class="lc-setup"><form id="wizard-form" novalidate>
@@ -28,7 +48,7 @@
       <fieldset data-step="3" hidden><legend>Review</legend><div id="review"></div><p>Approval locks this forecast. Later changes create a new revision; the baseline remains available.</p><div class="lc-actions"><button type="button" id="save-draft">Save draft</button><button type="button" id="save-approve" class="primary">Save and approve</button></div></fieldset>
       <div class="lc-actions lc-step-actions"><button type="button" id="wizard-back">Back</button><button type="button" id="wizard-next" class="primary">Continue</button></div>
     </form><aside id="preview" aria-label="Live forecast preview" aria-live="polite"><h3>Live forecast</h3><p>Loading preview…</p></aside></div>
-  </section>
+  </section>{{/if}}
 </main>
 <script src="/lead-control/assets/lead-control.js" defer></script>
 {{> footer}}

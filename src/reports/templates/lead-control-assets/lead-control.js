@@ -4,6 +4,7 @@
   const state = { campaign: null, revisions: [], spends: [], step: 0, editing: false, previewTimer: null, previewVersion: 0 };
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
+  const writesEnabled = $('#lead-main').dataset.writesEnabled === 'true';
   const money = (cents) => cents == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
   const number = (value) => value == null ? '—' : new Intl.NumberFormat('en-US', { maximumFractionDigits: 1 }).format(value);
   const escapeHtml = (value) => String(value ?? '').replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
@@ -71,14 +72,16 @@
       state.campaign = campaign;
       state.revisions = revisionsResult.revisions || [];
       state.spends = spendsResult.spends || [];
-      $('#spend-mode').value = campaign.spendMode || 'daily';
-      $('#spend-date-label').hidden = $('#spend-mode').value === 'monthly';
-      $('#switch-confirm-label').hidden = true;
-      $('#switch-confirm').checked = false;
+      if (writesEnabled) {
+        $('#spend-mode').value = campaign.spendMode || 'daily';
+        $('#spend-date-label').hidden = $('#spend-mode').value === 'monthly';
+        $('#switch-confirm-label').hidden = true;
+        $('#switch-confirm').checked = false;
+      }
       $('#detail').hidden = false;
       $('#campaign-title').textContent = campaign.name;
       $('#campaign-state').textContent = `${campaign.pageId} · ${campaign.status} · ${campaign.startsOn}${campaign.endsOn ? ` to ${campaign.endsOn}` : ' onward'}`;
-      $('#activate-campaign').hidden = campaign.status !== 'draft';
+      if (writesEnabled) $('#activate-campaign').hidden = campaign.status !== 'draft';
       renderHistory();
       renderSpend();
       await Promise.all([loadSummary(), loadCancellations(), loadUnmatched(), loadHealth()]);
@@ -147,7 +150,7 @@
   async function loadUnmatched() {
     try {
       const { sales } = await api('/lead-control/reconciliation/unmatched');
-      $('#unmatched').innerHTML = sales.length ? sales.map((sale) => `<div class="lc-reconcile"><span><strong>${escapeHtml(sale.saleId)}</strong><small>${escapeHtml(sale.normalizedPhone)} · ${escapeHtml(new Date(sale.bookingDate).toLocaleDateString())}</small></span><button data-attribute="${escapeHtml(sale.saleId)}" ${state.campaign ? '' : 'disabled'}>Assign to this campaign</button></div>`).join('') : '<p>No unmatched bookings.</p>';
+      $('#unmatched').innerHTML = sales.length ? sales.map((sale) => `<div class="lc-reconcile"><span><strong>${escapeHtml(sale.saleId)}</strong><small>${escapeHtml(sale.normalizedPhone)} · ${escapeHtml(new Date(sale.bookingDate).toLocaleDateString())}</small></span>${writesEnabled ? `<button data-attribute="${escapeHtml(sale.saleId)}" ${state.campaign ? '' : 'disabled'}>Assign to this campaign</button>` : ''}</div>`).join('') : '<p>No unmatched bookings.</p>';
     } catch (error) { $('#unmatched').textContent = error.message; }
   }
 
@@ -297,30 +300,61 @@
     await loadSummary();
   }
 
+  async function calculateComparison(event) {
+    event.preventDefault();
+    clearError();
+    const input = {
+      costPerMessageCents: Math.round(Number($('#comparison-cost').value) * 100),
+      messageToPhoneRate: Number($('#comparison-message-rate').value) / 100,
+      phoneToVisitRate: Number($('#comparison-visit-rate').value) / 100,
+      visitToBookingRate: Number($('#comparison-booking-rate').value) / 100,
+      cancellationRate: Number($('#comparison-cancel-rate').value) / 100,
+    };
+    try {
+      const budgetCents = Math.round(Number($('#comparison-budget').value) * 100);
+      const { forecast } = await api('/lead-control/calculator/budget-to-results', {
+        method: 'POST', body: JSON.stringify({ ...input, budgetCents }),
+      });
+      let output = `${money(budgetCents)} ÷ ${money(input.costPerMessageCents)} = ${number(forecast.messages)} messages.`;
+      const targetNetBookings = Number($('#comparison-target-net').value || 0);
+      if (targetNetBookings > 0) {
+        const target = await api('/lead-control/calculator/target-to-budget', {
+          method: 'POST', body: JSON.stringify({ ...input, targetNetBookings }),
+        });
+        output += ` ${number(targetNetBookings)} net bookings require ${money(target.budgetCents)}.`;
+      }
+      $('#comparison-results').textContent = output;
+    } catch (error) { showError(error); }
+  }
+
   document.addEventListener('DOMContentLoaded', () => {
     $('#month').value = currentMonth();
-    $('#spend-date').value = businessDate();
     $('#campaign-filter').addEventListener('submit', loadCampaigns);
     $('#campaign-list').addEventListener('click', (event) => { const button = event.target.closest('[data-open]'); if (button) openCampaign(button.dataset.open); });
-    $('#new-campaign').addEventListener('click', () => openWizard(false));
-    $('#edit-campaign').addEventListener('click', () => openWizard(true));
-    $('#wizard-cancel').addEventListener('click', closeWizard);
-    $('#wizard-back').addEventListener('click', () => setWizardStep(state.step - 1));
-    $('#wizard-next').addEventListener('click', () => { if (validateStep()) setWizardStep(state.step + 1); });
-    $('#wizard-form').addEventListener('input', updatePreview);
-    $('#use-target').addEventListener('click', () => { $('#monthly-budget').value = String(Number($('#use-target').dataset.cents || 0) / 100); updatePreview(); });
-    $('#save-draft').addEventListener('click', () => saveWizard(false));
-    $('#save-approve').addEventListener('click', () => saveWizard(true));
     $('#refresh-summary').addEventListener('click', loadSummary);
     $('#month').addEventListener('change', () => state.campaign && openCampaign(state.campaign.id));
     $('#cancellation-view').addEventListener('change', loadCancellations);
-    $('#activate-campaign').addEventListener('click', async () => { if (!state.campaign) return; await api(`/lead-control/campaigns/${state.campaign.id}/activate`, { method: 'POST' }); await openCampaign(state.campaign.id); });
-    $('#spend-mode').addEventListener('change', () => { $('#spend-date-label').hidden = $('#spend-mode').value === 'monthly'; });
-    $('#spend-form').addEventListener('submit', (event) => recordSpend(event).catch(showError));
-    $('#unmatched').addEventListener('click', async (event) => {
-      const button = event.target.closest('[data-attribute]');
-      if (!button || !state.campaign) return;
-      try { await api(`/lead-control/sales/${encodeURIComponent(button.dataset.attribute)}/attribution`, { method: 'POST', body: JSON.stringify({ campaignId: state.campaign.id }) }); notice('Sale attributed and frozen to this campaign.'); await loadUnmatched(); await loadSummary(); } catch (error) { showError(error); }
-    });
+    if (writesEnabled) {
+      $('#spend-date').value = businessDate();
+      $('#new-campaign').addEventListener('click', () => openWizard(false));
+      $('#edit-campaign').addEventListener('click', () => openWizard(true));
+      $('#wizard-cancel').addEventListener('click', closeWizard);
+      $('#wizard-back').addEventListener('click', () => setWizardStep(state.step - 1));
+      $('#wizard-next').addEventListener('click', () => { if (validateStep()) setWizardStep(state.step + 1); });
+      $('#wizard-form').addEventListener('input', updatePreview);
+      $('#use-target').addEventListener('click', () => { $('#monthly-budget').value = String(Number($('#use-target').dataset.cents || 0) / 100); updatePreview(); });
+      $('#save-draft').addEventListener('click', () => saveWizard(false));
+      $('#save-approve').addEventListener('click', () => saveWizard(true));
+      $('#activate-campaign').addEventListener('click', async () => { if (!state.campaign) return; await api(`/lead-control/campaigns/${state.campaign.id}/activate`, { method: 'POST' }); await openCampaign(state.campaign.id); });
+      $('#spend-mode').addEventListener('change', () => { $('#spend-date-label').hidden = $('#spend-mode').value === 'monthly'; });
+      $('#spend-form').addEventListener('submit', (event) => recordSpend(event).catch(showError));
+      $('#unmatched').addEventListener('click', async (event) => {
+        const button = event.target.closest('[data-attribute]');
+        if (!button || !state.campaign) return;
+        try { await api(`/lead-control/sales/${encodeURIComponent(button.dataset.attribute)}/attribution`, { method: 'POST', body: JSON.stringify({ campaignId: state.campaign.id }) }); notice('Sale attributed and frozen to this campaign.'); await loadUnmatched(); await loadSummary(); } catch (error) { showError(error); }
+      });
+    } else {
+      $('#comparison-form').addEventListener('submit', calculateComparison);
+    }
   });
 })();
