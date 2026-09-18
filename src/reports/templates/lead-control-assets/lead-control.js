@@ -1,7 +1,7 @@
 (function () {
   'use strict';
 
-  const state = { campaign: null, revisions: [], spends: [], step: 0, editing: false, previewTimer: null };
+  const state = { campaign: null, revisions: [], spends: [], step: 0, editing: false, previewTimer: null, previewVersion: 0 };
   const $ = (selector) => document.querySelector(selector);
   const $$ = (selector) => Array.from(document.querySelectorAll(selector));
   const money = (cents) => cents == null ? '—' : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(cents / 100);
@@ -71,6 +71,10 @@
       state.campaign = campaign;
       state.revisions = revisionsResult.revisions || [];
       state.spends = spendsResult.spends || [];
+      $('#spend-mode').value = campaign.spendMode || 'daily';
+      $('#spend-date-label').hidden = $('#spend-mode').value === 'monthly';
+      $('#switch-confirm-label').hidden = true;
+      $('#switch-confirm').checked = false;
       $('#detail').hidden = false;
       $('#campaign-title').textContent = campaign.name;
       $('#campaign-state').textContent = `${campaign.pageId} · ${campaign.status} · ${campaign.startsOn}${campaign.endsOn ? ` to ${campaign.endsOn}` : ' onward'}`;
@@ -170,17 +174,16 @@
     $('#wizard-title').textContent = editing ? 'Edit campaign and revise forecast' : 'Set up campaign';
     const latest = editing ? [...state.revisions].sort((a, b) => b.revisionNumber - a.revisionNumber)[0] : null;
     const campaign = editing ? state.campaign : null;
-    const contextCampaign = state.campaign;
     $('#campaign-name').value = campaign?.name || '';
-    $('#campaign-page').value = campaign?.pageId || $('#page-filter').value.trim();
-    $('#property-project').value = campaign?.propertyProject || contextCampaign?.propertyProject || '';
-    $('#campaign-objective').value = campaign?.objective || contextCampaign?.objective || '';
-    $('#campaign-audience').value = campaign?.audience || contextCampaign?.audience || '';
+    $('#campaign-page').value = campaign?.pageId || '';
+    $('#property-project').value = campaign?.propertyProject || '';
+    $('#campaign-objective').value = campaign?.objective || '';
+    $('#campaign-audience').value = campaign?.audience || '';
     $('#starts-on').value = campaign?.startsOn || businessDate();
     $('#ends-on').value = campaign?.endsOn || '';
     $('#forecast-month').value = latest?.month || selectedMonth();
     $('#monthly-budget').value = latest ? String(latest.monthlyBudgetCents / 100) : '1200';
-    $('#setup-spend-mode').value = campaign?.spendMode || contextCampaign?.spendMode || 'daily';
+    $('#setup-spend-mode').value = campaign?.spendMode || 'daily';
     $('#cost-per-message').value = latest ? String(latest.costPerMessageCents / 100) : '1';
     $('#message-rate').value = latest ? String(latest.messageToPhoneRate * 100) : '30';
     $('#visit-rate').value = latest ? String(latest.phoneToVisitRate * 100) : '50';
@@ -209,20 +212,23 @@
 
   async function updatePreview() {
     window.clearTimeout(state.previewTimer);
+    const version = ++state.previewVersion;
     state.previewTimer = window.setTimeout(async () => {
       try {
         const input = forecastInput();
         if (!input.month || input.monthlyBudgetCents < 0 || input.costPerMessageCents <= 0) return;
         const { forecast } = await api('/lead-control/calculator/budget-to-results', { method: 'POST', body: JSON.stringify({ ...input, budgetCents: input.monthlyBudgetCents }) });
+        if (version !== state.previewVersion) return;
         $('#preview').innerHTML = `<h3>Live forecast</h3><p>Monthly budget <strong>${money(input.monthlyBudgetCents)}</strong></p><dl><dt>Messages</dt><dd>${number(forecast.messages)}</dd><dt>Phone leads</dt><dd>${number(forecast.phoneLeads)}</dd><dt>Visits</dt><dd>${number(forecast.visits)}</dd><dt>Gross bookings</dt><dd>${number(forecast.grossBookings)}</dd><dt>Cancellations</dt><dd>${number(forecast.cancellations)}</dd><dt>Net bookings</dt><dd>${number(forecast.netBookings)}</dd></dl>`;
         const target = Number($('#target-net').value || 0);
         if (target > 0) {
           const result = await api('/lead-control/calculator/target-to-budget', { method: 'POST', body: JSON.stringify({ ...input, targetNetBookings: target }) });
+          if (version !== state.previewVersion) return;
           $('#target-budget').textContent = `Required budget: ${money(result.budgetCents)}`;
           $('#use-target').disabled = false;
           $('#use-target').dataset.cents = String(result.budgetCents);
         } else { $('#target-budget').textContent = ''; $('#use-target').disabled = true; }
-      } catch (error) { $('#preview').innerHTML = `<h3>Live forecast</h3><p>${escapeHtml(error.message)}</p>`; }
+      } catch (error) { if (version === state.previewVersion) $('#preview').innerHTML = `<h3>Live forecast</h3><p>${escapeHtml(error.message)}</p>`; }
     }, 80);
   }
 
@@ -262,7 +268,6 @@
         savedForecast = approved.forecast;
       }
       if (approve && campaign.status === 'draft') await api(`/lead-control/campaigns/${encodeURIComponent(campaign.id)}/activate`, { method: 'POST' });
-      sessionStorage.setItem(`lead-control-spend-mode:${campaign.id}`, $('#setup-spend-mode').value);
       notice(approve ? 'Forecast approved. Baseline history is preserved.' : 'Forecast draft saved.');
       closeWizard();
       $('#page-filter').value = campaign.pageId;

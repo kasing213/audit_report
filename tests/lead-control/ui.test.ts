@@ -61,24 +61,58 @@ test('browser setup creates a reviewed forecast with cents and percentage conver
     assert.equal(await page.$eval('#monthly-budget', el => (el as HTMLInputElement).value), '1200');
     await page.click('#wizard-cancel');
     await page.click('#new-campaign');
+    assert.equal(await page.$eval('#property-project', el => (el as HTMLInputElement).value), '');
+    assert.equal(await page.$eval('#campaign-objective', el => (el as HTMLInputElement).value), '');
+    assert.equal(await page.$eval('#campaign-audience', el => (el as HTMLInputElement).value), '');
+    assert.equal(await page.$eval('#setup-spend-mode', el => (el as HTMLSelectElement).value), 'daily');
     await page.type('#campaign-name', 'September leads');
+    await page.type('#campaign-page', 'September page');
+    await page.type('#property-project', 'September Heights');
+    await page.type('#campaign-objective', 'Qualified visits');
+    await page.type('#campaign-audience', 'First-time buyers');
+    await page.select('#setup-spend-mode', 'monthly');
     await page.click('#wizard-next');
+    await page.evaluate(() => {
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const url = typeof input === 'string' ? input : input.toString();
+        const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+        const response = await originalFetch(input, init);
+        if (url.endsWith('/calculator/budget-to-results') && body?.budgetCents === 100000) await new Promise(resolve => window.setTimeout(resolve, 250));
+        return response;
+      };
+    });
+    await page.$eval('#monthly-budget', el => { (el as HTMLInputElement).value = '1000'; el.dispatchEvent(new Event('input', { bubbles: true })); });
+    await new Promise(resolve => setTimeout(resolve, 120));
     await page.$eval('#monthly-budget', el => { (el as HTMLInputElement).value = '1500'; el.dispatchEvent(new Event('input', { bubbles: true })); });
     await page.click('#wizard-next');
     await page.waitForFunction(() => document.querySelector('#preview')?.textContent?.includes('1,500'));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    assert.doesNotMatch(await page.$eval('#preview', el => el.textContent || ''), /1,000/);
     await page.click('#wizard-next');
     assert.match(await page.$eval('#review', el => el.textContent || ''), /September leads/);
     await page.click('#save-approve');
     await page.waitForFunction(() => document.querySelector('#notice')?.textContent?.includes('approved'));
-    assert.equal(fixture.writes.forecast.monthlyBudgetCents, 150000);
-    assert.equal(fixture.writes.forecast.messageToPhoneRate, 0.3);
-    assert.equal(fixture.writes.approved, true);
+    await page.waitForFunction(() => (document.querySelector('#spend-mode') as HTMLSelectElement)?.value === 'monthly');
+    const createdCampaign = fixture.repository.campaigns.find((campaign) => campaign.name === 'September leads');
+    assert.ok(createdCampaign);
+    const createdForecast = fixture.repository.revisions.find((forecast) => forecast.campaignId === createdCampaign.id);
+    assert.equal(createdForecast?.monthlyBudgetCents, 150000);
+    assert.equal(createdForecast?.messageToPhoneRate, 0.3);
+    assert.equal(createdForecast?.status, 'approved');
     assert.deepEqual({
-      propertyProject: fixture.writes.campaign.propertyProject,
-      objective: fixture.writes.campaign.objective,
-      audience: fixture.writes.campaign.audience,
-      spendMode: fixture.writes.campaign.spendMode,
-    }, { propertyProject: 'North Residences', objective: 'Property visits', audience: 'Phnom Penh buyers', spendMode: 'daily' });
+      propertyProject: createdCampaign.propertyProject,
+      objective: createdCampaign.objective,
+      audience: createdCampaign.audience,
+      spendMode: createdCampaign.spendMode,
+    }, { propertyProject: 'September Heights', objective: 'Qualified visits', audience: 'First-time buyers', spendMode: 'monthly' });
+    assert.equal(await page.$eval('#spend-mode', el => (el as HTMLSelectElement).value), 'monthly');
+    assert.equal(await page.$eval('#spend-date-label', el => (el as HTMLElement).hidden), true);
+    await page.$eval('#spend-amount', el => { (el as HTMLInputElement).value = '400'; });
+    await page.click('#spend-form button');
+    await page.waitForFunction(() => document.querySelector('#notice')?.textContent?.includes('recorded'));
+    assert.equal(fixture.repository.spends.find((spend) => spend.campaignId === createdCampaign.id)?.businessDate, null);
+    assert.equal(fixture.repository.events.filter((event) => event.actor === 'manager').length, fixture.repository.events.length);
     await page.setViewport({ width: 390, height: 844 });
     await page.screenshot({ path: fixture.screenshot('narrow'), fullPage: true });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
