@@ -21,7 +21,7 @@
    - Narration: “ទិន្នន័យពិត និងគោលដៅត្រូវមើលជាជំហានៗ។ Open month មានស្លាក provisional ព្រោះ cancellation អាចមកក្រោយបាន।”
 
 4. **Summary ledger និង Forecast history**
-   - បង្ហាញ Monthly plan, Planned to date, Actual spend, Remaining, Pacing variance និងតារាង Forecast / Expected / Actual / Variance / Actual cost / Status។ បន្ទាប់មកបង្ហាញ Baseline និង revision history។
+   - បង្ហាញ Monthly plan, Planned to date, Actual spend, Remaining, Pacing variance និងតារាង Forecast / Expected / Actual / Variance / Actual cost / Outcome / Cost។ បន្ទាប់មកបង្ហាញ Baseline និង revision history។
    - Narration: “Baseline ដែល approve រួចមិនអាចកែបានទេ។ ប្រសិនបើត្រូវកែ ត្រូវបង្កើត revision ថ្មី ដើម្បីរក្សាប្រវត្តិ។ លុយត្រូវបញ្ចូលជា USD cents ក្នុង API ហើយ UI បង្ហាញជា USD។”
 
 5. **Cancellations និង Sync health**
@@ -51,7 +51,7 @@
 ## Claude Design recording checklist
 
 - [ ] ប្រើ Audit Sales UI ពិត និង URL `/lead-control`; កុំបង្ហាញ tab/app ថ្មី។
-- [ ] ថត desktop និង narrow/mobile layout; រក្សា Khmer text អាចអានបាន និង focus state មើលឃើញ។
+- [ ] ថត desktop និង narrow/mobile layout; បញ្ជាក់ font fallback `Noto Sans Khmer`/`Khmer OS`, Khmer glyphs មិនខូច, reduced motion ដំណើរការ, និង focus state មើលឃើញដោយ keyboard។
 - [ ] ប្រើតែ sample/sanitized campaign, sale ID និងលេខទូរស័ព្ទ; កុំបង្ហាញ URI, token, database name/secret connection string, ឈ្មោះអតិថិជន ឬលេខទូរស័ព្ទពិត។
 - [ ] បង្ហាញ developer/manager access និងពិពណ៌នាថា agent ត្រូវបានបដិសេធ; កុំថត password ឬ session cookie។
 - [ ] បង្ហាញ `$100 / $1.50 = 66.7 messages` និងបញ្ជាក់ USD cents នៅពេលនិយាយអំពី API/data handling។

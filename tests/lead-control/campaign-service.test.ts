@@ -17,6 +17,7 @@ class InMemoryLeadControlRepository implements LeadControlRepository {
   spends: SpendRecord[] = [];
   events: AuditEvent[] = [];
   failNextAudit = false;
+  failAuditAction: AuditEvent['action'] | null = null;
   private nextId = 1;
   private readonly lockTails = new Map<string, Promise<void>>();
 
@@ -83,7 +84,7 @@ class InMemoryLeadControlRepository implements LeadControlRepository {
   }
 
   async appendAuditEvent(event: Omit<AuditEvent, 'id'>): Promise<void> {
-    if (this.failNextAudit) {
+    if (this.failNextAudit || this.failAuditAction === event.action) {
       this.failNextAudit = false;
       throw new Error('audit write failed');
     }
@@ -331,4 +332,65 @@ test('archives prior mode records only after a confirmed spend-mode switch and p
   assert.equal(daily.status, 'active');
   assert.equal(repo.events.at(-2)?.action, 'spend.mode_switched');
   assert.equal(repo.events.at(-2)?.actor, 'manager');
+});
+
+// Production mutation caught: archived campaign history remains writable through forecast and spend services.
+test('rejects every forecast and spend mutation for an archived campaign and rejects archived spend updates', async () => {
+  const { service, repo } = buildService();
+  const campaign = await service.createCampaign(campaignInput, 'manager');
+  const draft = await service.createForecastDraft(campaign.id, forecastInput, 'manager');
+  const spend = await service.recordSpend({ campaignId: campaign.id, month: '2026-09', businessDate: null, amountCents: 100_000 }, 'manager');
+  await service.deleteSpend(spend.id, 'manager');
+  await service.archiveCampaign(campaign.id, 'manager');
+
+  await assert.rejects(service.createForecastDraft(campaign.id, { ...forecastInput, month: '2026-10' }, 'manager'), /archived/);
+  await assert.rejects(service.updateForecastDraft(draft.id, { ...forecastInput, monthlyBudgetCents: 120_000 }, 'manager'), /archived/);
+  await assert.rejects(service.approveForecast(draft.id, 'manager'), /archived/);
+  await assert.rejects(service.deleteForecastDraft(draft.id, 'manager'), /archived/);
+  await assert.rejects(service.recordSpend({ campaignId: campaign.id, month: '2026-10', businessDate: null, amountCents: 120_000 }, 'manager'), /archived/);
+  await assert.rejects(service.switchSpendMode(campaign.id, '2026-09', 'daily', true, 'manager'), /archived/);
+  await assert.rejects(service.updateSpend(spend.id, { ...spend, amountCents: 90_000 }, 'manager'), /archived spend/);
+  await assert.rejects(service.deleteSpend(spend.id, 'manager'), /archived spend/);
+  assert.equal(repo.revisions.find((item) => item.id === draft.id)?.status, 'draft');
+});
+
+// Production mutation caught: deleting a draft campaign leaves its draft forecast revision orphaned.
+test('draft campaign deletion requires zero forecast revisions', async () => {
+  const { service, repo } = buildService();
+  const campaign = await service.createCampaign(campaignInput, 'manager');
+  const draft = await service.createForecastDraft(campaign.id, forecastInput, 'manager');
+
+  await assert.rejects(service.deleteCampaign(campaign.id, 'manager'), /forecast revisions/);
+  assert.equal(repo.campaigns.some((item) => item.id === campaign.id), true);
+  assert.equal(repo.revisions.some((item) => item.id === draft.id), true);
+
+  await service.deleteForecastDraft(draft.id, 'manager');
+  await service.deleteCampaign(campaign.id, 'manager');
+  assert.equal(repo.campaigns.some((item) => item.id === campaign.id), false);
+});
+
+// Production mutation caught: the guided workflow can report completion after campaign, forecast, or activation partially fails.
+test('guided campaign and forecast workflow commits one final state and rolls back every partial write on failure', async () => {
+  const { service, repo } = buildService();
+  const command = {
+    campaign: campaignInput,
+    forecast: forecastInput,
+    approve: true,
+    activate: true,
+  };
+
+  repo.failAuditAction = 'forecast.approved';
+  await assert.rejects((service as any).saveCampaignForecastWorkflow(command, 'manager'), /audit write failed/);
+  assert.deepEqual(repo.campaigns, []);
+  assert.deepEqual(repo.revisions, []);
+  assert.equal(repo.events.length, 0);
+
+  repo.failAuditAction = null;
+  const result = await (service as any).saveCampaignForecastWorkflow(command, 'manager');
+  assert.equal(result.campaign.status, 'active');
+  assert.equal(result.forecast.status, 'approved');
+  assert.equal(result.forecast.campaignId, result.campaign.id);
+  assert.deepEqual(repo.events.map((event) => event.action), [
+    'campaign.created', 'forecast.draft_created', 'forecast.approved', 'campaign.activated',
+  ]);
 });

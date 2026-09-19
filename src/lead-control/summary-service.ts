@@ -1,6 +1,7 @@
 import { Campaign, ForecastRevision, SpendRecord } from './models';
 import {
   classifyCancellationRate,
+  classifyCostPerResult,
   classifyOutcome,
   compareBudgetPacing,
   costPerResultCents,
@@ -9,14 +10,7 @@ import {
 } from './forecast';
 import { FunnelForecast, LeadControlStatus } from './types';
 import { SalesProjection, SalesSyncCursor } from './sync-service';
-
-const PHNOM_PENH_TIME_ZONE = 'Asia/Phnom_Penh';
-const phnomPenhDateFormatter = new Intl.DateTimeFormat('en-US', {
-  timeZone: PHNOM_PENH_TIME_ZONE,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-});
+import { phnomPenhBusinessDate } from './business-time';
 
 export interface SummaryDailyDocument {
   date: string;
@@ -71,7 +65,8 @@ export interface StageSummary {
   variance: number | null;
   costPerResultCents: number | null;
   targetCostPerResultCents: number;
-  status: LeadControlStatus;
+  outcomeStatus: LeadControlStatus;
+  costStatus: LeadControlStatus;
 }
 
 export interface MonthlySummary {
@@ -103,7 +98,10 @@ export interface SyncHealth {
 }
 
 export class SummaryService {
-  constructor(private readonly repository: SummaryDataRepository) {}
+  constructor(
+    private readonly repository: SummaryDataRepository,
+    private readonly now: () => Date = () => new Date(),
+  ) {}
 
   async monthly(input: MonthlySummaryInput): Promise<MonthlySummary> {
     validateMonth(input.month);
@@ -129,7 +127,8 @@ export class SummaryService {
     });
     const fullMonthForecast = forecastFromBudget({ budgetCents: latest.monthlyBudgetCents, ...latest });
     const spendAdjustedExpected = forecastFromBudget({ budgetCents: actualSpendCents, ...latest });
-    const actualFunnel = actuals(summaries, sales, input.month, input.asOf);
+    const syncHealth = await this.syncHealth();
+    const actualFunnel = actuals(summaries, sales, input.month, input.asOf, syncHealth.cursor !== null);
     const targets = stageTargets(latest, fullMonthForecast);
     const stages = buildStages(fullMonthForecast, spendAdjustedExpected, actualFunnel, actualSpendCents, targets, latest.cancellationRate);
 
@@ -144,7 +143,7 @@ export class SummaryService {
       stages,
       provisional: isOpenMonth(input.month, input.asOf),
       revisions: { baseline, latest, history: revisions },
-      syncHealth: await this.syncHealth(input.asOf),
+      syncHealth,
     };
   }
 
@@ -165,13 +164,12 @@ export class SummaryService {
     return (await this.repository.listUnmatchedSales()).sort((left, right) => right.updatedAt.getTime() - left.updatedAt.getTime() || left.saleId.localeCompare(right.saleId));
   }
 
-  async syncHealth(asOf: string): Promise<SyncHealth> {
-    validateBusinessDate(asOf, 'asOf');
+  async syncHealth(): Promise<SyncHealth> {
     const [cursor, unmatchedSales, malformedSales] = await Promise.all([
       this.repository.getSalesSyncCursor(), this.repository.listUnmatchedSales(), this.repository.countMalformedSales(),
     ]);
     if (!cursor) return { status: 'Pending', cursor: null, ageHours: null, unmatchedSales: unmatchedSales.length, malformedSales };
-    const ageHours = Math.max(0, (dateAtStartOfDay(asOf).getTime() - cursor.updatedAt.getTime()) / 3_600_000);
+    const ageHours = Math.max(0, (this.now().getTime() - cursor.updatedAt.getTime()) / 3_600_000);
     return { status: ageHours <= 24 ? 'Healthy' : 'Stale', cursor, ageHours, unmatchedSales: unmatchedSales.length, malformedSales };
   }
 }
@@ -183,7 +181,13 @@ function actualSpendToDate(spends: SpendRecord[], asOf: string): number {
     .reduce((total, spend) => total + spend.amountCents, 0);
 }
 
-function actuals(summaries: readonly SummaryDailyDocument[], sales: SalesProjection[], month: string, asOf: string): FunnelActuals {
+function actuals(
+  summaries: readonly SummaryDailyDocument[],
+  sales: SalesProjection[],
+  month: string,
+  asOf: string,
+  salesSyncCompleted: boolean,
+): FunnelActuals {
   const applicableSummaries = summaries.filter((summary) => summary.date.startsWith(month) && summary.date <= asOf && summary.normalized_metrics !== undefined);
   const applicableSales = sales.filter((sale) => {
     const bookedOn = phnomPenhBusinessDate(sale.bookingDate);
@@ -195,7 +199,14 @@ function actuals(summaries: readonly SummaryDailyDocument[], sales: SalesProject
     visits: total.visits + summary.normalized_metrics!.completed_property_visits,
   }), { messages: 0, phoneLeads: 0, visits: 0 });
   if (applicableSales.length === 0) {
-    return { messages: metrics?.messages ?? null, phoneLeads: metrics?.phoneLeads ?? null, visits: metrics?.visits ?? null, grossBookings: null, cancellations: null, netBookings: null };
+    return {
+      messages: metrics?.messages ?? null,
+      phoneLeads: metrics?.phoneLeads ?? null,
+      visits: metrics?.visits ?? null,
+      grossBookings: salesSyncCompleted ? 0 : null,
+      cancellations: salesSyncCompleted ? 0 : null,
+      netBookings: salesSyncCompleted ? 0 : null,
+    };
   }
   const grossBookings = applicableSales.length;
   const cancellations = applicableSales.filter((sale) => {
@@ -224,9 +235,10 @@ function buildStages(
       variance: actualValue === null ? null : actualValue - expected[key],
       costPerResultCents: cost,
       targetCostPerResultCents: targets[key],
-      status: key === 'cancellations'
+      outcomeStatus: key === 'cancellations'
         ? classifyCancellationRate(actual.cancellations === null || actual.grossBookings === null ? null : rate(actual.cancellations, actual.grossBookings), cancellationTarget)
-        : cost === null ? 'Pending' : classifyOutcome(actualValue, expected[key]),
+        : classifyOutcome(actualValue, expected[key]),
+      costStatus: classifyCostPerResult(cost, targets[key]),
     };
   };
   return { messages: stage('messages'), phoneLeads: stage('phoneLeads'), visits: stage('visits'), grossBookings: stage('grossBookings'), cancellations: stage('cancellations'), netBookings: stage('netBookings') };
@@ -263,12 +275,7 @@ function daysInMonth(month: string): number {
 }
 
 /** Converts a source instant to the only calendar used by Lead Control reporting. */
-export function phnomPenhBusinessDate(value: Date | null): string | null {
-  if (!(value instanceof Date) || Number.isNaN(value.getTime())) return null;
-  const parts = phnomPenhDateFormatter.formatToParts(value);
-  const part = (type: Intl.DateTimeFormatPartTypes): string => parts.find((candidate) => candidate.type === type)?.value ?? '';
-  return `${part('year')}-${part('month')}-${part('day')}`;
-}
+export { phnomPenhBusinessDate } from './business-time';
 
 function selectedCancellationDate(sale: SalesProjection, view: CancellationView): string | null {
   return phnomPenhBusinessDate(view === 'cohort' ? sale.bookingDate : sale.cancelledDate);

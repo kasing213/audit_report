@@ -84,6 +84,21 @@ test('browser setup creates a reviewed forecast with cents and percentage conver
     await page.click('[data-open="c1"]');
     await page.waitForSelector('#stage-ledger tr');
     assert.match(await page.$eval('#summary', el => el.textContent || ''), /provisional/i);
+    assert.match(await page.$eval('#stage-ledger', el => el.parentElement?.parentElement?.textContent || ''), /Outcome.*Cost/s);
+    assert.match(await page.$eval('#lead-main', el => getComputedStyle(el).fontFamily), /Noto Sans Khmer/);
+    assert.match(await page.$eval('#campaign-title', el => el.textContent || ''), /ផ្ទះ/);
+    await page.emulateMediaFeatures([{ name: 'prefers-reduced-motion', value: 'reduce' }]);
+    assert.equal(await page.$eval('#refresh-summary', el => getComputedStyle(el).transitionDuration), '0s');
+    fixture.repository.campaigns[0].status = 'archived';
+    await page.click('[data-open="c1"]');
+    await page.waitForFunction(() => document.querySelector('#campaign-state')?.textContent?.includes('archived'));
+    assert.equal(await page.$eval('#edit-campaign', el => (el as HTMLElement).hidden), true);
+    assert.equal(await page.$eval('#activate-campaign', el => (el as HTMLElement).hidden), true);
+    assert.equal(await page.$eval('#spend-form', el => (el as HTMLElement).hidden), true);
+    assert.equal(await page.$('[data-attribute="sale-unmatched"]'), null);
+    fixture.repository.campaigns[0].status = 'active';
+    await page.click('[data-open="c1"]');
+    await page.waitForFunction(() => document.querySelector('#campaign-state')?.textContent?.includes('active'));
     await page.select('#cancellation-view', 'event');
     await page.waitForFunction(() => document.querySelector('#cancellations')?.textContent?.includes('sale-event'));
     await page.click('[data-attribute="sale-unmatched"]');
@@ -108,9 +123,13 @@ test('browser setup creates a reviewed forecast with cents and percentage conver
     await page.click('#wizard-next');
     await page.evaluate(() => {
       const originalFetch = window.fetch.bind(window);
+      (window as any).__leadControlMutationUrls = [];
       window.fetch = async (input, init) => {
         const url = typeof input === 'string' ? input : input.toString();
         const body = typeof init?.body === 'string' ? JSON.parse(init.body) : null;
+        if (init?.method && init.method !== 'GET' && url.startsWith('/lead-control/') && !url.includes('/calculator/')) {
+          (window as any).__leadControlMutationUrls.push(url);
+        }
         const response = await originalFetch(input, init);
         if (url.endsWith('/calculator/budget-to-results') && body?.budgetCents === 100000) await new Promise(resolve => window.setTimeout(resolve, 250));
         return response;
@@ -134,6 +153,8 @@ test('browser setup creates a reviewed forecast with cents and percentage conver
     assert.equal(createdForecast?.monthlyBudgetCents, 150000);
     assert.equal(createdForecast?.messageToPhoneRate, 0.3);
     assert.equal(createdForecast?.status, 'approved');
+    const guidedMutationUrls = await page.evaluate(() => (window as any).__leadControlMutationUrls || []);
+    assert.deepEqual(guidedMutationUrls, ['/lead-control/workflows/campaign-forecast']);
     assert.deepEqual({
       propertyProject: createdCampaign.propertyProject,
       objective: createdCampaign.objective,

@@ -66,6 +66,23 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
   });
   router.use('/assets', express.static(path.join(__dirname, '..', 'reports', 'templates', 'lead-control-assets')));
 
+  router.post('/workflows/campaign-forecast', async (req, res) => {
+    try {
+      const body = objectBody(req.body);
+      const result = await service().saveCampaignForecastWorkflow({
+        ...(body.campaignId === undefined ? {} : { campaignId: stringValue(body.campaignId, 'campaignId') }),
+        ...(body.forecastId === undefined ? {} : { forecastId: stringValue(body.forecastId, 'forecastId') }),
+        campaign: campaignInput(body.campaign),
+        forecast: forecastInput(body.forecast),
+        approve: booleanValue(body.approve, 'approve'),
+        activate: booleanValue(body.activate, 'activate'),
+      }, actor(res));
+      res.status(body.campaignId === undefined ? 201 : 200).json(result);
+    } catch (error) {
+      respondError(error, res, 'lead control guided campaign forecast failed');
+    }
+  });
+
   router.get('/campaigns', async (req, res) => {
     try {
       const pageId = queryString(req, 'pageId');
@@ -164,6 +181,15 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
     }
   });
 
+  router.delete('/forecasts/:id', async (req, res) => {
+    try {
+      await service().deleteForecastDraft(req.params.id, actor(res));
+      res.status(204).end();
+    } catch (error) {
+      respondError(error, res, 'lead control forecast draft delete failed');
+    }
+  });
+
   router.post('/spend/mode-switch', async (req, res) => {
     try {
       const body = objectBody(req.body);
@@ -210,9 +236,9 @@ export function createLeadControlRouter(dependencies: LeadControlRouteDependenci
     }
   });
 
-  router.get('/sync/health', async (req, res) => {
+  router.get('/sync/health', async (_req, res) => {
     try {
-      res.json({ health: await summaryService().syncHealth(queryString(req, 'asOf')) });
+      res.json({ health: await summaryService().syncHealth() });
     } catch (error) {
       respondError(error, res, 'lead control sync health failed');
     }
@@ -316,6 +342,11 @@ function numberValue(value: unknown, name: string): number {
   return value;
 }
 
+function booleanValue(value: unknown, name: string): boolean {
+  if (typeof value !== 'boolean') throw new RangeError(`${name} must be a boolean`);
+  return value;
+}
+
 function campaignInput(value: unknown): CampaignInput {
   const body = objectBody(value);
   return {
@@ -400,6 +431,7 @@ const CONFLICT_MESSAGES = new Set([
   'archived campaigns cannot be edited',
   'only draft campaigns can be deleted',
   'campaign has protected history and must be archived',
+  'campaign has forecast revisions; delete drafts first',
   'baseline already exists; create a revision',
   'approved forecasts are immutable',
   'forecast month cannot be changed',
@@ -410,6 +442,11 @@ const CONFLICT_MESSAGES = new Set([
   'an active spend record already exists for this campaign-month date',
   'spend campaign, month, and mode cannot be changed',
   'confirm spend mode switch before replacing records',
+  'archived campaigns cannot be mutated',
+  'archived spend records cannot be updated',
+  'archived spend records cannot be deleted',
+  'forecast revision does not belong to campaign',
+  'baseline already exists; forecastId is required',
 ]);
 
 const READ_ONLY_ERROR = 'Lead Control is in read-only comparison mode';

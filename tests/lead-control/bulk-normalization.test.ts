@@ -7,6 +7,7 @@ import { createDataEntryRouter } from '../../src/api/data-entry-routes';
 import { Campaign } from '../../src/lead-control/models';
 import { resolveActiveCampaignForPageAndDate } from '../../src/lead-control/service';
 import { LeadControlRepository, pageIdCompatibilityPattern } from '../../src/lead-control/repository';
+import puppeteer from 'puppeteer';
 
 test('bulk parser keeps raw report counters while proposing separate normalized funnel metrics', () => {
   const rawReport = [
@@ -106,6 +107,7 @@ test('bulk confirmation saves edited normalized metrics alongside untouched raw 
   const saved: any[] = [];
   const app = express();
   app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
     repository: {
       saveLeadEvents: async () => [],
       saveDailySummary: async (summary: unknown) => { saved.push(summary); return 'summary-1'; },
@@ -142,6 +144,7 @@ test('bulk confirmation saves unassigned normalized metrics when no campaign mat
   const saved: any[] = [];
   const app = express();
   app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
     repository: {
       saveLeadEvents: async () => [],
       saveDailySummary: async (summary: unknown) => { saved.push(summary); return 'summary-2'; },
@@ -166,6 +169,7 @@ test('bulk confirmation freezes the active campaign onto each lead event for lat
   const savedEvents: any[] = [];
   const app = express();
   app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
     repository: {
       saveLeadEvents: async (events: unknown[]) => { savedEvents.push(...events); return ['lead-1']; },
       saveDailySummary: async () => 'unexpected',
@@ -190,6 +194,7 @@ test('bulk confirmation rejects ambiguous active campaign resolution before pers
   let saves = 0;
   const app = express();
   app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
     repository: {
       saveLeadEvents: async () => [],
       saveDailySummary: async () => { saves++; return 'unexpected'; },
@@ -216,6 +221,7 @@ test('bulk confirmation rejects invalid normalized metrics as validation errors'
   let saves = 0;
   const app = express();
   app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
     repository: {
       saveLeadEvents: async () => [],
       saveDailySummary: async () => { saves++; return 'unexpected'; },
@@ -237,4 +243,158 @@ test('bulk confirmation rejects invalid normalized metrics as validation errors'
   assert.equal(response.status, 400);
   assert.match(response.body.error, /normalized_metrics\.messages/);
   assert.equal(saves, 0);
+});
+
+// Production mutation caught: read-only bulk entry creates normalized Lead Control state.
+test('read-only bulk confirmation preserves raw Audit Sales records without resolving or writing Lead Control fields', async () => {
+  const savedEvents: any[] = [];
+  const savedSummaries: any[] = [];
+  let resolutions = 0;
+  const app = express();
+  app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: false,
+    repository: {
+      saveLeadEvents: async (events: unknown[]) => { savedEvents.push(...events); return ['lead-read-only']; },
+      saveDailySummary: async (summary: unknown) => { savedSummaries.push(summary); return 'summary-read-only'; },
+      saveChangeLog: async () => undefined,
+      logAudit: async () => undefined,
+    },
+    resolveCampaign: async () => { resolutions++; return activeCampaign; },
+  }));
+
+  const response = await request(app, {
+    header: { date: '2026-09-17', follower: 'Sok', page: 'Page River Homes' },
+    drafts: [{ customer_phone: '012 345 678', customer_name: 'Sok', slot: '1' }],
+    summary: summaryPayload(),
+  });
+
+  assert.equal(response.status, 200);
+  assert.equal(resolutions, 0);
+  assert.equal(savedEvents[0].normalized_phone, undefined);
+  assert.equal(savedEvents[0].campaign_id, undefined);
+  assert.deepEqual(savedSummaries[0].counters, summaryPayload().counters);
+  assert.equal(savedSummaries[0].raw_text, summaryPayload().raw_text);
+  assert.equal(savedSummaries[0].normalized_metrics, undefined);
+  assert.equal(savedSummaries[0].campaign_id, undefined);
+});
+
+// Production mutation caught: every lead inherits the summary page/date campaign.
+test('bulk confirmation resolves each lead by its effective page and date and resolves the summary separately', async () => {
+  const savedEvents: any[] = [];
+  const savedSummaries: any[] = [];
+  const resolutions: string[] = [];
+  const app = express();
+  app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
+    repository: {
+      saveLeadEvents: async (events: unknown[]) => { savedEvents.push(...events); return ['lead-a', 'lead-b']; },
+      saveDailySummary: async (summary: unknown) => { savedSummaries.push(summary); return 'summary-own'; },
+      saveChangeLog: async () => undefined,
+      logAudit: async () => undefined,
+    },
+    resolveCampaign: async (page, date) => {
+      resolutions.push(`${page}:${date}`);
+      return { ...activeCampaign, id: `campaign-${String(page).replaceAll(' ', '-').toLowerCase()}-${date}` };
+    },
+  }));
+
+  const response = await request(app, {
+    header: { date: '2026-09-17', follower: 'Sok', page: 'Summary Page' },
+    drafts: [
+      { customer_phone: '012 345 678', page: 'First Page', date: '2026-09-16', slot: '1' },
+      { customer_phone: '098 765 432', page: 'Second Page', date: '2026-09-18', slot: '2' },
+    ],
+    summary: summaryPayload(),
+  });
+
+  assert.equal(response.status, 200);
+  assert.deepEqual(resolutions, [
+    'First Page:2026-09-16',
+    'Second Page:2026-09-18',
+    'Summary Page:2026-09-17',
+  ]);
+  assert.equal(savedEvents[0].campaign_id, 'campaign-first-page-2026-09-16');
+  assert.equal(savedEvents[1].campaign_id, 'campaign-second-page-2026-09-18');
+  assert.equal(savedSummaries[0].campaign_id, 'campaign-summary-page-2026-09-17');
+});
+
+// Production mutation caught: an ambiguity discovered for a later item leaves earlier writes behind.
+test('bulk confirmation validates every campaign resolution before persisting any record', async () => {
+  let saves = 0;
+  const app = express();
+  app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
+    repository: {
+      saveLeadEvents: async () => { saves++; return ['unexpected']; },
+      saveDailySummary: async () => { saves++; return 'unexpected'; },
+      saveChangeLog: async () => undefined,
+      logAudit: async () => undefined,
+    },
+    resolveCampaign: async (page) => {
+      if (page === 'Ambiguous Page') throw new Error('ambiguous active campaigns for page and business date');
+      return activeCampaign;
+    },
+  }));
+
+  const response = await request(app, {
+    header: { date: '2026-09-17', follower: 'Sok', page: 'Summary Page' },
+    drafts: [
+      { customer_phone: '012 345 678', page: 'Good Page', date: '2026-09-17', slot: '1' },
+      { customer_phone: '098 765 432', page: 'Ambiguous Page', date: '2026-09-17', slot: '2' },
+    ],
+    summary: summaryPayload(),
+  });
+
+  assert.equal(response.status, 409);
+  assert.equal(saves, 0);
+});
+
+// Production mutation caught: invalid normalized metrics are silently replaced with zero before confirmation.
+test('bulk-entry browser reports invalid normalized metrics without sending a confirmation request', async () => {
+  const app = express();
+  app.use('/data-entry', createDataEntryRouter({
+    leadControlWritesEnabled: true,
+    repository: {
+      saveLeadEvents: async () => [],
+      saveDailySummary: async () => 'unexpected',
+      saveChangeLog: async () => undefined,
+      logAudit: async () => undefined,
+    },
+    resolveCampaign: async () => activeCampaign,
+  }));
+  const server = http.createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  if (!address || typeof address === 'string') throw new Error('test server address unavailable');
+  const browser = await puppeteer.launch({ headless: 'new', executablePath: process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe', args: ['--no-sandbox'] });
+  const page = await browser.newPage();
+  try {
+    await page.goto(`http://127.0.0.1:${address.port}/data-entry/bulk`);
+    await page.evaluate(() => {
+      (document.querySelector('#bulk-text') as HTMLTextAreaElement).value = [
+        'Date 17/09/26', 'Page River Homes', 'Messages = 14', 'Valid phone leads = 4',
+        'Completed property visits = 2', 'Tel1 = 012 345 678',
+      ].join('\n');
+    });
+    await page.evaluate(() => (window as any).doPreview());
+    await page.waitForSelector('.normalized-metric');
+    await page.evaluate(() => {
+      (window as any).__confirmRequests = 0;
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        if (String(input).includes('/data-entry/api/bulk/confirm')) (window as any).__confirmRequests++;
+        return originalFetch(input, init);
+      };
+    });
+
+    for (const invalid of ['-1', '1.5', '']) {
+      await page.$eval('.normalized-metric[data-metric="messages"]', (element, value) => { (element as HTMLInputElement).value = value; }, invalid);
+      await page.evaluate(() => (window as any).doConfirm());
+      assert.match(await page.$eval('#toast', (element) => element.textContent || ''), /non-negative whole number/i);
+    }
+    assert.equal(await page.evaluate(() => (window as any).__confirmRequests), 0);
+  } finally {
+    await browser.close();
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
 });

@@ -26,6 +26,7 @@ class MemorySalesRepository implements SalesProjectionRepository {
   async recordMalformedSale(saleId: string | null, reason: string): Promise<void> { this.malformed.push({ saleId, reason }); }
   async findMostRecentLeadBefore(_phone: string, _bookingDate: Date): Promise<LeadForSaleAttribution | null> { return null; }
   async appendSalesAudit(_action: string, _actor: string, _saleId: string): Promise<void> {}
+  async getCampaign(_id: string): Promise<null> { return null; }
   async runSalesAtomic<T>(_keys: readonly string[], operation: (repository: SalesProjectionRepository) => Promise<T>): Promise<T> { return operation(this); }
 }
 

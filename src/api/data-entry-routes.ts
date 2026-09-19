@@ -14,6 +14,7 @@ import { normalizeSalesPhone } from '../lead-control/payment-sales-source';
 import { resolveActiveCampaignForPageAndDate } from '../lead-control/service';
 
 export interface DataEntryRouteDependencies {
+  leadControlWritesEnabled?: boolean;
   repository?: Partial<SalesCaseRepository>;
   resolveCampaign?: (page: string | null, businessDate: string) => Promise<Campaign | null>;
 }
@@ -59,6 +60,7 @@ function isAmbiguousCampaignResolution(error: unknown): boolean {
  */
 export function createDataEntryRouter(dependencies: DataEntryRouteDependencies = {}): Router {
 const router = express.Router();
+const leadControlWritesEnabled = dependencies.leadControlWritesEnabled === true;
 const getRepository = (): SalesCaseRepository => (dependencies.repository ?? new SalesCaseRepository()) as SalesCaseRepository;
 const resolveCampaign = dependencies.resolveCampaign ?? ((page: string | null, businessDate: string) =>
   resolveActiveCampaignForPageAndDate(new MongoLeadControlRepository(), page, businessDate));
@@ -378,14 +380,10 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
 
     const rawCounters = summary?.counters && typeof summary.counters === 'object' ? summary.counters : null;
     const hasRawCounters = rawCounters !== null && Object.keys(rawCounters).length > 0;
-    const hasNormalizedMetrics = summary?.normalized_metrics !== undefined;
-    const reviewedMetrics = hasNormalizedMetrics ? normalizedMetrics(summary.normalized_metrics) : undefined;
-    const resolvedCampaign = (reviewedMetrics || drafts.length > 0)
-      ? await resolveCampaign(typeof header.page === 'string' ? header.page : null, header.date)
-      : null;
-
-    const repository = getRepository();
-    const events: LeadEventDocument[] = [];
+    const reviewedMetrics = leadControlWritesEnabled && summary?.normalized_metrics !== undefined
+      ? normalizedMetrics(summary.normalized_metrics)
+      : undefined;
+    const pendingEvents: Array<{ draft: any; eventDate: string; page: string | null; campaign: Campaign | null }> = [];
     const ts = Date.now();
     let skipped = 0;
 
@@ -393,6 +391,18 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
       const phone = (d?.customer_phone || '').trim();
       if (!phone) { skipped++; continue; }
       const eventDate = (d?.date && isValidDate(d.date)) ? d.date : header.date;
+      const page = typeof d?.page === 'string' ? d.page : (typeof header.page === 'string' ? header.page : null);
+      const campaign = leadControlWritesEnabled ? await resolveCampaign(page, eventDate) : null;
+      pendingEvents.push({ draft: d, eventDate, page, campaign });
+    }
+    const summaryCampaign = leadControlWritesEnabled && reviewedMetrics
+      ? await resolveCampaign(typeof header.page === 'string' ? header.page : null, header.date)
+      : null;
+
+    const repository = getRepository();
+    const events: LeadEventDocument[] = [];
+    for (const { draft: d, eventDate, page, campaign } of pendingEvents) {
+      const phone = d.customer_phone.trim();
       const reasonCode = d?.reason_code && isReasonCode(d.reason_code) ? d.reason_code : null;
       const slot = String(d?.slot || `slot-${events.length + 1}`).slice(0, 40);
 
@@ -402,9 +412,9 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
           name: d?.customer_name || null,
           phone
         },
-        normalized_phone: normalizeSalesPhone(phone),
-        page: d?.page || header.page || null,
-        campaign_id: resolvedCampaign?.id ?? null,
+        ...(leadControlWritesEnabled ? { normalized_phone: normalizeSalesPhone(phone) } : {}),
+        page,
+        ...(leadControlWritesEnabled ? { campaign_id: campaign?.id ?? null } : {}),
         destination: null,
         follower: d?.follower || header.follower || null,
         status_text: null,
@@ -433,7 +443,7 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
         raw_text: typeof summary.raw_text === 'string' ? summary.raw_text.slice(0, 20000) : '',
         ...(reviewedMetrics ? {
           normalized_metrics: reviewedMetrics,
-          campaign_id: resolvedCampaign?.id ?? null,
+          campaign_id: summaryCampaign?.id ?? null,
         } : {}),
         source: { model: 'bulk-paste' },
         created_at: new Date()

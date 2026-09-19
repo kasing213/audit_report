@@ -81,12 +81,12 @@ git diff --check
 
 Expected:
 
-- All tests pass; the current branch baseline is `127` tests.
+- All tests pass; the current branch baseline is `144` tests.
 - Both typechecks and the build pass.
 - Index verification reports all `20` required indexes present against the target Audit Sales database.
 - The worktree has no unexpected changes.
 
-Stop if index verification fails. Do not continue with writes on a database missing a unique or partial index.
+Stop if index verification fails. It compares names, ordered keys, `unique`, `sparse`, and partial filters; a same-named unsafe definition also fails. Do not enable writes until the reported definitions are repaired and the command passes.
 
 ### LC-03: Verify safe defaults
 
@@ -126,7 +126,9 @@ While `LEAD_CONTROL_WRITES_ENABLED=false`:
 3. Call both calculator `POST` routes and confirm they remain available.
 4. Attempt at least one request from every persistence family: campaign create/update/archive/delete, forecast create/update/approve/revise/delete, spend create/update/mode-switch/delete, and manual attribution.
 
-Expected: every persistence request returns the stable `403` read-only response before any database mutation. Calculators and reads still work.
+5. Submit a normal raw Audit Sales bulk confirmation containing normalized metrics.
+
+Expected: every Lead Control persistence request returns the stable `403` read-only response before any database mutation. Calculators and reads still work. Raw bulk events/summaries still save, but campaign resolution is not called and no Lead Control normalized metrics, normalized phone, campaign ID, or attribution fields are created.
 
 ### LC-06: Forward and reverse calculator controls
 
@@ -173,7 +175,7 @@ LEAD_CONTROL_SYNC_ENABLED=false
 4. Verify the live preview before approval.
 5. Save and approve.
 
-Expected: the campaign becomes active, the baseline is revision `1`, the funnel matches LC-06, and campaign/forecast approval audit events contain the authenticated actor and time.
+Expected: the browser sends one `POST /lead-control/workflows/campaign-forecast`; the campaign becomes active, the baseline is revision `1`, the funnel matches LC-06, and campaign/forecast approval audit events contain the authenticated actor and time. Injected failure at campaign, forecast, approval, audit, or activation leaves no partial state.
 
 ### LC-09: Validation and overlapping ranges
 
@@ -199,7 +201,7 @@ Expected: revision `2` is created; revision `1` remains unchanged and readable; 
 2. Try to delete the approved September campaign.
 3. Archive the September campaign.
 
-Expected: the empty draft can be hard-deleted; the protected campaign cannot; archive succeeds and preserves forecast/audit history.
+Expected: an empty draft with zero revisions can be hard-deleted. A draft with a forecast revision must first delete the eligible draft through `DELETE /lead-control/forecasts/:id`. Protected campaigns cannot be hard-deleted; archive succeeds and preserves forecast/audit history. Archived campaigns show no mutation controls and reject every forecast/spend mutation, including archived-spend updates.
 
 ## Phase 3 — spend, pacing, and actual funnel data
 
@@ -250,10 +252,11 @@ With `$45.00` actual spend and the LC-14 actuals:
 
 Expected:
 
-- Each outcome and each cost/result has its own status; there is no overall score.
+- Each outcome and each cost/result has its own separately labelled status; there is no overall score.
 - Actual at/above expected is `Good`; below is `Bad`.
 - Cost at/below forecast is `Good`; above is `Bad`.
-- Zero/missing denominators produce `Pending` cost, not infinity, zero, or a false grade.
+- A known zero actual against a positive expectation is a `Bad` outcome while its zero-denominator cost remains `Pending`.
+- No completed sync produces `Pending` booking actuals; a completed sync with zero bookings produces known zero booking actuals.
 
 ## Phase 4 — Payment Tracker synchronization and attribution
 
@@ -287,7 +290,7 @@ Expected: only case 1 connects. All others fail closed before sync. No source ro
 5. Simulate a source error, then restore the source.
 6. Shut down during/after a run.
 
-Expected: one run at a time; no duplicate overlapping import; errors are logged and later ticks recover; shutdown waits safely, stops cron, and disconnects; health moves from `Pending` to `Healthy`, and becomes `Stale` when the cursor exceeds 24 hours.
+Expected: one run at a time; no duplicate overlapping import; source reads are bounded to 500 rows with a 30-second query timeout and cursor checkpoint after each page; errors are logged and later ticks recover; shutdown waits safely, stops cron, and disconnects; health moves from `Pending` to `Healthy`, and becomes `Stale` when the cursor exceeds 24 hours from the current server instant (not summary `asOf`).
 
 ### LC-18: Automatic attribution and frozen history
 
@@ -298,7 +301,7 @@ Use sanitized phones and dates:
 3. Run/wait for sync.
 4. Edit the old lead or create a newer lead after the booking; sync the same sale again.
 
-Expected: the sale is attributed to the most recent qualifying pre-booking lead. The selected campaign/lead attribution is frozen and does not change on later syncs or lead edits.
+Expected: the sale is attributed to the most recent qualifying lead created before the booking instant, including an earlier lead on the same Phnom Penh date. Test `16:59:59Z` and `17:00:00Z`. The selected campaign/lead attribution is frozen and does not change on later syncs, lead edits, or a deterministic concurrent manual-attribution interleaving.
 
 ### LC-19: Idempotency, updates, and delayed cancellation
 
@@ -316,7 +319,7 @@ Expected: no duplicate projection; source facts update; frozen attribution remai
 4. Manually attribute it to the test campaign.
 5. Try to attribute it again.
 
-Expected: the first attribution writes only to Lead Control, records `sale.manually_attributed`, freezes the campaign, and removes the sale from unmatched. The second attempt is rejected. Payment Tracker remains unchanged.
+Expected: a missing campaign or campaign whose active dates do not cover the Phnom Penh booking date is rejected inside the same transaction. The first valid attribution writes only to Lead Control, records `sale.manually_attributed`, freezes the campaign, and removes the sale from unmatched. The second attempt is rejected. Payment Tracker remains unchanged.
 
 ### LC-21: Malformed source rows
 

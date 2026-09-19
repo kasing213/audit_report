@@ -1,7 +1,7 @@
 import express from 'express';
 import reportRoutes from '../reports/report-routes';
 import crmRoutes from './crm-routes';
-import dataEntryRoutes from './data-entry-routes';
+import { createDataEntryRouter, DataEntryRouteDependencies } from './data-entry-routes';
 import outreachRoutes from './outreach-routes';
 import brainRoutes from './brain-routes';
 import { loginRouter } from './login-routes';
@@ -12,6 +12,7 @@ import { Logger } from '../utils/logger';
 
 export interface ApiServerOptions {
   leadControlWritesEnabled?: boolean;
+  dataEntryRouteDependencies?: Omit<DataEntryRouteDependencies, 'leadControlWritesEnabled'>;
 }
 
 export class ApiServer {
@@ -85,7 +86,10 @@ export class ApiServer {
     this.app.use('/crm', authMiddleware, crmRoutes);
 
     // Data Entry dashboard (auth-protected)
-    this.app.use('/data-entry', authMiddleware, dataEntryRoutes);
+    this.app.use('/data-entry', authMiddleware, createDataEntryRouter({
+      ...this.options.dataEntryRouteDependencies,
+      leadControlWritesEnabled: this.options.leadControlWritesEnabled === true,
+    }));
 
     // Lead Control is a dashboard-only operational surface.
     this.app.use('/lead-control', authMiddleware, createLeadControlRouter({

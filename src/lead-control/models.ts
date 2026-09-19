@@ -62,6 +62,20 @@ export interface SpendRecord extends SpendInput {
   archivedBy: string | null;
 }
 
+export interface CampaignForecastWorkflowInput {
+  campaignId?: string;
+  forecastId?: string;
+  campaign: CampaignInput;
+  forecast: ForecastRevisionInput;
+  approve: boolean;
+  activate: boolean;
+}
+
+export interface CampaignForecastWorkflowResult {
+  campaign: Campaign;
+  forecast: ForecastRevision;
+}
+
 export type LeadControlAuditAction =
   | 'campaign.created'
   | 'campaign.updated'

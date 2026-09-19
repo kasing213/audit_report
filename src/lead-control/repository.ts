@@ -23,6 +23,7 @@ import {
   SalesSyncCursor,
 } from './sync-service';
 import { SummaryDataRepository } from './summary-service';
+import { phnomPenhBusinessDate } from './business-time';
 
 export interface LeadControlRepository {
   createCampaign(campaign: Omit<Campaign, 'id'>): Promise<Campaign>;
@@ -358,11 +359,16 @@ export class MongoLeadControlRepository implements LeadControlRepository, SalesP
 
 /** Exact indexed lookup for the newest attributable local lead before a booking date. */
 export function saleAttributionLeadFilter(phone: string, bookingDate: Date): Record<string, unknown> {
+  const businessDate = phnomPenhBusinessDate(bookingDate);
+  if (!businessDate) throw new RangeError('bookingDate must be valid');
   return {
     normalized_phone: phone,
     campaign_id: { $type: 'string' },
     deleted: { $ne: true },
-    date: { $lt: bookingDate.toISOString().slice(0, 10) },
+    $or: [
+      { date: { $lt: businessDate } },
+      { date: businessDate, created_at: { $lt: bookingDate } },
+    ],
   };
 }
 

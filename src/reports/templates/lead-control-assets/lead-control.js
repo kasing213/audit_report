@@ -73,10 +73,13 @@
       state.revisions = revisionsResult.revisions || [];
       state.spends = spendsResult.spends || [];
       if (writesEnabled) {
+        const archived = campaign.status === 'archived';
         $('#spend-mode').value = campaign.spendMode || 'daily';
         $('#spend-date-label').hidden = $('#spend-mode').value === 'monthly';
         $('#switch-confirm-label').hidden = true;
         $('#switch-confirm').checked = false;
+        $('#edit-campaign').hidden = archived;
+        $('#spend-form').hidden = archived;
       }
       $('#detail').hidden = false;
       $('#campaign-title').textContent = campaign.name;
@@ -119,9 +122,9 @@
         ${summary.provisional ? '<p class="lc-provisional">Open-month net bookings are provisional until later cancellations are known.</p>' : ''}
       </div>
       <ol class="lc-rail">${rail.map(([label, value]) => `<li><small>${label}</small><strong>${value}</strong></li>`).join('')}</ol>
-      <div class="lc-scroll" tabindex="0" aria-label="Campaign funnel ledger"><table><caption>Forecast, spend-adjusted expectation, and actual</caption><thead><tr><th>Stage</th><th>Full forecast</th><th>Expected to date</th><th>Actual</th><th>Variance</th><th>Actual cost</th><th>Status</th></tr></thead><tbody id="stage-ledger">${rows.map(([key, label]) => {
+      <div class="lc-scroll" tabindex="0" aria-label="Campaign funnel ledger"><table><caption>Forecast, spend-adjusted expectation, and actual</caption><thead><tr><th>Stage</th><th>Full forecast</th><th>Expected to date</th><th>Actual</th><th>Variance</th><th>Actual cost</th><th>Outcome</th><th>Cost</th></tr></thead><tbody id="stage-ledger">${rows.map(([key, label]) => {
         const item = summary.stages[key];
-        return `<tr><td>${label}</td><td>${number(item.forecast)}</td><td>${number(item.expected)}</td><td>${number(item.actual)}</td><td>${number(item.variance)}</td><td>${money(item.costPerResultCents)}</td><td class="lc-status-${item.status}">${item.status}</td></tr>`;
+        return `<tr><td>${label}</td><td>${number(item.forecast)}</td><td>${number(item.expected)}</td><td>${number(item.actual)}</td><td>${number(item.variance)}</td><td>${money(item.costPerResultCents)}</td><td class="lc-status-${item.outcomeStatus}">${item.outcomeStatus}</td><td class="lc-status-${item.costStatus}">${item.costStatus}</td></tr>`;
       }).join('')}</tbody></table></div>`;
     $('#revision-context').textContent = summary.revisions.baseline && summary.revisions.latest
       ? `Baseline v${summary.revisions.baseline.revisionNumber}; latest approved v${summary.revisions.latest.revisionNumber}.`
@@ -150,13 +153,14 @@
   async function loadUnmatched() {
     try {
       const { sales } = await api('/lead-control/reconciliation/unmatched');
-      $('#unmatched').innerHTML = sales.length ? sales.map((sale) => `<div class="lc-reconcile"><span><strong>${escapeHtml(sale.saleId)}</strong><small>${escapeHtml(sale.normalizedPhone)} · ${escapeHtml(new Date(sale.bookingDate).toLocaleDateString())}</small></span>${writesEnabled ? `<button data-attribute="${escapeHtml(sale.saleId)}" ${state.campaign ? '' : 'disabled'}>Assign to this campaign</button>` : ''}</div>`).join('') : '<p>No unmatched bookings.</p>';
+      const canAttribute = writesEnabled && state.campaign && state.campaign.status !== 'archived';
+      $('#unmatched').innerHTML = sales.length ? sales.map((sale) => `<div class="lc-reconcile"><span><strong>${escapeHtml(sale.saleId)}</strong><small>${escapeHtml(sale.normalizedPhone)} · ${escapeHtml(new Date(sale.bookingDate).toLocaleDateString())}</small></span>${canAttribute ? `<button data-attribute="${escapeHtml(sale.saleId)}">Assign to this campaign</button>` : ''}</div>`).join('') : '<p>No unmatched bookings.</p>';
     } catch (error) { $('#unmatched').textContent = error.message; }
   }
 
   async function loadHealth() {
     try {
-      const { health } = await api(`/lead-control/sync/health?asOf=${encodeURIComponent(summaryAsOf(selectedMonth()))}`);
+      const { health } = await api('/lead-control/sync/health');
       $('#sync-health').textContent = `${health.status} · ${health.unmatchedSales} unmatched · ${health.malformedSales} malformed${health.ageHours == null ? '' : ` · updated ${number(health.ageHours)}h ago`}`;
     } catch (error) { $('#sync-health').textContent = error.message; }
   }
@@ -255,22 +259,20 @@
         propertyProject: $('#property-project').value.trim(), objective: $('#campaign-objective').value.trim(), audience: $('#campaign-audience').value.trim(),
         startsOn: $('#starts-on').value, endsOn: $('#ends-on').value || null, spendMode: $('#setup-spend-mode').value,
       };
-      const campaignResult = state.editing
-        ? await api(`/lead-control/campaigns/${encodeURIComponent(state.campaign.id)}`, { method: 'PUT', body: JSON.stringify(campaignBody) })
-        : await api('/lead-control/campaigns', { method: 'POST', body: JSON.stringify(campaignBody) });
-      const campaign = campaignResult.campaign;
       const input = forecastInput();
       const latest = state.editing ? [...state.revisions].sort((a, b) => b.revisionNumber - a.revisionNumber)[0] : null;
-      let forecastResult;
-      if (latest?.status === 'approved') forecastResult = await api(`/lead-control/forecasts/${encodeURIComponent(latest.id)}/revisions`, { method: 'POST', body: JSON.stringify(input) });
-      else if (latest) forecastResult = await api(`/lead-control/forecasts/${encodeURIComponent(latest.id)}`, { method: 'PUT', body: JSON.stringify(input) });
-      else forecastResult = await api(`/lead-control/campaigns/${encodeURIComponent(campaign.id)}/forecasts`, { method: 'POST', body: JSON.stringify(input) });
-      let savedForecast = forecastResult.forecast;
-      if (approve && savedForecast.status !== 'approved') {
-        const approved = await api(`/lead-control/forecasts/${encodeURIComponent(savedForecast.id)}/approve`, { method: 'POST' });
-        savedForecast = approved.forecast;
-      }
-      if (approve && campaign.status === 'draft') await api(`/lead-control/campaigns/${encodeURIComponent(campaign.id)}/activate`, { method: 'POST' });
+      const result = await api('/lead-control/workflows/campaign-forecast', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...(state.editing ? { campaignId: state.campaign.id } : {}),
+          ...(latest ? { forecastId: latest.id } : {}),
+          campaign: campaignBody,
+          forecast: input,
+          approve,
+          activate: approve && (!state.editing || state.campaign.status === 'draft'),
+        }),
+      });
+      const campaign = result.campaign;
       notice(approve ? 'Forecast approved. Baseline history is preserved.' : 'Forecast draft saved.');
       closeWizard();
       $('#page-filter').value = campaign.pageId;

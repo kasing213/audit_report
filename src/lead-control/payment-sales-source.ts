@@ -7,6 +7,7 @@ export const SALES_SOURCE_DB = 'ar_tracker';
 export const SALES_SOURCE_COLLECTION = 'sales';
 
 const CONNECT_TIMEOUT_MS = 10_000;
+const SOURCE_QUERY_TIMEOUT_MS = 30_000;
 const PHONE_E164 = /^\+855\d{8,9}$/;
 const ALLOWED_ACTIONS = ['find', 'listIndexes'];
 
@@ -106,7 +107,7 @@ export function normalizeSalesRecord(raw: RawSalesRecord): SalesNormalizationRes
 export interface SalesReadCollection {
   find(
     filter: Record<string, unknown>,
-    options: { projection: typeof SALES_PROJECTION; sort: { updated_at: 1; sale_id: 1 } },
+    options: { projection: typeof SALES_PROJECTION; sort: { updated_at: 1; sale_id: 1 }; limit: number; maxTimeMS: number },
   ): { toArray(): Promise<RawSalesRecord[]> };
 }
 
@@ -126,7 +127,8 @@ export const SALES_PROJECTION = {
 export class PaymentSalesSourceRepository implements SalesSyncSource {
   constructor(private readonly collection: SalesReadCollection) {}
 
-  async listSalesAfter(cursor: SalesSyncCursor | null): Promise<RawSalesRecord[]> {
+  async listSalesAfter(cursor: SalesSyncCursor | null, limit: number): Promise<RawSalesRecord[]> {
+    if (!Number.isInteger(limit) || limit <= 0) throw new RangeError('limit must be a positive integer');
     const filter: Record<string, unknown> = cursor === null
       ? { updated_at: { $exists: true } }
       : {
@@ -135,7 +137,12 @@ export class PaymentSalesSourceRepository implements SalesSyncSource {
           { updated_at: cursor.updatedAt, sale_id: { $gt: cursor.saleId } },
         ],
       };
-    return this.collection.find(filter, { projection: SALES_PROJECTION, sort: { updated_at: 1, sale_id: 1 } }).toArray();
+    return this.collection.find(filter, {
+      projection: SALES_PROJECTION,
+      sort: { updated_at: 1, sale_id: 1 },
+      limit,
+      maxTimeMS: SOURCE_QUERY_TIMEOUT_MS,
+    }).toArray();
   }
 }
 

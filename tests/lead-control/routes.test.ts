@@ -132,7 +132,25 @@ test('forecast routes draft, update, approve, and revise forecasts', async () =>
   assert.equal(approved.body.forecast.status, 'approved');
   const revised = await request(app, 'POST', `/lead-control/forecasts/${drafted.body.forecast.id}/revisions`, { ...forecast, monthlyBudgetCents: 140_000 });
   assert.equal(revised.body.forecast.revisionNumber, 2);
+  assert.equal((await request(app, 'DELETE', `/lead-control/forecasts/${revised.body.forecast.id}`)).status, 204);
   assert.equal(repository.events.at(-1)?.actor, 'developer');
+});
+
+test('guided campaign and forecast command returns the atomically activated approved final state', async () => {
+  const { app, repository } = fixture();
+
+  const response = await request(app, 'POST', '/lead-control/workflows/campaign-forecast', {
+    campaign,
+    forecast,
+    approve: true,
+    activate: true,
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.campaign.status, 'active');
+  assert.equal(response.body.forecast.status, 'approved');
+  assert.equal(repository.campaigns.length, 1);
+  assert.equal(repository.revisions.length, 1);
 });
 
 test('actual spend routes create, update, delete, and require confirmation before switching mode', async () => {
@@ -194,11 +212,11 @@ test('summary routes expose the injected monthly, cancellation, reconciliation, 
   app.use('/summary-test', createLeadControlRouter({ summaryService: new SummaryService(summaryRepository) }));
 
   const summary = await request(app, 'GET', '/summary-test/campaigns/summary-campaign/summary?month=2026-09&asOf=2026-09-20');
-  assert.equal(summary.status, 200);
+  assert.equal(summary.status, 200, JSON.stringify(summary.body));
   assert.equal(summary.body.summary.campaign.id, 'summary-campaign');
   assert.deepEqual((await request(app, 'GET', '/summary-test/campaigns/summary-campaign/cancellations?month=2026-09&view=cohort')).body.cancellations, []);
   assert.deepEqual((await request(app, 'GET', '/summary-test/reconciliation/unmatched')).body.sales, []);
-  assert.equal((await request(app, 'GET', '/summary-test/sync/health?asOf=2026-09-20')).body.health.status, 'Pending');
+  assert.equal((await request(app, 'GET', '/summary-test/sync/health')).body.health.status, 'Pending');
 });
 
 test('manual attribution is routed through the injected atomic sales service with the authenticated actor', async () => {
@@ -266,6 +284,43 @@ test('ApiServer passes the configured Lead Control write gate into the productio
   );
 });
 
+// Production mutation caught: ApiServer configures Lead Control read-only but leaves bulk normalization writable.
+test('ApiServer passes the default Lead Control write gate into the production bulk-entry router', async () => {
+  const managerCookie = `audit_session=${encodeURIComponent(createSessionCookie('manager'))}`;
+  const savedEvents: any[] = [];
+  const savedSummaries: any[] = [];
+  let resolutions = 0;
+  const app = new ApiServer(3001, {
+    leadControlWritesEnabled: false,
+    dataEntryRouteDependencies: {
+      repository: {
+        saveLeadEvents: async (events: unknown[]) => { savedEvents.push(...events); return ['raw-lead']; },
+        saveDailySummary: async (summary: unknown) => { savedSummaries.push(summary); return 'raw-summary'; },
+        saveChangeLog: async () => undefined,
+        logAudit: async () => undefined,
+      },
+      resolveCampaign: async () => { resolutions++; return null; },
+    },
+  } as any).getApp() as unknown as Express;
+
+  const response = await requestWithHeaders(app, 'POST', '/data-entry/api/bulk/confirm', {
+    header: { date: '2026-09-17', follower: 'Sok', page: 'Page River Homes' },
+    drafts: [{ customer_phone: '012 345 678', slot: '1' }],
+    summary: {
+      counters: { messages: 14 },
+      raw_text: 'Messages = 14',
+      normalized_metrics: { messages: 14, valid_phone_leads: 4, completed_property_visits: 2 },
+    },
+  }, { Cookie: managerCookie });
+
+  assert.equal(response.status, 200);
+  assert.equal(resolutions, 0);
+  assert.equal(savedEvents[0].normalized_phone, undefined);
+  assert.equal(savedEvents[0].campaign_id, undefined);
+  assert.equal(savedSummaries[0].normalized_metrics, undefined);
+  assert.equal(savedSummaries[0].campaign_id, undefined);
+});
+
 // Production mutation caught: any persistence route bypasses the default read-only gate or invokes its service.
 test('read-only gate blocks every Lead Control mutation family before service mutation', async () => {
   const repository = new InMemoryLeadControlRepository();
@@ -290,6 +345,8 @@ test('read-only gate blocks every Lead Control mutation family before service mu
     ['PUT', '/lead-control/forecasts/f1'],
     ['POST', '/lead-control/forecasts/f1/approve'],
     ['POST', '/lead-control/forecasts/f1/revisions'],
+    ['DELETE', '/lead-control/forecasts/f1'],
+    ['POST', '/lead-control/workflows/campaign-forecast'],
     ['POST', '/lead-control/spend/mode-switch'],
     ['POST', '/lead-control/spend'],
     ['PUT', '/lead-control/spend/s1'],

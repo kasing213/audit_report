@@ -2,9 +2,12 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import {
+  PaymentSalesSourceRepository,
   RawSalesRecord,
+  SalesReadCollection,
   validateSalesSourcePrivileges,
 } from '../../src/lead-control/payment-sales-source';
+import { Campaign } from '../../src/lead-control/models';
 import { DAILY_SUMMARY_INDEXES, saleAttributionLeadFilter, SALES_PROJECTION_INDEXES } from '../../src/lead-control/repository';
 import {
   LeadForSaleAttribution,
@@ -17,13 +20,15 @@ import {
 
 class InMemorySalesRepository implements SalesProjectionRepository {
   cursor: SalesSyncCursor | null = null;
+  readonly cursorHistory: SalesSyncCursor[] = [];
   readonly sales = new Map<string, SalesProjection>();
   readonly malformed: Array<{ saleId: string | null; reason: string }> = [];
   readonly audits: Array<{ action: string; actor: string; saleId: string }> = [];
+  readonly campaigns = new Map<string, Campaign>();
   leads: LeadForSaleAttribution[] = [];
 
   async getSalesSyncCursor(): Promise<SalesSyncCursor | null> { return this.cursor; }
-  async saveSalesSyncCursor(cursor: SalesSyncCursor): Promise<void> { this.cursor = cursor; }
+  async saveSalesSyncCursor(cursor: SalesSyncCursor): Promise<void> { this.cursor = cursor; this.cursorHistory.push(cursor); }
   async getSaleProjection(saleId: string): Promise<SalesProjection | null> { return this.sales.get(saleId) ?? null; }
   async saveSaleProjection(sale: SalesProjection): Promise<void> { this.sales.set(sale.saleId, sale); }
   async recordMalformedSale(saleId: string | null, reason: string): Promise<void> { this.malformed.push({ saleId, reason }); }
@@ -33,19 +38,24 @@ class InMemorySalesRepository implements SalesProjectionRepository {
       .sort((left, right) => right.occurredAt.getTime() - left.occurredAt.getTime())[0] ?? null;
   }
   async appendSalesAudit(action: string, actor: string, saleId: string): Promise<void> { this.audits.push({ action, actor, saleId }); }
+  async getCampaign(id: string): Promise<Campaign | null> { return this.campaigns.get(id) ?? null; }
   async runSalesAtomic<T>(_keys: readonly string[], operation: (repository: SalesProjectionRepository) => Promise<T>): Promise<T> { return operation(this); }
 }
 
 class ArraySalesSource implements SalesSyncSource {
   constructor(private readonly rows: RawSalesRecord[]) {}
 
-  async listSalesAfter(cursor: SalesSyncCursor | null): Promise<RawSalesRecord[]> {
+  async listSalesAfter(cursor: SalesSyncCursor | null, limit: number): Promise<RawSalesRecord[]> {
     return this.rows.filter((row) => {
       const updatedAt = row.updated_at;
       const saleId = row.sale_id;
       if (!(updatedAt instanceof Date) || typeof saleId !== 'string' || cursor === null) return true;
       return updatedAt > cursor.updatedAt || (updatedAt.getTime() === cursor.updatedAt.getTime() && saleId > cursor.saleId);
-    });
+    }).sort((left, right) => {
+      const leftTime = left.updated_at instanceof Date ? left.updated_at.getTime() : 0;
+      const rightTime = right.updated_at instanceof Date ? right.updated_at.getTime() : 0;
+      return leftTime - rightTime || String(left.sale_id).localeCompare(String(right.sale_id));
+    }).slice(0, limit);
   }
 }
 
@@ -109,6 +119,10 @@ test('a repeated row is idempotent while a later delayed cancellation refreshes 
 
 test('malformed source rows are recorded and unmatched sales remain reconcilable until a Lead Control manual attribution', async () => {
   const repository = new InMemorySalesRepository();
+  repository.campaigns.set('campaign-manual', {
+    id: 'campaign-manual', name: 'Manual', pageId: 'page-a', startsOn: '2026-09-01', endsOn: '2026-09-30', status: 'active',
+    createdAt: new Date(), createdBy: 'manager', archivedAt: null, archivedBy: null,
+  });
   const source = new ArraySalesSource([
     sale({ sale_id: 'bad-sale', phone: ['not-a-phone'], updated_at: new Date('2026-09-10T10:00:00.000Z') }),
     sale({ sale_id: 'unmatched-sale', phone: '098 765 432', updated_at: new Date('2026-09-10T11:00:00.000Z') }),
@@ -124,6 +138,18 @@ test('malformed source rows are recorded and unmatched sales remain reconcilable
   assert.equal(repository.sales.get('unmatched-sale')?.campaignId, 'campaign-manual');
   assert.equal(repository.sales.get('unmatched-sale')?.attributionKind, 'manual');
   assert.deepEqual(repository.audits, [{ action: 'sale.manually_attributed', actor: 'manager', saleId: 'unmatched-sale' }]);
+});
+
+test('a final short page containing only an uncursorable malformed row is recorded without failing the sync', async () => {
+  const repository = new InMemorySalesRepository();
+  const source = new ArraySalesSource([
+    sale({ sale_id: '', updated_at: 'not-a-date', phone: ['not-a-phone'] }),
+  ]);
+  const service = new SyncSalesService(source, repository, () => new Date('2026-09-12T00:00:00.000Z'), 10);
+
+  assert.deepEqual(await service.sync(), { read: 1, saved: 0, malformed: 1 });
+  assert.deepEqual(repository.malformed, [{ saleId: null, reason: 'invalid_sale_id' }]);
+  assert.equal(repository.cursor, null);
 });
 
 test('sales-source privilege validation rejects credentials broader than ar_tracker.sales find/listIndexes', () => {
@@ -157,13 +183,23 @@ test('sales connector ignores namespace override environment variables and permi
 
 test('lead attribution queries the persisted normalized phone key and projection indexes support cancellation event reporting', () => {
   assert.deepEqual(
-    saleAttributionLeadFilter('+85512345678', new Date('2026-09-10T09:00:00.000Z')),
+    saleAttributionLeadFilter('+85512345678', new Date('2026-09-10T16:59:59.000Z')),
     {
       normalized_phone: '+85512345678',
       campaign_id: { $type: 'string' },
       deleted: { $ne: true },
-      date: { $lt: '2026-09-10' },
+      $or: [
+        { date: { $lt: '2026-09-10' } },
+        { date: '2026-09-10', created_at: { $lt: new Date('2026-09-10T16:59:59.000Z') } },
+      ],
     },
+  );
+  assert.deepEqual(
+    saleAttributionLeadFilter('+85512345678', new Date('2026-09-10T17:00:00.000Z')).$or,
+    [
+      { date: { $lt: '2026-09-11' } },
+      { date: '2026-09-11', created_at: { $lt: new Date('2026-09-10T17:00:00.000Z') } },
+    ],
   );
   assert.equal(
     SALES_PROJECTION_INDEXES.some((index) => index.name === 'status_cancellation_event_lookup'
@@ -175,4 +211,139 @@ test('lead attribution queries the persisted normalized phone key and projection
       && JSON.stringify(index.key) === JSON.stringify({ campaign_id: 1, date: 1 })),
     true,
   );
+});
+
+// Production mutation caught: sync rereads outside the sale lock and overwrites a concurrent manual attribution.
+test('source sync rereads attribution inside the sale transaction so a concurrent manual attribution stays frozen', async () => {
+  class InterleavingRepository extends InMemorySalesRepository {
+    private lockTail = Promise.resolve();
+    private releaseManual!: () => void;
+    private releaseLookup: (() => void) | null = null;
+    readonly manualLockAcquired = new Promise<void>((resolve) => { this.signalManualLock = resolve; });
+    readonly attributionLookupStarted = new Promise<void>((resolve) => { this.signalLookup = resolve; });
+    private signalManualLock!: () => void;
+    private signalLookup!: () => void;
+    private firstAtomic = true;
+    private lookupHeld = true;
+
+    releaseManualTransaction(): void { this.releaseManual(); }
+    releaseAttributionLookup(): void { this.releaseLookup?.(); }
+
+    override async findMostRecentLeadBefore(phone: string, bookingDate: Date): Promise<LeadForSaleAttribution | null> {
+      if (this.lookupHeld) {
+        this.lookupHeld = false;
+        this.signalLookup();
+        await new Promise<void>((resolve) => { this.releaseLookup = resolve; });
+      }
+      return super.findMostRecentLeadBefore(phone, bookingDate);
+    }
+
+    override async runSalesAtomic<T>(_keys: readonly string[], operation: (repository: SalesProjectionRepository) => Promise<T>): Promise<T> {
+      const previous = this.lockTail;
+      let releaseLock!: () => void;
+      this.lockTail = new Promise<void>((resolve) => { releaseLock = resolve; });
+      await previous;
+      try {
+        if (this.firstAtomic) {
+          this.firstAtomic = false;
+          this.signalManualLock();
+          await new Promise<void>((resolve) => { this.releaseManual = resolve; });
+        }
+        return await operation(this);
+      } finally {
+        releaseLock();
+      }
+    }
+  }
+
+  const repository = new InterleavingRepository();
+  repository.campaigns.set('campaign-manual', {
+    id: 'campaign-manual', name: 'Manual', pageId: 'page-a', startsOn: '2026-09-01', endsOn: '2026-09-30', status: 'active',
+    createdAt: new Date(), createdBy: 'manager', archivedAt: null, archivedBy: null,
+  });
+  repository.leads = [{ id: 'lead-auto', normalizedPhone: '+85512345678', occurredAt: new Date('2026-09-10T08:00:00.000Z'), campaignId: 'campaign-auto' }];
+  repository.sales.set('sale-1', { ...({
+    saleId: 'sale-1', status: 'BOOKED', normalizedPhone: '+85512345678', bookingDate: new Date('2026-09-10T09:00:00.000Z'),
+    completedDate: null, cancelledDate: null, updatedAt: new Date('2026-09-10T09:30:00.000Z'), campaignId: null,
+    attributedLeadId: null, attributionKind: 'unmatched', attributedAt: null,
+  } satisfies SalesProjection) });
+  const service = new SyncSalesService(new ArraySalesSource([sale({ updated_at: new Date('2026-09-10T10:00:00.000Z') })]), repository);
+
+  const manual = service.manuallyAttribute('sale-1', 'campaign-manual', 'manager');
+  await repository.manualLockAcquired;
+  const syncing = service.sync();
+  await Promise.race([repository.attributionLookupStarted, new Promise<void>((resolve) => setImmediate(resolve))]);
+  repository.releaseManualTransaction();
+  await manual;
+  repository.releaseAttributionLookup();
+  await syncing;
+
+  assert.equal(repository.sales.get('sale-1')?.campaignId, 'campaign-manual');
+  assert.equal(repository.sales.get('sale-1')?.attributionKind, 'manual');
+});
+
+// Production mutation caught: manual attribution accepts a missing or date-inapplicable campaign.
+test('manual attribution validates campaign existence and booking-date applicability in the same transaction', async () => {
+  const repository = new InMemorySalesRepository();
+  repository.sales.set('sale-1', {
+    saleId: 'sale-1', status: 'BOOKED', normalizedPhone: '+85512345678', bookingDate: new Date('2026-09-10T17:00:00.000Z'),
+    completedDate: null, cancelledDate: null, updatedAt: new Date(), campaignId: null, attributedLeadId: null,
+    attributionKind: 'unmatched', attributedAt: null,
+  });
+  repository.campaigns.set('too-early', {
+    id: 'too-early', name: 'Early', pageId: 'page-a', startsOn: '2026-09-01', endsOn: '2026-09-10', status: 'archived',
+    createdAt: new Date(), createdBy: 'manager', archivedAt: new Date(), archivedBy: 'manager',
+  });
+  repository.campaigns.set('applicable', {
+    id: 'applicable', name: 'Applicable', pageId: 'page-a', startsOn: '2026-09-11', endsOn: '2026-09-30', status: 'active',
+    createdAt: new Date(), createdBy: 'manager', archivedAt: null, archivedBy: null,
+  });
+  const service = new SyncSalesService(new ArraySalesSource([]), repository);
+
+  await assert.rejects(service.manuallyAttribute('sale-1', 'missing', 'manager'), /campaign not found/);
+  await assert.rejects(service.manuallyAttribute('sale-1', 'too-early', 'manager'), /booking date/);
+  await service.manuallyAttribute('sale-1', 'applicable', 'manager');
+  assert.equal(repository.sales.get('sale-1')?.campaignId, 'applicable');
+});
+
+// Production mutation caught: sync reads the entire source result and checkpoints only after the whole import.
+test('sync reads bounded pages and checkpoints each deterministic updated-at and sale-id page', async () => {
+  const repository = new InMemorySalesRepository();
+  const rows = [
+    sale({ sale_id: 'sale-1', updated_at: new Date('2026-09-10T10:00:00.000Z') }),
+    sale({ sale_id: 'sale-2', updated_at: new Date('2026-09-10T10:00:00.000Z') }),
+    sale({ sale_id: 'sale-3', updated_at: new Date('2026-09-10T11:00:00.000Z') }),
+  ];
+  const calls: Array<{ cursor: SalesSyncCursor | null; limit: number }> = [];
+  const source: SalesSyncSource = {
+    listSalesAfter: async (cursor, limit) => {
+      calls.push({ cursor, limit });
+      return new ArraySalesSource(rows).listSalesAfter(cursor, limit);
+    },
+  };
+  const service = new SyncSalesService(source, repository, () => new Date(), 2);
+
+  assert.deepEqual(await service.sync(), { read: 3, saved: 3, malformed: 0 });
+  assert.deepEqual(calls.map((call) => call.limit), [2, 2]);
+  assert.deepEqual(repository.cursorHistory, [
+    { updatedAt: new Date('2026-09-10T10:00:00.000Z'), saleId: 'sale-2' },
+    { updatedAt: new Date('2026-09-10T11:00:00.000Z'), saleId: 'sale-3' },
+  ]);
+});
+
+// Production mutation caught: the Mongo source query has neither a limit nor an import timeout.
+test('sales source requests a bounded deterministic page with a production query timeout', async () => {
+  const calls: Array<{ filter: Record<string, unknown>; options: Record<string, unknown> }> = [];
+  const collection = {
+    find: (filter: Record<string, unknown>, options: Record<string, unknown>) => {
+      calls.push({ filter, options });
+      return { toArray: async () => [] };
+    },
+  } as unknown as SalesReadCollection;
+
+  await new PaymentSalesSourceRepository(collection).listSalesAfter(null, 250);
+
+  assert.equal(calls[0].options.limit, 250);
+  assert.equal(calls[0].options.maxTimeMS, 30_000);
+  assert.deepEqual(calls[0].options.sort, { updated_at: 1, sale_id: 1 });
 });

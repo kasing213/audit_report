@@ -52,7 +52,7 @@ class MemorySummaryRepository implements SummaryDataRepository {
 }
 
 test('builds a deterministic monthly summary with active-day planned spend and independent funnel efficiency', async () => {
-  const result = await new SummaryService(new MemorySummaryRepository()).monthly({ campaignId: campaign.id, month: '2026-09', asOf: '2026-09-20' });
+  const result = await new SummaryService(new MemorySummaryRepository(), () => new Date('2026-09-20T00:00:00.000Z')).monthly({ campaignId: campaign.id, month: '2026-09', asOf: '2026-09-20' });
 
   assert.deepEqual(result.pacing, { plannedSpendCents: 113_667, actualSpendCents: 70_000, remainingBudgetCents: 240_000, varianceCents: -43_667, state: 'Behind' });
   assert.equal(result.fullMonthForecast.messages, 310);
@@ -60,8 +60,9 @@ test('builds a deterministic monthly summary with active-day planned spend and i
   assert.deepEqual(result.actualFunnel, { messages: 80, phoneLeads: 30, visits: 10, grossBookings: 2, cancellations: 1, netBookings: 1 });
   assert.equal(result.stages.messages.variance, 10);
   assert.equal(result.stages.messages.costPerResultCents, 875);
-  assert.equal(result.stages.messages.status, 'Good');
-  assert.equal(result.stages.cancellations.status, 'Bad');
+  assert.equal(result.stages.messages.outcomeStatus, 'Good');
+  assert.equal(result.stages.messages.costStatus, 'Good');
+  assert.equal(result.stages.cancellations.outcomeStatus, 'Bad');
   assert.equal(result.provisional, true);
   assert.equal(result.revisions.baseline?.id, 'baseline');
   assert.equal(result.revisions.latest?.id, 'latest');
@@ -73,13 +74,14 @@ test('returns pending stage statuses when summaries or sales do not provide a de
   const result = await new SummaryService(repository).monthly({ campaignId: campaign.id, month: '2026-09', asOf: '2026-09-20' });
 
   assert.equal(result.stages.messages.actual, null);
-  assert.equal(result.stages.messages.status, 'Pending');
+  assert.equal(result.stages.messages.outcomeStatus, 'Pending');
+  assert.equal(result.stages.messages.costStatus, 'Pending');
   assert.equal(result.stages.cancellations.actual, null);
-  assert.equal(result.stages.cancellations.status, 'Pending');
+  assert.equal(result.stages.cancellations.outcomeStatus, 'Pending');
   assert.equal(result.syncHealth.status, 'Pending');
 });
 
-test('keeps a zero-result funnel stage pending instead of assigning an outcome score', async () => {
+test('classifies a known zero result as a bad outcome while its undefined cost stays pending', async () => {
   const repository = new MemorySummaryRepository(
     [campaign], [baseline], [spend()],
     [{ date: '2026-09-15', campaign_id: campaign.id, normalized_metrics: { messages: 0, valid_phone_leads: 0, completed_property_visits: 0 } }],
@@ -88,8 +90,10 @@ test('keeps a zero-result funnel stage pending instead of assigning an outcome s
   const result = await new SummaryService(repository).monthly({ campaignId: campaign.id, month: '2026-09', asOf: '2026-09-20' });
 
   assert.equal(result.stages.messages.costPerResultCents, null);
-  assert.equal(result.stages.messages.status, 'Pending');
-  assert.equal(result.stages.phoneLeads.status, 'Pending');
+  assert.equal(result.stages.messages.outcomeStatus, 'Bad');
+  assert.equal(result.stages.messages.costStatus, 'Pending');
+  assert.equal(result.stages.phoneLeads.outcomeStatus, 'Bad');
+  assert.equal(result.stages.phoneLeads.costStatus, 'Pending');
 });
 
 test('rejects impossible business dates instead of rolling them into another month', async () => {
@@ -101,12 +105,45 @@ test('rejects impossible business dates instead of rolling them into another mon
 
 test('presents cohort and cancellation-event views without changing frozen booking attribution', async () => {
   const repository = new MemorySummaryRepository();
-  const service = new SummaryService(repository);
+  const service = new SummaryService(repository, () => new Date('2026-09-20T00:00:00.000Z'));
 
   assert.deepEqual((await service.cancellations({ campaignId: campaign.id, month: '2026-09', view: 'cohort' })).map((value) => value.saleId), ['cancelled']);
   assert.deepEqual((await service.cancellations({ campaignId: campaign.id, month: '2026-09', view: 'event' })).map((value) => value.saleId), ['cancelled']);
   assert.deepEqual(await service.unmatchedSales(), []);
-  assert.deepEqual(await service.syncHealth('2026-09-20'), { status: 'Healthy', cursor: repository.cursor, ageHours: 24, unmatchedSales: 0, malformedSales: 1 });
+  assert.deepEqual(await service.syncHealth(), { status: 'Healthy', cursor: repository.cursor, ageHours: 24, unmatchedSales: 0, malformedSales: 1 });
+});
+
+// Production mutation caught: a completed sync with zero bookings is rendered as if no sync has ever run.
+test('distinguishes a completed zero-booking sync from pending sync data', async () => {
+  const completed = new MemorySummaryRepository([campaign], [baseline], [spend()], [], [], {
+    updatedAt: new Date('2026-09-20T08:00:00.000Z'), saleId: 'none',
+  }, 0);
+  const completedResult = await new SummaryService(completed, () => new Date('2026-09-20T09:00:00.000Z')).monthly({
+    campaignId: campaign.id, month: '2026-09', asOf: '2026-09-20',
+  });
+  assert.deepEqual({
+    gross: completedResult.actualFunnel.grossBookings,
+    cancellations: completedResult.actualFunnel.cancellations,
+    net: completedResult.actualFunnel.netBookings,
+    outcome: completedResult.stages.grossBookings.outcomeStatus,
+    cost: completedResult.stages.grossBookings.costStatus,
+  }, { gross: 0, cancellations: 0, net: 0, outcome: 'Bad', cost: 'Pending' });
+
+  const pendingResult = await new SummaryService(new MemorySummaryRepository([campaign], [baseline], [spend()], [], [], null, 0)).monthly({
+    campaignId: campaign.id, month: '2026-09', asOf: '2026-09-20',
+  });
+  assert.equal(pendingResult.actualFunnel.grossBookings, null);
+  assert.equal(pendingResult.stages.grossBookings.outcomeStatus, 'Pending');
+});
+
+// Production mutation caught: health age is measured from historical asOf midnight instead of the injected current instant.
+test('computes operational sync health from the injected current instant', async () => {
+  const repository = new MemorySummaryRepository();
+  const service = new SummaryService(repository, () => new Date('2026-09-20T12:00:00.000Z'));
+
+  assert.deepEqual(await service.syncHealth(), {
+    status: 'Stale', cursor: repository.cursor, ageHours: 36, unmatchedSales: 0, malformedSales: 1,
+  });
 });
 
 test('uses Phnom Penh calendar dates for cohort and cancellation-event month views at the UTC boundary', async () => {

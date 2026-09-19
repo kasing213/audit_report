@@ -2,6 +2,8 @@ import {
   AuditEvent,
   Campaign,
   CampaignInput,
+  CampaignForecastWorkflowInput,
+  CampaignForecastWorkflowResult,
   ForecastRevision,
   ForecastRevisionInput,
   SpendInput,
@@ -101,8 +103,10 @@ export class CampaignService {
     await this.repository.runAtomic([`campaign:${id}`], async (repository) => {
       const campaign = await this.requireCampaign(id, repository);
       if (campaign.status !== 'draft') throw new Error('only draft campaigns can be deleted');
-      const protectedHistory = await this.hasProtectedHistory(id, repository);
+      const revisions = await repository.listRevisions(id);
+      const protectedHistory = revisions.some((revision) => revision.status === 'approved') || (await repository.listSpend(id)).length > 0;
       if (protectedHistory) throw new Error('campaign has protected history and must be archived');
+      if (revisions.length > 0) throw new Error('campaign has forecast revisions; delete drafts first');
       await repository.deleteCampaign(id);
       await this.audit(repository, 'campaign.deleted', actor, 'campaign', id, {});
     });
@@ -122,7 +126,7 @@ export class CampaignService {
   async createForecastDraft(campaignId: string, input: ForecastRevisionInput, actor: string): Promise<ForecastRevision> {
     validateForecast(input);
     return this.repository.runAtomic([`campaign:${campaignId}`], async (repository) => {
-    await this.requireCampaign(campaignId, repository);
+    await this.requireMutableCampaign(campaignId, repository);
     const revisions = await repository.listRevisions(campaignId, input.month);
     if (revisions.some((revision) => revision.kind === 'baseline')) throw new Error('baseline already exists; create a revision');
     const revision = await repository.createRevision({
@@ -146,6 +150,7 @@ export class CampaignService {
     const before = await this.requireRevision(id);
     return this.repository.runAtomic([`campaign:${before.campaignId}`], async (repository) => {
       const existing = await this.requireRevision(id, repository);
+      await this.requireMutableCampaign(existing.campaignId, repository);
       if (existing.status === 'approved') throw new Error('approved forecasts are immutable');
       if (existing.month !== input.month) throw new Error('forecast month cannot be changed');
       const revision: ForecastRevision = { ...existing, ...input };
@@ -159,6 +164,7 @@ export class CampaignService {
     const before = await this.requireRevision(id);
     await this.repository.runAtomic([`campaign:${before.campaignId}`], async (repository) => {
       const existing = await this.requireRevision(id, repository);
+      await this.requireMutableCampaign(existing.campaignId, repository);
       if (existing.status === 'approved') throw new Error('approved forecasts cannot be deleted');
       await repository.deleteRevision(id);
       await this.audit(repository, 'forecast.draft_deleted', actor, 'forecast_revision', id, { campaignId: existing.campaignId, month: existing.month });
@@ -169,6 +175,7 @@ export class CampaignService {
     const before = await this.requireRevision(id);
     return this.repository.runAtomic([`campaign:${before.campaignId}`], async (repository) => {
       const existing = await this.requireRevision(id, repository);
+      await this.requireMutableCampaign(existing.campaignId, repository);
       if (existing.status === 'approved') return existing;
       const revision: ForecastRevision = { ...existing, status: 'approved', approvedAt: this.now(), approvedBy: actor };
       await repository.updateRevision(revision);
@@ -186,6 +193,7 @@ export class CampaignService {
     const before = await this.requireRevision(approvedRevisionId);
     return this.repository.runAtomic([`campaign:${before.campaignId}`], async (repository) => {
     const approved = await this.requireRevision(approvedRevisionId, repository);
+    await this.requireMutableCampaign(approved.campaignId, repository);
     if (approved.status !== 'approved') throw new Error('forecast must be approved before a revision can be created');
     if (approved.month !== input.month) throw new Error('forecast revision month must match baseline');
     const revisions = await repository.listRevisions(approved.campaignId, input.month);
@@ -213,7 +221,7 @@ export class CampaignService {
     validateSpend(input);
     const mode: SpendMode = input.businessDate === null ? 'monthly' : 'daily';
     return this.repository.runAtomic([`campaign:${input.campaignId}`, spendKey(input.campaignId, input.month)], async (repository) => {
-    await this.requireCampaign(input.campaignId, repository);
+    await this.requireMutableCampaign(input.campaignId, repository);
     const existing = await repository.listSpend(input.campaignId, input.month);
     const active = existing.filter((spend) => spend.status === 'active');
     if (active.some((spend) => spend.mode !== mode)) {
@@ -241,6 +249,8 @@ export class CampaignService {
     const before = await this.requireSpend(id);
     return this.repository.runAtomic([spendKey(before.campaignId, before.month)], async (repository) => {
       const existing = await this.requireSpend(id, repository);
+      if (existing.status === 'archived') throw new Error('archived spend records cannot be updated');
+      await this.requireMutableCampaign(existing.campaignId, repository);
       const mode: SpendMode = input.businessDate === null ? 'monthly' : 'daily';
       if (input.campaignId !== existing.campaignId || input.month !== existing.month || mode !== existing.mode) {
         throw new Error('spend campaign, month, and mode cannot be changed');
@@ -261,7 +271,8 @@ export class CampaignService {
     const before = await this.requireSpend(id);
     await this.repository.runAtomic([spendKey(before.campaignId, before.month)], async (repository) => {
       const existing = await this.requireSpend(id, repository);
-      if (existing.status === 'archived') return;
+      if (existing.status === 'archived') throw new Error('archived spend records cannot be deleted');
+      await this.requireMutableCampaign(existing.campaignId, repository);
       const archivedAt = this.now();
       await repository.updateSpend({ ...existing, status: 'archived', archivedAt, archivedBy: actor });
       await this.audit(repository, 'spend.deleted', actor, 'spend', id, {
@@ -290,7 +301,7 @@ export class CampaignService {
   ): Promise<void> {
     validateMonth(month);
     await this.repository.runAtomic([spendKey(campaignId, month)], async (repository) => {
-      await this.requireCampaign(campaignId, repository);
+      await this.requireMutableCampaign(campaignId, repository);
       const active = (await repository.listSpend(campaignId, month)).filter((spend) => spend.status === 'active');
       if (active.length === 0 || active.every((spend) => spend.mode === targetMode)) return;
       if (!confirmed) throw new Error('confirm spend mode switch before replacing records');
@@ -302,9 +313,116 @@ export class CampaignService {
     });
   }
 
+  /**
+   * Server-owned command used by the guided UI. Campaign, forecast, approval,
+   * activation, and their audit records commit or roll back together.
+   */
+  async saveCampaignForecastWorkflow(
+    command: CampaignForecastWorkflowInput,
+    actor: string,
+  ): Promise<CampaignForecastWorkflowResult> {
+    const campaignInput = normalizedCampaignInput(command.campaign);
+    validateCampaign(campaignInput);
+    validateForecast(command.forecast);
+    if (typeof command.approve !== 'boolean' || typeof command.activate !== 'boolean') throw new RangeError('approve and activate must be boolean');
+    if (command.activate && !command.approve) throw new RangeError('activation requires forecast approval');
+
+    const before = command.campaignId ? await this.requireCampaign(command.campaignId) : null;
+    const keys = [pageKey(campaignInput.pageId), ...(before ? [`campaign:${before.id}`, pageKey(before.pageId)] : [])];
+    return this.repository.runAtomic(keys, async (repository) => {
+      let campaign: Campaign;
+      if (before) {
+        const existing = await this.requireCampaign(before.id, repository);
+        if (existing.status === 'archived') throw new Error('archived campaigns cannot be edited');
+        if (existing.status === 'active') {
+          await this.assertNoActivePageOverlap(campaignInput.pageId, campaignInput.startsOn, campaignInput.endsOn, existing.id, repository);
+        }
+        campaign = { ...existing, ...campaignInput };
+        await repository.updateCampaign(campaign);
+        await this.audit(repository, 'campaign.updated', actor, 'campaign', campaign.id, { pageId: campaign.pageId });
+      } else {
+        const occurredAt = this.now();
+        campaign = await repository.createCampaign({
+          ...campaignInput,
+          status: 'draft',
+          createdAt: occurredAt,
+          createdBy: actor,
+          archivedAt: null,
+          archivedBy: null,
+        });
+        await this.audit(repository, 'campaign.created', actor, 'campaign', campaign.id, { pageId: campaign.pageId, status: campaign.status });
+      }
+
+      let forecast: ForecastRevision;
+      if (command.forecastId) {
+        const existing = await this.requireRevision(command.forecastId, repository);
+        if (existing.campaignId !== campaign.id) throw new Error('forecast revision does not belong to campaign');
+        if (existing.status === 'approved') {
+          if (existing.month !== command.forecast.month) throw new Error('forecast revision month must match baseline');
+          const revisions = await repository.listRevisions(campaign.id, command.forecast.month);
+          forecast = await repository.createRevision({
+            ...command.forecast,
+            campaignId: campaign.id,
+            revisionNumber: Math.max(...revisions.map((item) => item.revisionNumber)) + 1,
+            kind: 'revision',
+            status: 'draft',
+            createdAt: this.now(),
+            createdBy: actor,
+            approvedAt: null,
+            approvedBy: null,
+          });
+          await this.audit(repository, 'forecast.revision_created', actor, 'forecast_revision', forecast.id, {
+            campaignId: campaign.id,
+            month: forecast.month,
+            sourceRevisionId: existing.id,
+          });
+        } else {
+          if (existing.month !== command.forecast.month) throw new Error('forecast month cannot be changed');
+          forecast = { ...existing, ...command.forecast };
+          await repository.updateRevision(forecast);
+          await this.audit(repository, 'forecast.draft_updated', actor, 'forecast_revision', forecast.id, { campaignId: campaign.id, month: forecast.month });
+        }
+      } else {
+        const revisions = await repository.listRevisions(campaign.id, command.forecast.month);
+        if (revisions.some((revision) => revision.kind === 'baseline')) throw new Error('baseline already exists; forecastId is required');
+        forecast = await repository.createRevision({
+          ...command.forecast,
+          campaignId: campaign.id,
+          revisionNumber: 1,
+          kind: 'baseline',
+          status: 'draft',
+          createdAt: this.now(),
+          createdBy: actor,
+          approvedAt: null,
+          approvedBy: null,
+        });
+        await this.audit(repository, 'forecast.draft_created', actor, 'forecast_revision', forecast.id, { campaignId: campaign.id, month: forecast.month });
+      }
+
+      if (command.approve && forecast.status !== 'approved') {
+        forecast = { ...forecast, status: 'approved', approvedAt: this.now(), approvedBy: actor };
+        await repository.updateRevision(forecast);
+        await this.audit(repository, 'forecast.approved', actor, 'forecast_revision', forecast.id, { campaignId: campaign.id, month: forecast.month });
+      }
+      if (command.activate && campaign.status === 'draft') {
+        await this.assertNoActivePageOverlap(campaign.pageId, campaign.startsOn, campaign.endsOn, campaign.id, repository);
+        campaign = { ...campaign, status: 'active' };
+        await repository.updateCampaign(campaign);
+        await this.audit(repository, 'campaign.activated', actor, 'campaign', campaign.id, { pageId: campaign.pageId });
+      }
+      return { campaign, forecast };
+    });
+  }
+
   private async requireCampaign(id: string, repository = this.repository): Promise<Campaign> {
     const campaign = await repository.getCampaign(id);
     if (!campaign) throw new Error('campaign not found');
+    return campaign;
+  }
+
+  private async requireMutableCampaign(id: string, repository = this.repository): Promise<Campaign> {
+    const campaign = await this.requireCampaign(id, repository);
+    if (campaign.status === 'archived') throw new Error('archived campaigns cannot be mutated');
     return campaign;
   }
 
@@ -332,13 +450,6 @@ export class CampaignService {
       campaign.id !== excludingId && campaign.status === 'active' && datesOverlap(startsOn, endsOn, campaign.startsOn, campaign.endsOn),
     );
     if (overlaps) throw new Error('campaign dates overlap an active campaign for this page');
-  }
-
-  private async hasProtectedHistory(campaignId: string, repository = this.repository): Promise<boolean> {
-    const revisions = await repository.listRevisions(campaignId);
-    if (revisions.some((revision) => revision.status === 'approved')) return true;
-    const spend = await repository.listSpend(campaignId);
-    return spend.length > 0;
   }
 
   private async audit(

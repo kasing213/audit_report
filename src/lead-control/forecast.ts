@@ -117,9 +117,9 @@ export function classifyOutcome(actual: number | null, target: number): LeadCont
 
 export function classifyCostPerResult(
   actualCents: DerivedCostPerResultCents | null,
-  targetCents: UsdCents,
+  targetCents: DerivedCostPerResultCents,
 ): LeadControlStatus {
-  validateBudgetCents(targetCents, 'targetCents');
+  validateNonNegativeNumber(targetCents, 'targetCents');
   if (actualCents === null) return 'Pending';
   validateNonNegativeNumber(actualCents, 'actualCents');
   return actualCents <= targetCents ? 'Good' : 'Bad';

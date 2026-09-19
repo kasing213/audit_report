@@ -315,8 +315,12 @@
   function collectNormalizedMetrics() {
     const read = key => {
       const input = document.querySelector('.normalized-metric[data-metric="' + key + '"]');
-      const value = Number(input ? input.value : 0);
-      return Number.isInteger(value) && value >= 0 ? value : 0;
+      const raw = input ? input.value.trim() : '';
+      const value = Number(raw);
+      if (raw === '' || !Number.isInteger(value) || value < 0) {
+        throw new Error(key + ' must be a non-negative whole number');
+      }
+      return value;
     };
     return {
       messages: read('messages'),
@@ -334,14 +338,13 @@
     };
     if (!/^\d{4}-\d{2}-\d{2}$/.test(header.date)) { showToast('Header date must be YYYY-MM-DD', 'error'); return; }
 
-    const drafts = collectDrafts();
-    const saveSummary = document.getElementById('save-summary').checked;
-    const normalizedMetrics = collectNormalizedMetrics();
-    const summary = saveSummary && lastPreview.summary
-      ? { ...lastPreview.summary, normalized_metrics: normalizedMetrics }
-      : null;
-
     try {
+      const drafts = collectDrafts();
+      const saveSummary = document.getElementById('save-summary').checked;
+      const normalizedMetrics = collectNormalizedMetrics();
+      const summary = saveSummary && lastPreview.summary
+        ? { ...lastPreview.summary, normalized_metrics: normalizedMetrics }
+        : null;
       const resp = await fetch(apiUrl('/data-entry/api/bulk/confirm'), {
         method: 'POST',
         credentials: 'same-origin',
@@ -359,7 +362,7 @@
         showToast(data.error || 'Import failed', 'error');
       }
     } catch (e) {
-      showToast('Import failed', 'error');
+      showToast(e instanceof Error ? e.message : 'Import failed', 'error');
     }
   }
 
