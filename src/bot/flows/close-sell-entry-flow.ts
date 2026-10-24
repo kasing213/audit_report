@@ -210,12 +210,17 @@ export class CloseSellEntryFlow {
     if (parsed.primary_reason_code) {
       lines.push(`<b>Reason:</b> ${escapeHtml(formatReasonDisplay(parsed.primary_reason_code))}`);
     }
-    if (parsed.financial.capability || parsed.financial.character) {
-      const fin: string[] = [];
-      if (parsed.financial.capability) fin.push(`លទ្ឋភាព=${parsed.financial.capability}`);
-      if (parsed.financial.character) fin.push(`អត្តចរិត=${parsed.financial.character}`);
-      lines.push(`💰 ${escapeHtml(fin.join(' · '))}`);
-    }
+    const f = parsed.financial;
+    const fin: string[] = [];
+    if (f.cash_in_hand) fin.push(`លុយក្នុងដៃ=${f.cash_in_hand}`);
+    if (f.capability) fin.push(`លទ្ឋភាព=${f.capability}`);
+    if (f.monthly_income) fin.push(`ចំណូល/ខែ=${f.monthly_income}`);
+    if (f.business_owners != null) fin.push(`អ្នករកសុី=${f.business_owners}`);
+    if (f.workers != null) fin.push(`អ្នកធ្វើការ=${f.workers}`);
+    if (f.family_members != null) fin.push(`សមាជិកគ្រួសារ=${f.family_members}`);
+    if (f.earners != null) fin.push(`អ្នករកចំណូល=${f.earners}`);
+    if (f.character) fin.push(`អត្តចរិត=${f.character}`);
+    if (fin.length > 0) lines.push(`💰 ${escapeHtml(fin.join(' · '))}`);
     if (parsed.description) {
       lines.push(`📝 ${escapeHtml(parsed.description.slice(0, 200))}`);
     }

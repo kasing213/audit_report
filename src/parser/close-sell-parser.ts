@@ -24,6 +24,7 @@ export interface CloseSellParseResult {
   obstacles: Array<{ letter: string; text: string }>;  // §2.loc.4 non-empty
   primary_reason_code: ReasonCode | null;  // first obstacle letter mapped to A-J
   financial: {
+    cash_in_hand: string | null;                     // §4.1 មានលុយក្នុងដៃ raw (e.g. "500$-1000$")
     capability: 'good' | 'medium' | 'weak' | null;  // §4.1.a (ល្អ/មធ្យម/ខ្សោយ)
     monthly_income: string | null;                   // §4.2 raw
     business_owners: number | null;                  // §4.3
@@ -257,6 +258,7 @@ function extractObstacles(s2: string): Array<{ letter: string; text: string }> {
 
 function extractFinancial(s4: string): CloseSellParseResult['financial'] {
   const fin: CloseSellParseResult['financial'] = {
+    cash_in_hand: null,
     capability: null,
     monthly_income: null,
     business_owners: null,
@@ -266,6 +268,9 @@ function extractFinancial(s4: string): CloseSellParseResult['financial'] {
     character: null
   };
   // §4.1.a ការវាយតំលៃលទ្ឋភាព (ល្អ / មធ្យម / ខ្សោយ) — Khmer digits ១ ២ ៣ prefix.
+  // The handed-out template misspells ក្នុង as ក្នង; accept both.
+  const cash = s4.match(/1[ \t]*\/[ \t]*មានលុយក្ន(?:ុ)?ងដៃ[ \t]*=[ \t]*([^\n]*)/);
+  if (cash && cash[1].trim()) fin.cash_in_hand = cash[1].trim();
   // Header line is skipped with [^\n]* — a `[^=]*` here would eat the "១.ល្អ"
   // label up to its `=`, so 'good' could never match.
   const capBlock = s4.match(/ការវាយតំលៃ[^\n]*([\s\S]*?)(?=\n\s*2\s*\/|$)/);
@@ -321,6 +326,7 @@ function packNote(p: {
   if (p.result_note) parts.push(p.result_note);
   if (p.origin) parts.push(`ភ្ញៀវមកពី${p.origin}`);
   for (const ob of p.obstacles) parts.push(ob.text);
+  if (p.financial.cash_in_hand) parts.push(`លុយក្នុងដៃ=${p.financial.cash_in_hand}`);
   if (p.financial.capability) parts.push(`លទ្ឋភាព=${p.financial.capability}`);
   if (p.financial.monthly_income) parts.push(`ចំណូល/ខែ=${p.financial.monthly_income}`);
   if (p.financial.business_owners != null) parts.push(`អ្នករកសុី=${p.financial.business_owners}`);

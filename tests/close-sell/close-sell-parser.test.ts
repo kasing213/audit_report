@@ -77,6 +77,26 @@ test('close-sell: booked / not-booked counts are read per line', () => {
   assert.equal(p.not_booked, 1);
 });
 
+test('close-sell: money in hand and family members are recorded', () => {
+  const text = template({}).replace(
+    '4.ស្ថានភាពហិរញ្ញវត្ថុ=',
+    '4.ស្ថានភាពហិរញ្ញវត្ថុ=\n  1/មានលុយក្នងដៃ=500$-1000$\n  5/សមាជិកគ្រួសារ=2'
+  );
+  const p = parseCloseSellReport(text)!;
+  assert.equal(p.financial.cash_in_hand, '500$-1000$');
+  assert.equal(p.financial.family_members, 2);
+  assert.match(p.packed_note, /លុយក្នុងដៃ=500\$-1000\$/);
+  assert.match(p.packed_note, /សមាជិកគ្រួសារ=2/);
+});
+
+test('close-sell: empty money-in-hand stays null', () => {
+  const text = template({}).replace(
+    '4.ស្ថានភាពហិរញ្ញវត្ថុ=',
+    '4.ស្ថានភាពហិរញ្ញវត្ថុ=\n  1/មានលុយក្នុងដៃ=\n    a ការវាយតំលៃលទ្ឋភាពភ្ញៀខាងក្រោម'
+  );
+  assert.equal(parseCloseSellReport(text)!.financial.cash_in_hand, null);
+});
+
 test('close-sell: Khmer digits are accepted in counts', () => {
   const p = parseCloseSellReport(template({ booked: '១', notBooked: '២' }))!;
   assert.equal(p.booked, 1);
