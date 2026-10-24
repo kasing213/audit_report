@@ -89,6 +89,24 @@ test('close-sell: money in hand and family members are recorded', () => {
   assert.match(p.packed_note, /សមាជិកគ្រួសារ=2/);
 });
 
+test('close-sell: §1 wants, first contact, and count details are kept as typed', () => {
+  const text = template({})
+    .replace('1.Date visited', '1.Date visited\n   1/ចង់បានដីឡូត៍លេខ=1\n   2/ចង់បានផ្ទះលេខ=')
+    .replace('       a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= 24/10/26',
+      '       a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= 24/10/26\n       b.ថ្ងៃ.ខែ.ឆ្នាំទាក់ទងដំបូងខាងក្រោម/\n          1/1-3day=1\n          2/4-7day=')
+    .replace('  3/អ្នករកសុី=', '  3/អ្នករកសុី=1(លក់ចាបហួយ)')
+    .replace('4.ស្ថានភាពហិរញ្ញវត្ថុ=', '4.ស្ថានភាពហិរញ្ញវត្ថុ=\n  7/អត្តចរិតខាងក្រោម\n     a.ល្អ=1');
+  const p = parseCloseSellReport(text)!;
+  assert.deepEqual(p.wants, [{ label: 'ចង់បានដីឡូត៍លេខ', value: '1' }]);
+  assert.equal(p.first_contact, '1-3day');
+  assert.equal(p.financial.business_owners, 1);
+  assert.equal(p.financial.details.business_owners, 'លក់ចាបហួយ');
+  assert.match(p.packed_note, /ចង់បានដីឡូត៍លេខ=1/);
+  assert.match(p.packed_note, /ទាក់ទងដំបូង=1-3day/);
+  assert.match(p.packed_note, /អ្នករកសុី=1 \(លក់ចាបហួយ\)/);
+  assert.match(p.packed_note, /អត្តចរិត=ល្អ/);
+});
+
 test('close-sell: empty money-in-hand stays null', () => {
   const text = template({}).replace(
     '4.ស្ថានភាពហិរញ្ញវត្ថុ=',

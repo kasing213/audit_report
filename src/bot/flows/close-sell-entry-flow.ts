@@ -5,6 +5,7 @@ import { LeadEventDocument } from '../../database/models';
 import {
   parseCloseSellReport,
   detectCloseSellReport,
+  financialLines,
   CloseSellParseResult
 } from '../../parser/close-sell-parser';
 import { GroupConfigManager } from '../../utils/group-config';
@@ -203,6 +204,12 @@ export class CloseSellEntryFlow {
     lines.push(`👤 <b>Follower (អ្នកដឹកនាំ):</b> ${escapeHtml(parsed.follower || '—')}`);
     lines.push(`🤝 <b>Closer (អ្នកបិទលក់):</b> ${escapeHtml(parsed.closer || '—')}`);
     if (parsed.origin) lines.push(`📍 <b>From:</b> ${escapeHtml(parsed.origin)}`);
+    for (const w of parsed.wants) {
+      lines.push(`🏠 <b>${escapeHtml(w.label)}:</b> ${escapeHtml(w.value)}`);
+    }
+    if (parsed.first_contact) {
+      lines.push(`🕐 <b>ទាក់ទងដំបូង:</b> ${escapeHtml(parsed.first_contact)}`);
+    }
 
     lines.push('');
     lines.push(`✅ <b>Closed (កក់):</b> ${parsed.booked}`);
@@ -210,20 +217,13 @@ export class CloseSellEntryFlow {
     if (parsed.primary_reason_code) {
       lines.push(`<b>Reason:</b> ${escapeHtml(formatReasonDisplay(parsed.primary_reason_code))}`);
     }
-    const f = parsed.financial;
-    const fin: string[] = [];
-    if (f.cash_in_hand) fin.push(`លុយក្នុងដៃ=${f.cash_in_hand}`);
-    if (f.capability) fin.push(`លទ្ឋភាព=${f.capability}`);
-    if (f.monthly_income) fin.push(`ចំណូល/ខែ=${f.monthly_income}`);
-    if (f.business_owners != null) fin.push(`អ្នករកសុី=${f.business_owners}`);
-    if (f.workers != null) fin.push(`អ្នកធ្វើការ=${f.workers}`);
-    if (f.family_members != null) fin.push(`សមាជិកគ្រួសារ=${f.family_members}`);
-    if (f.earners != null) fin.push(`អ្នករកចំណូល=${f.earners}`);
-    if (f.character) fin.push(`អត្តចរិត=${f.character}`);
-    if (fin.length > 0) lines.push(`💰 ${escapeHtml(fin.join(' · '))}`);
-    if (parsed.description) {
-      lines.push(`📝 ${escapeHtml(parsed.description.slice(0, 200))}`);
+    const fin = financialLines(parsed.financial);
+    if (fin.length > 0) {
+      lines.push('');
+      lines.push('💰 <b>ស្ថានភាពហិរញ្ញវត្ថុ</b>');
+      for (const [k, v] of fin) lines.push(`• ${escapeHtml(k)}: ${escapeHtml(v)}`);
     }
+    lines.push(`📝 <b>បរិយាយផ្សេងៗ:</b> ${escapeHtml(parsed.description ? parsed.description.slice(0, 200) : '—')}`);
 
     lines.push('');
     if (priorEvents.length > 0) {

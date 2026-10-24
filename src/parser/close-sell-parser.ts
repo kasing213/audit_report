@@ -32,11 +32,34 @@ export interface CloseSellParseResult {
     family_members: number | null;                   // §4.5
     earners: number | null;                          // §4.6
     character: 'good' | 'medium' | 'weak' | null;    // §4.7 (ល្អ/មធ្យម/អន់)
+    // Text typed after a §4.3-4.6 count, e.g. "1(លក់ចាបហួយ)" → "លក់ចាបហួយ".
+    details: Partial<Record<'business_owners' | 'workers' | 'family_members' | 'earners', string>>;
   };
+  wants: Array<{ label: string; value: string }>;  // §1.1-1.3 ចង់បាន... non-empty
+  first_contact: string | null;     // §1.4.b bucket label, e.g. "1-3day"
   description: string | null;       // §5 បរិយាយផ្សេងៗ
   packed_note: string;              // joined note for storage
   raw_text: string;
   warnings: string[];
+}
+
+// Display/storage labels — the template's own words, not the English enum.
+export const CAPABILITY_KH: Record<'good' | 'medium' | 'weak', string> = { good: 'ល្អ', medium: 'មធ្យម', weak: 'ខ្សោយ' };
+export const CHARACTER_KH: Record<'good' | 'medium' | 'weak', string> = { good: 'ល្អ', medium: 'មធ្យម', weak: 'អន់' };
+
+/** §4 fields as [Khmer label, value-as-reported] pairs, in template order. */
+export function financialLines(f: CloseSellParseResult['financial']): Array<[string, string]> {
+  const withDetail = (n: number, d?: string) => (d ? `${n} (${d})` : String(n));
+  const out: Array<[string, string]> = [];
+  if (f.cash_in_hand) out.push(['លុយក្នុងដៃ', f.cash_in_hand]);
+  if (f.capability) out.push(['លទ្ឋភាព', CAPABILITY_KH[f.capability]]);
+  if (f.monthly_income) out.push(['ចំណូល/ខែ', f.monthly_income]);
+  if (f.business_owners != null) out.push(['អ្នករកសុី', withDetail(f.business_owners, f.details.business_owners)]);
+  if (f.workers != null) out.push(['អ្នកធ្វើការ', withDetail(f.workers, f.details.workers)]);
+  if (f.family_members != null) out.push(['សមាជិកគ្រួសារ', withDetail(f.family_members, f.details.family_members)]);
+  if (f.earners != null) out.push(['អ្នករកចំណូល', withDetail(f.earners, f.details.earners)]);
+  if (f.character) out.push(['អត្តចរិត', CHARACTER_KH[f.character]]);
+  return out;
 }
 
 const REASON_LETTER_TO_CODE: Record<string, ReasonCode> = {
@@ -185,6 +208,34 @@ function extractVisitDate(s1: string): string | null {
   return parseDdMmYy(m[1]);
 }
 
+function extractWants(s1: string): Array<{ label: string; value: string }> {
+  // §1.1-1.3 "1/ចង់បានដីឡូត៍លេខ=1" — kept verbatim; value meaning is the sender's.
+  const out: Array<{ label: string; value: string }> = [];
+  const re = /^[ \t]*[1-3][ \t]*\/[ \t]*(ចង់បាន[^=\n]*?)[ \t]*=[ \t]*([^\n]*)$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(s1)) !== null) {
+    const value = m[2].trim();
+    if (value) out.push({ label: m[1].trim(), value });
+  }
+  return out;
+}
+
+function extractFirstContact(s1: string): string | null {
+  // §1.4.b first-contact bucket: "1/1-3day=1" … "8/Over12month=". First marked bucket wins.
+  const idx = s1.search(/ទាក់ទងដំបូង/);
+  if (idx < 0) return null;
+  const re = /^[ \t]*[1-8][ \t]*\/[ \t]*([^=\n]*?(?:day|month)[^=\n]*?)[ \t]*=[ \t]*([^\n]*)$/gim;
+  const block = s1.slice(idx);
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(block)) !== null) {
+    const value = m[2].trim();
+    if (!value || /^0+$/.test(value)) continue;
+    const label = m[1].trim();
+    return value === '1' ? label : `${label} (${value})`;
+  }
+  return null;
+}
+
 function extractCounts(s2: string): { booked: number; not_booked: number } {
   let booked = 0;
   let not_booked = 0;
@@ -265,7 +316,8 @@ function extractFinancial(s4: string): CloseSellParseResult['financial'] {
     workers: null,
     family_members: null,
     earners: null,
-    character: null
+    character: null,
+    details: {}
   };
   // §4.1.a ការវាយតំលៃលទ្ឋភាព (ល្អ / មធ្យម / ខ្សោយ) — Khmer digits ១ ២ ៣ prefix.
   // The handed-out template misspells ក្នុង as ក្នង; accept both.
@@ -281,14 +333,20 @@ function extractFinancial(s4: string): CloseSellParseResult['financial'] {
   }
   const inc = s4.match(/2[ \t]*\/[ \t]*លទ្ឋភាពចំណូល[^=\n]*=[ \t]*([^\n]*)/);
   if (inc && inc[1].trim()) fin.monthly_income = inc[1].trim();
-  const bo = s4.match(/3[ \t]*\/[ \t]*អ្នករកសុី[ \t]*=[ \t]*0*(\d+)/);
-  if (bo) fin.business_owners = parseInt(bo[1], 10);
-  const wk = s4.match(/4[ \t]*\/[ \t]*អ្នកធ្វើការ[ \t]*=[ \t]*0*(\d+)/);
-  if (wk) fin.workers = parseInt(wk[1], 10);
-  const fm = s4.match(/5[ \t]*\/[ \t]*សមាជិកគ្រួសារ[ \t]*=[ \t]*0*(\d+)/);
-  if (fm) fin.family_members = parseInt(fm[1], 10);
-  const ern = s4.match(/6[ \t]*\/[ \t]*ចំនួនអ្នករកចំណូល[^=\n]*=[ \t]*0*(\d+)/);
-  if (ern) fin.earners = parseInt(ern[1], 10);
+  // Counts: the number, plus any text typed after it ("1(លក់ចាបហួយ)").
+  const counts: Array<[keyof CloseSellParseResult['financial']['details'], RegExp]> = [
+    ['business_owners', /3[ \t]*\/[ \t]*អ្នករកសុី[ \t]*=[ \t]*0*(\d+)([^\n]*)/],
+    ['workers', /4[ \t]*\/[ \t]*អ្នកធ្វើការ[ \t]*=[ \t]*0*(\d+)([^\n]*)/],
+    ['family_members', /5[ \t]*\/[ \t]*សមាជិកគ្រួសារ[ \t]*=[ \t]*0*(\d+)([^\n]*)/],
+    ['earners', /6[ \t]*\/[ \t]*ចំនួនអ្នករកចំណូល[^=\n]*=[ \t]*0*(\d+)([^\n]*)/]
+  ];
+  for (const [key, re] of counts) {
+    const m = s4.match(re);
+    if (!m) continue;
+    fin[key] = parseInt(m[1], 10);
+    const extra = m[2].trim().replace(/^\((.*)\)$/, '$1').trim();
+    if (extra) fin.details[key] = extra;
+  }
   const charBlock = s4.match(/7\s*\/\s*អត្តចរិត[\s\S]*$/);
   if (charBlock) {
     if (/a[ \t]*\.[ \t]*ល្អ[ \t]*=[ \t]*0*[1-9]/i.test(charBlock[0])) fin.character = 'good';
@@ -316,6 +374,8 @@ function packNote(p: {
   closer: string | null;
   booked: number;
   not_booked: number;
+  wants: Array<{ label: string; value: string }>;
+  first_contact: string | null;
 }): string {
   const parts: string[] = [];
   // Lead events carry no count or closer column, so the note is where the
@@ -323,17 +383,12 @@ function packNote(p: {
   if (p.booked > 0) parts.push(`កក់=${p.booked}`);
   if (p.not_booked > 0) parts.push(`មិនទាន់កក់=${p.not_booked}`);
   if (p.closer) parts.push(`អ្នកបិទលក់៖ ${p.closer}`);
+  for (const w of p.wants) parts.push(`${w.label}=${w.value}`);
+  if (p.first_contact) parts.push(`ទាក់ទងដំបូង=${p.first_contact}`);
   if (p.result_note) parts.push(p.result_note);
   if (p.origin) parts.push(`ភ្ញៀវមកពី${p.origin}`);
   for (const ob of p.obstacles) parts.push(ob.text);
-  if (p.financial.cash_in_hand) parts.push(`លុយក្នុងដៃ=${p.financial.cash_in_hand}`);
-  if (p.financial.capability) parts.push(`លទ្ឋភាព=${p.financial.capability}`);
-  if (p.financial.monthly_income) parts.push(`ចំណូល/ខែ=${p.financial.monthly_income}`);
-  if (p.financial.business_owners != null) parts.push(`អ្នករកសុី=${p.financial.business_owners}`);
-  if (p.financial.workers != null) parts.push(`អ្នកធ្វើការ=${p.financial.workers}`);
-  if (p.financial.family_members != null) parts.push(`សមាជិកគ្រួសារ=${p.financial.family_members}`);
-  if (p.financial.earners != null) parts.push(`អ្នករកចំណូល=${p.financial.earners}`);
-  if (p.financial.character) parts.push(`អត្តចរិត=${p.financial.character}`);
+  for (const [label, value] of financialLines(p.financial)) parts.push(`${label}=${value}`);
   // The first tour leader is already stored as the follower; list them all
   // only when there is more than one.
   if (p.tour_leaders.length > 1) {
@@ -384,6 +439,8 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
   })();
   const financial = extractFinancial(sections.s4);
   const description = extractDescription(sections.s5);
+  const wants = extractWants(sections.s1);
+  const first_contact = extractFirstContact(sections.s1);
 
   // Follower = the staff who followed/led the customer (§2.loc.1). The closer
   // (§2.loc.2) is a different role and is never promoted into follower.
@@ -397,7 +454,9 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
     tour_leaders,
     closer,
     booked,
-    not_booked
+    not_booked,
+    wants,
+    first_contact
   });
 
   return {
@@ -416,6 +475,8 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
     obstacles,
     primary_reason_code,
     financial,
+    wants,
+    first_contact,
     description,
     packed_note,
     raw_text: text,
