@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCloseSellReport } from '../../src/parser/close-sell-parser';
+import { CloseSellEntryFlow } from '../../src/bot/flows/close-sell-entry-flow';
 
 // Mirrors the template the bot hands out (help-command buildCloseSellTemplate),
 // with the fields under test filled in. Empty fields stay as bare `X=` lines,
@@ -119,4 +120,18 @@ test('close-sell: Khmer digits are accepted in counts', () => {
   const p = parseCloseSellReport(template({ booked: '១', notBooked: '២' }))!;
   assert.equal(p.booked, 1);
   assert.equal(p.not_booked, 2);
+});
+
+test('close-sell preview: shows result note, every tour leader, every customer problem', () => {
+  const text = template({ leader: 'Dara', closer: 'Sok', tooExpensive: '1' })
+    .replace('   3/ផ្សេងៗ=', '   3/ផ្សេងៗ=RESULTNOTE')
+    .replace('       b.=', '       b.=Vanna')
+    .replace('      b.ទីតាំងមិនត្រូវ=', '      b.ទីតាំងមិនត្រូវ=1');
+  const p = parseCloseSellReport(text)!;
+  const flow: any = new CloseSellEntryFlow({} as any);
+  const preview: string = flow.buildPreview(p, []);
+  assert.match(preview, /RESULTNOTE/);
+  assert.match(preview, /Vanna/);
+  assert.match(preview, /ថ្លៃពេក/);
+  assert.match(preview, /ទីតាំងមិនត្រូវ/);
 });

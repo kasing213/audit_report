@@ -203,6 +203,9 @@ export class CloseSellEntryFlow {
     lines.push(`📞 <b>Phone:</b> <code>${escapeHtml(parsed.phone || '?')}</code>`);
     lines.push(`👤 <b>Follower (អ្នកដឹកនាំ):</b> ${escapeHtml(parsed.follower || '—')}`);
     lines.push(`🤝 <b>Closer (អ្នកបិទលក់):</b> ${escapeHtml(parsed.closer || '—')}`);
+    if (parsed.tour_leaders.length > 1) {
+      lines.push(`👥 <b>អ្នកដឹកនាំទាំងអស់:</b> ${escapeHtml(parsed.tour_leaders.join(', '))}`);
+    }
     if (parsed.origin) lines.push(`📍 <b>From:</b> ${escapeHtml(parsed.origin)}`);
     for (const w of parsed.wants) {
       lines.push(`🏠 <b>${escapeHtml(w.label)}:</b> ${escapeHtml(w.value)}`);
@@ -214,8 +217,15 @@ export class CloseSellEntryFlow {
     lines.push('');
     lines.push(`✅ <b>Closed (កក់):</b> ${parsed.booked}`);
     lines.push(`⏳ <b>Not closed (មិនទាន់កក់):</b> ${parsed.not_booked}`);
+    if (parsed.result_note) {
+      lines.push(`🗒 <b>ផ្សេងៗ:</b> ${escapeHtml(parsed.result_note)}`);
+    }
     if (parsed.primary_reason_code) {
       lines.push(`<b>Reason:</b> ${escapeHtml(formatReasonDisplay(parsed.primary_reason_code))}`);
+    }
+    if (parsed.obstacles.length > 0) {
+      lines.push('⚠️ <b>បញ្ហាភ្ញៀវ:</b>');
+      for (const ob of parsed.obstacles) lines.push(`• ${escapeHtml(ob.text)}`);
     }
     const fin = financialLines(parsed.financial);
     if (fin.length > 0) {
