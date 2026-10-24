@@ -14,8 +14,8 @@ export interface CloseSellParseResult {
   page: string | null;
   phone: string | null;            // slash-joined when multi-phone (e.g. "0123/0987")
   phones: string[];                // individual phones, for lookups
-  follower: string | null;         // §2.loc.2 closer, else first §2.loc.1 name
-  closer: string | null;           // §2.loc.2 only
+  follower: string | null;         // first §2.loc.1 tour-leader name (never the closer)
+  closer: string | null;           // §2.loc.2 ឈ្មោះអ្នកបិទលក់ only
   tour_leaders: string[];          // §2.loc.1 a-e non-empty
   origin: string | null;           // §2.loc.3 ភ្ញៀវមកពី
   booked: number;                  // §2.1.1 ចំនួនកក់
@@ -53,6 +53,15 @@ function parseDdMmYy(raw: string): string | null {
   if (day < 1 || day > 31 || month < 1 || month > 12 || year < 2000 || year > 2100) return null;
   return `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
+
+// Staff type counts in Khmer digits as often as Latin ones (ចំនួនកក់=១).
+function normalizeKhmerDigits(text: string): string {
+  return text.replace(/[០-៩]/g, d => String(d.charCodeAt(0) - 0x17E0));
+}
+
+// NOTE: every field regex below uses `[ \t]*`, not `\s*`, around `=`. `\s`
+// matches newlines, so an empty `X=` line would otherwise capture the next
+// template line as its value (e.g. empty closer → "3/ភ្ញៀវមកពី=").
 
 function cleanPhoneDigits(raw: string): string {
   return raw.replace(/[^\d+]/g, '');
@@ -150,7 +159,7 @@ function extractReportDate(preamble: string): string | null {
 
 function extractPhonesFromS1(s1: string): string[] {
   // §1.4 line: "4/លេខទូរស័ព្ទ = 0123/0987" — accept '/', '-', spaces, parens between digits.
-  const m = s1.match(/លេខទូរស័ព្ទ\s*=\s*([\d+\-\s()\/]+)/);
+  const m = s1.match(/លេខទូរស័ព្ទ[ \t]*=[ \t]*([\d+\-\t ()\/]+)/);
   if (!m) return [];
   const raw = m[1].trim();
   // Split on `/` to get candidate phones, then normalize.
@@ -170,7 +179,7 @@ function extractPhonesFromS1(s1: string): string[] {
 
 function extractVisitDate(s1: string): string | null {
   // §1.4.a "a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= 28/05/26"
-  const m = s1.match(/ថ្ងៃ\s*\.\s*ខែ\s*\.\s*ឆ្នាំ[^=]*=\s*([^\n]+)/);
+  const m = s1.match(/ថ្ងៃ\s*\.\s*ខែ\s*\.\s*ឆ្នាំ[^=\n]*=[ \t]*([^\n]+)/);
   if (!m) return null;
   return parseDdMmYy(m[1]);
 }
@@ -178,9 +187,9 @@ function extractVisitDate(s1: string): string | null {
 function extractCounts(s2: string): { booked: number; not_booked: number } {
   let booked = 0;
   let not_booked = 0;
-  const bm = s2.match(/1\s*\/\s*ចំនួនកក់\s*=\s*0*(\d+)/);
+  const bm = s2.match(/1[ \t]*\/[ \t]*ចំនួនកក់[ \t]*=[ \t]*0*(\d+)/);
   if (bm) booked = parseInt(bm[1], 10);
-  const nm = s2.match(/2\s*\/\s*មិនទាន់កក់\s*=\s*0*(\d+)/);
+  const nm = s2.match(/2[ \t]*\/[ \t]*មិនទាន់កក់[ \t]*=[ \t]*0*(\d+)/);
   if (nm) not_booked = parseInt(nm[1], 10);
   return { booked, not_booked };
 }
@@ -188,7 +197,7 @@ function extractCounts(s2: string): { booked: number; not_booked: number } {
 function extractResultNote(s2: string): string | null {
   // §2.3 ផ្សេងៗ= <text> (the result-note one, before "ទីតាំងដូចខាងក្រោម")
   const head = s2.split(/ទីតាំងដូចខាងក្រោម/)[0] ?? s2;
-  const m = head.match(/3\s*\/\s*ផ្សេងៗ\s*=\s*([^\n]+)/);
+  const m = head.match(/3[ \t]*\/[ \t]*ផ្សេងៗ[ \t]*=[ \t]*([^\n]+)/);
   if (!m) return null;
   const v = m[1].trim();
   return v || null;
@@ -204,7 +213,7 @@ function extractTourLeaders(s2: string): string[] {
   const bound = block.search(/(2\s*\/\s*ឈ្មោះអ្នកបិទលក់|3\s*\/\s*ភ្ញៀវមកពី)/);
   const region = bound > 0 ? block.slice(0, bound) : block;
   const names: string[] = [];
-  const re = /^\s*([a-eA-E])\s*[\.\)]?\s*=\s*([^\n]*)$/gm;
+  const re = /^[ \t]*([a-eA-E])[ \t]*[\.\)]?[ \t]*(?:Other)?[ \t]*=[ \t]*([^\n]*)$/gim;
   let m: RegExpExecArray | null;
   while ((m = re.exec(region)) !== null) {
     const v = m[2].trim().replace(/^Other\s*$/i, '');
@@ -214,14 +223,14 @@ function extractTourLeaders(s2: string): string[] {
 }
 
 function extractCloser(s2: string): string | null {
-  const m = s2.match(/2\s*\/\s*ឈ្មោះអ្នកបិទលក់\s*=\s*([^\n]+)/);
+  const m = s2.match(/2[ \t]*\/[ \t]*ឈ្មោះអ្នកបិទលក់[ \t]*=[ \t]*([^\n]+)/);
   if (!m) return null;
   const v = m[1].trim();
   return v || null;
 }
 
 function extractOrigin(s2: string): string | null {
-  const m = s2.match(/3\s*\/\s*ភ្ញៀវមកពី\s*=\s*([^\n]+)/);
+  const m = s2.match(/3[ \t]*\/[ \t]*ភ្ញៀវមកពី[ \t]*=[ \t]*([^\n]+)/);
   if (!m) return null;
   const v = m[1].trim();
   return v || null;
@@ -234,7 +243,7 @@ function extractObstacles(s2: string): Array<{ letter: string; text: string }> {
   const block = s2.slice(idx);
   const out: Array<{ letter: string; text: string }> = [];
   // Look for lines like "a.ថ្លៃពេក=1" or "I.ផ្សេងៗ= text". Letters a-j (and I).
-  const re = /^\s*([a-jA-J])\s*[\.\)]?\s*([^=\n]*?)\s*=\s*([^\n]*)$/gm;
+  const re = /^[ \t]*([a-jA-J])[ \t]*[\.\)]?[ \t]*([^=\n]*?)[ \t]*=[ \t]*([^\n]*)$/gm;
   let m: RegExpExecArray | null;
   while ((m = re.exec(block)) !== null) {
     const letter = m[1].toLowerCase();
@@ -257,27 +266,29 @@ function extractFinancial(s4: string): CloseSellParseResult['financial'] {
     character: null
   };
   // §4.1.a ការវាយតំលៃលទ្ឋភាព (ល្អ / មធ្យម / ខ្សោយ) — Khmer digits ១ ២ ៣ prefix.
-  const capBlock = s4.match(/ការវាយតំលៃ[^=]*\s*([\s\S]*?)(?=\n\s*2\s*\/|$)/);
+  // Header line is skipped with [^\n]* — a `[^=]*` here would eat the "១.ល្អ"
+  // label up to its `=`, so 'good' could never match.
+  const capBlock = s4.match(/ការវាយតំលៃ[^\n]*([\s\S]*?)(?=\n\s*2\s*\/|$)/);
   if (capBlock) {
-    if (/[១1]\s*\.\s*ល្អ\s*=\s*0*[1-9]/.test(capBlock[1])) fin.capability = 'good';
-    else if (/[២2]\s*\.\s*មធ្យម\s*=\s*0*[1-9]/.test(capBlock[1])) fin.capability = 'medium';
-    else if (/[៣3]\s*\.\s*ខ្សោយ\s*=\s*0*[1-9]/.test(capBlock[1])) fin.capability = 'weak';
+    if (/[១1][ \t]*\.[ \t]*ល្អ[ \t]*=[ \t]*0*[1-9]/.test(capBlock[1])) fin.capability = 'good';
+    else if (/[២2][ \t]*\.[ \t]*មធ្យម[ \t]*=[ \t]*0*[1-9]/.test(capBlock[1])) fin.capability = 'medium';
+    else if (/[៣3][ \t]*\.[ \t]*ខ្សោយ[ \t]*=[ \t]*0*[1-9]/.test(capBlock[1])) fin.capability = 'weak';
   }
-  const inc = s4.match(/2\s*\/\s*លទ្ឋភាពចំណូល[^=]*=\s*([^\n]*)/);
+  const inc = s4.match(/2[ \t]*\/[ \t]*លទ្ឋភាពចំណូល[^=\n]*=[ \t]*([^\n]*)/);
   if (inc && inc[1].trim()) fin.monthly_income = inc[1].trim();
-  const bo = s4.match(/3\s*\/\s*អ្នករកសុី\s*=\s*0*(\d+)/);
+  const bo = s4.match(/3[ \t]*\/[ \t]*អ្នករកសុី[ \t]*=[ \t]*0*(\d+)/);
   if (bo) fin.business_owners = parseInt(bo[1], 10);
-  const wk = s4.match(/4\s*\/\s*អ្នកធ្វើការ\s*=\s*0*(\d+)/);
+  const wk = s4.match(/4[ \t]*\/[ \t]*អ្នកធ្វើការ[ \t]*=[ \t]*0*(\d+)/);
   if (wk) fin.workers = parseInt(wk[1], 10);
-  const fm = s4.match(/5\s*\/\s*សមាជិកគ្រួសារ\s*=\s*0*(\d+)/);
+  const fm = s4.match(/5[ \t]*\/[ \t]*សមាជិកគ្រួសារ[ \t]*=[ \t]*0*(\d+)/);
   if (fm) fin.family_members = parseInt(fm[1], 10);
-  const ern = s4.match(/6\s*\/\s*ចំនួនអ្នករកចំណូល[^=]*=\s*0*(\d+)/);
+  const ern = s4.match(/6[ \t]*\/[ \t]*ចំនួនអ្នករកចំណូល[^=\n]*=[ \t]*0*(\d+)/);
   if (ern) fin.earners = parseInt(ern[1], 10);
   const charBlock = s4.match(/7\s*\/\s*អត្តចរិត[\s\S]*$/);
   if (charBlock) {
-    if (/a\s*\.\s*ល្អ\s*=\s*0*[1-9]/i.test(charBlock[0])) fin.character = 'good';
-    else if (/b\s*\.\s*មធ្យម\s*=\s*0*[1-9]/i.test(charBlock[0])) fin.character = 'medium';
-    else if (/c\s*\.\s*អន់\s*=\s*0*[1-9]/i.test(charBlock[0])) fin.character = 'weak';
+    if (/a[ \t]*\.[ \t]*ល្អ[ \t]*=[ \t]*0*[1-9]/i.test(charBlock[0])) fin.character = 'good';
+    else if (/b[ \t]*\.[ \t]*មធ្យម[ \t]*=[ \t]*0*[1-9]/i.test(charBlock[0])) fin.character = 'medium';
+    else if (/c[ \t]*\.[ \t]*អន់[ \t]*=[ \t]*0*[1-9]/i.test(charBlock[0])) fin.character = 'weak';
   }
   return fin;
 }
@@ -298,8 +309,15 @@ function packNote(p: {
   description: string | null;
   tour_leaders: string[];
   closer: string | null;
+  booked: number;
+  not_booked: number;
 }): string {
   const parts: string[] = [];
+  // Lead events carry no count or closer column, so the note is where the
+  // close / not-close result and the closer survive into storage.
+  if (p.booked > 0) parts.push(`កក់=${p.booked}`);
+  if (p.not_booked > 0) parts.push(`មិនទាន់កក់=${p.not_booked}`);
+  if (p.closer) parts.push(`អ្នកបិទលក់៖ ${p.closer}`);
   if (p.result_note) parts.push(p.result_note);
   if (p.origin) parts.push(`ភ្ញៀវមកពី${p.origin}`);
   for (const ob of p.obstacles) parts.push(ob.text);
@@ -310,9 +328,9 @@ function packNote(p: {
   if (p.financial.family_members != null) parts.push(`សមាជិកគ្រួសារ=${p.financial.family_members}`);
   if (p.financial.earners != null) parts.push(`អ្នករកចំណូល=${p.financial.earners}`);
   if (p.financial.character) parts.push(`អត្តចរិត=${p.financial.character}`);
-  // tour leaders only when the closer is empty (otherwise they're redundant
-  // — closer is the same person or the lead-tour was the same event).
-  if (!p.closer && p.tour_leaders.length > 0) {
+  // The first tour leader is already stored as the follower; list them all
+  // only when there is more than one.
+  if (p.tour_leaders.length > 1) {
     parts.push(`អ្នកដឹកនាំ៖ ${p.tour_leaders.join(', ')}`);
   }
   if (p.description) parts.push(p.description);
@@ -329,7 +347,8 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
   if (!kind) return null;
 
   const warnings: string[] = [];
-  const sections = splitSections(text);
+  // Parse a digit-normalized copy; raw_text below keeps the original.
+  const sections = splitSections(normalizeKhmerDigits(text));
   if (!sections.s1 && !sections.s2) {
     return null;
   }
@@ -360,7 +379,9 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
   const financial = extractFinancial(sections.s4);
   const description = extractDescription(sections.s5);
 
-  const follower = closer || (tour_leaders[0] || null);
+  // Follower = the staff who followed/led the customer (§2.loc.1). The closer
+  // (§2.loc.2) is a different role and is never promoted into follower.
+  const follower = tour_leaders[0] || null;
   const packed_note = packNote({
     result_note,
     origin,
@@ -368,7 +389,9 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
     financial,
     description,
     tour_leaders,
-    closer
+    closer,
+    booked,
+    not_booked
   });
 
   return {

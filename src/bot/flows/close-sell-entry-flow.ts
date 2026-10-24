@@ -200,14 +200,13 @@ export class CloseSellEntryFlow {
     lines.push(`📅 <b>Date:</b> ${escapeHtml(parsed.date)}`);
     if (parsed.page) lines.push(`📣 <b>Page:</b> ${escapeHtml(parsed.page)}`);
     lines.push(`📞 <b>Phone:</b> <code>${escapeHtml(parsed.phone || '?')}</code>`);
-    lines.push(`👤 <b>Follower:</b> ${escapeHtml(parsed.follower || '—')}`);
-    if (parsed.closer && parsed.closer !== parsed.follower) {
-      lines.push(`🤝 <b>Closer:</b> ${escapeHtml(parsed.closer)}`);
-    }
+    lines.push(`👤 <b>Follower (អ្នកដឹកនាំ):</b> ${escapeHtml(parsed.follower || '—')}`);
+    lines.push(`🤝 <b>Closer (អ្នកបិទលក់):</b> ${escapeHtml(parsed.closer || '—')}`);
     if (parsed.origin) lines.push(`📍 <b>From:</b> ${escapeHtml(parsed.origin)}`);
 
     lines.push('');
-    lines.push(`<b>Result:</b> booked=${parsed.booked} · not-booked=${parsed.not_booked}`);
+    lines.push(`✅ <b>Closed (កក់):</b> ${parsed.booked}`);
+    lines.push(`⏳ <b>Not closed (មិនទាន់កក់):</b> ${parsed.not_booked}`);
     if (parsed.primary_reason_code) {
       lines.push(`<b>Reason:</b> ${escapeHtml(formatReasonDisplay(parsed.primary_reason_code))}`);
     }
