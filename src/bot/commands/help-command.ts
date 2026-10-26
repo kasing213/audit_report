@@ -2,28 +2,36 @@ import { Context } from 'telegraf';
 import { Logger } from '../../utils/logger';
 import { GroupConfigManager } from '../../utils/group-config';
 import { getTodayDate } from '../../utils/time';
+import { ChatRole } from '../routing';
 
 export class HelpCommand {
 
-  async handleCommand(ctx: Context, isSalesChat: boolean = false): Promise<void> {
+  /**
+   * The sales group gets the Bulk template; the closing group gets the
+   * Close-sell template. Until a closing group is configured, the sales group
+   * gets both, as before.
+   */
+  async handleCommand(ctx: Context, role: ChatRole = null, closingConfigured: boolean = false): Promise<void> {
     const userId = ctx.from?.id || 0;
     const chatId = ctx.chat?.id;
 
     try {
-      Logger.info(`Help command requested by user ${userId} in chat ${chatId} (sales: ${isSalesChat})`);
+      Logger.info(`Help command requested by user ${userId} in chat ${chatId} (role: ${role ?? 'none'})`);
+      const dateShort = this.isoToDdMmYy(getTodayDate());
 
-      if (isSalesChat) {
+      if (role === 'sales') {
         const follower = this.getFollowerForChat(chatId) || 'YourName';
-        const dateIso = getTodayDate();
-        const dateShort = this.isoToDdMmYy(dateIso);
         await ctx.reply(this.buildSalesHelpMessage(), { parse_mode: 'Markdown' });
         await ctx.reply(this.buildBulkCopyTemplate(follower, dateShort));
+        if (!closingConfigured) await ctx.reply(this.buildCloseSellTemplate(dateShort));
+      } else if (role === 'closing') {
+        await ctx.reply(this.buildClosingHelpMessage(), { parse_mode: 'Markdown' });
         await ctx.reply(this.buildCloseSellTemplate(dateShort));
       } else {
         await ctx.reply(this.buildManagementHelpMessage(), { parse_mode: 'Markdown' });
       }
 
-      Logger.info(`${isSalesChat ? 'Sales' : 'Management'} help message sent to user ${userId}`);
+      Logger.info(`${role ?? 'management'} help message sent to user ${userId}`);
     } catch (error) {
       Logger.error('Error handling /help command', error as Error);
       await ctx.reply('Failed to display help information.');
@@ -166,6 +174,21 @@ export class HelpCommand {
       '     b.មធ្យម=',
       '     c.អន់=',
       '5.បរិយាយផ្សេងៗ='
+    ].join('\n');
+  }
+
+  private buildClosingHelpMessage(): string {
+    return [
+      '💯 *ក្រុម Closing: របាយការណ៍ Close sell*',
+      '',
+      '1️⃣ ចម្លងទំរង់ខាងក្រោម',
+      '2️⃣ បំពេញព័ត៌មានភ្ញៀវដែលបានមកមើល',
+      '3️⃣ បិទភ្ជាប់ត្រឡប់ក្នុងក្រុមនេះ → ពិនិត្យ Preview → ចុច *Confirm*',
+      '',
+      '📋 របាយការណ៍ Bulk ប្រចាំថ្ងៃ សូមបិទភ្ជាប់ក្នុងក្រុមលក់',
+      '',
+      '✏️ */edit* កែទិន្នន័យអតិថិជន',
+      '🗑️ */delete* លុបទិន្នន័យអតិថិជន'
     ].join('\n');
   }
 

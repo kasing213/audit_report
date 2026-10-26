@@ -13,6 +13,7 @@ import { ReclassifyCommand } from './commands/reclassify-command';
 import { BulkEntryFlow } from './flows/bulk-entry-flow';
 import { CloseSellEntryFlow } from './flows/close-sell-entry-flow';
 import { GroupConfigManager } from '../utils/group-config';
+import { chatRole, describeChat, routePaste, WRONG_GROUP_REPLY } from './routing';
 import { isInlineExpired } from './actions/inline-edit-delete';
 import dotenv from 'dotenv';
 
@@ -61,11 +62,26 @@ export class TelegrafBotService {
 
   private setupHandlers(): void {
     // /help command - available in all chats (sales guide or management help)
+    // /start - any chat: show its chat ID and what it is set up as, so a new
+    // group (e.g. the closing group) can be configured from its ID.
+    this.bot.start(async (ctx: Context) => {
+      try {
+        if (!ctx.chat) return;
+        const chat = ctx.chat as { id: number; title?: string; type: string };
+        await ctx.reply(describeChat(chat, chatRole(chat.id, this.groupConfigManager)));
+      } catch (error) {
+        Logger.error('Error handling /start command', error as Error);
+      }
+    });
+
     this.bot.command('help', async (ctx: Context) => {
       try {
         const chatId = ctx.chat?.id || 0;
-        const isSalesChat = this.groupConfigManager.isSalesGroupChat(chatId);
-        await this.helpCommand.handleCommand(ctx, isSalesChat);
+        await this.helpCommand.handleCommand(
+          ctx,
+          chatRole(chatId, this.groupConfigManager),
+          this.groupConfigManager.hasClosingGroup(),
+        );
       } catch (error) {
         Logger.error('Error handling /help command', error as Error);
         await ctx.reply('Failed to display help information.');
@@ -414,32 +430,34 @@ export class TelegrafBotService {
           }
         }
 
-        // Close-sell / Customer Potential paste — detect via 💯 header + §1/§2.
-        // Checked before Bulk because Close-sell template can contain the
-        // word "Tel" elsewhere and we want strict routing on its dedicated header.
+        // Close-sell goes to the closing group, Bulk to the sales group
+        // (routePaste). Close-sell is checked first because its template can
+        // contain the word "Tel" and we want strict routing on its 💯 header.
         if (ctx.message && 'text' in ctx.message) {
           const text = ctx.message.text;
+          const chatId = ctx.chat?.id || 0;
+          const role = chatRole(chatId, this.groupConfigManager);
+          const closingConfigured = this.groupConfigManager.hasClosingGroup();
+
           if (CloseSellEntryFlow.detectsCloseSellReport(text)) {
-            const chatId = ctx.chat?.id || 0;
-            if (
-              this.groupConfigManager.isSalesGroupChat(chatId) ||
-              this.groupConfigManager.isCommandAllowedInChat(chatId)
-            ) {
+            const route = routePaste('closeSell', role, closingConfigured);
+            if (route === 'wrongGroup') {
+              await ctx.reply(WRONG_GROUP_REPLY.closeSell);
+              return;
+            }
+            if (route === 'accept') {
               const handled = await this.closeSellEntryFlow.tryCloseSellEntry(ctx, text);
               if (handled) return;
             }
           }
-        }
 
-        // Bulk daily-report paste — detect via header + Tel lines.
-        if (ctx.message && 'text' in ctx.message) {
-          const text = ctx.message.text;
           if (BulkEntryFlow.detectsBulkReport(text)) {
-            const chatId = ctx.chat?.id || 0;
-            if (
-              this.groupConfigManager.isSalesGroupChat(chatId) ||
-              this.groupConfigManager.isCommandAllowedInChat(chatId)
-            ) {
+            const route = routePaste('bulk', role, closingConfigured);
+            if (route === 'wrongGroup') {
+              await ctx.reply(WRONG_GROUP_REPLY.bulk);
+              return;
+            }
+            if (route === 'accept') {
               const handled = await this.bulkEntryFlow.tryBulkEntry(ctx, text);
               if (handled) return;
             }

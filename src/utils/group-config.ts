@@ -129,6 +129,16 @@ export class GroupConfigManager {
     return auditChatId ? chatIdStr === auditChatId : false;
   }
 
+  /** The group for Close-sell reports only (CLOSING_GROUP_CHAT_ID). */
+  public isClosingGroupChat(chatId: string | number): boolean {
+    const closingChatId = process.env.CLOSING_GROUP_CHAT_ID;
+    return closingChatId ? String(chatId) === closingChatId : false;
+  }
+
+  public hasClosingGroup(): boolean {
+    return !!process.env.CLOSING_GROUP_CHAT_ID;
+  }
+
   public isCommandAllowedInChat(chatId: string | number): boolean {
     return this.isManagementSummaryChat(chatId) || this.isAuditChat(chatId);
   }
