@@ -132,7 +132,8 @@ function extractCounters(section: string): Record<string, number> {
   // letter (F in "Follow up", C in "Cold", etc.) is NOT mistaken for a list
   // marker and eaten from the label.
   let currentCategory: string | null = null;
-  for (const line of lines) {
+  for (let li = 0; li < lines.length; li++) {
+    const line = lines[li];
     if (/^\s*$/.test(line)) { currentCategory = null; continue; }
 
     // Category header for connection-breakdown grid: `a.Messager=`, `b.Comment=`,
@@ -141,6 +142,18 @@ function extractCounters(section: string): Record<string, number> {
     if (catMatch) {
       const catLatin = catMatch[2].match(/^([A-Za-z][A-Za-z0-9 _\/]*)/);
       currentCategory = catLatin ? (normalizeKey(catLatin[1]) || null) : null;
+      continue;
+    }
+
+    // The team's full format writes the same headers looser (`a.messageវ៉ៃលេខ`,
+    // `c. Callin 0`) with `1/Connected by ...` lines under each. A header that
+    // is followed by a Connected-by line is a category, whatever its shape; a
+    // number on it is that channel's total.
+    const looseCat = line.match(/^\s*([a-fA-F])(?:[.)]|\s)\s*([A-Za-z][A-Za-z ]*)/);
+    if (looseCat && !/Connected by/i.test(line) && /Connected by/i.test(lines[li + 1] || '')) {
+      currentCategory = normalizeKey(looseCat[2]) || null;
+      const total = line.match(/(?:=\s*|\s)(\d+)\s*$/);
+      if (currentCategory && total) counters[currentCategory] = parseInt(total[1], 10);
       continue;
     }
 
@@ -168,7 +181,9 @@ function findSectionBounds(text: string): { headerEnd: number; telStart: number;
   const datingRegex = /Dating visit|សន្យាមកមើល/;
   const datingMatch = datingRegex.exec(text);
   let datingStart = datingMatch ? datingMatch.index : text.length;
-  if (datingStart > 0) {
+  // Back up to the start of the Dating line. Without a Dating section there is
+  // nothing to back up from: doing it anyway cut off the report's last line.
+  if (datingMatch && datingStart > 0) {
     const lineStart = text.lastIndexOf('\n', datingStart);
     if (lineStart >= 0) datingStart = lineStart;
   }
@@ -176,28 +191,63 @@ function findSectionBounds(text: string): { headerEnd: number; telStart: number;
   return { headerEnd: telStart, telStart, datingStart };
 }
 
-function extractTelBlocks(text: string, datingStart: number): Array<{ num: number; body: string; raw: string }> {
-  const blocks: Array<{ num: number; body: string; raw: string }> = [];
-  const regionEnd = Math.min(text.length, datingStart);
-  const region = text.slice(0, regionEnd);
+interface TelBlock {
+  num: number;
+  value: string;
+  body: string;
+}
 
-  const telRegex = /(^|\n)[ \t]*(?:[☎️☎][ \t]*)?T[ \t]*el?[ \t]*(\d{1,2})[ \t]*=[ \t]*([^\n]*)/gi;
-  const starts: Array<{ num: number; index: number; firstLine: string }> = [];
+/**
+ * Tel slot headers as staff really type them: `Tel1=0123`, `Tel 2=`, `Tel3= 0`,
+ * `T3=,0`, `Tel=0889...` (no slot number) and `T el 0889475139` (no number, no
+ * `=`). A header without a number is the slot after the previous one.
+ */
+function extractTelBlocks(region: string): TelBlock[] {
+  const telRegex = /(^|\n)[ \t]*(?:[☎️☎][ \t]*)?T[ \t]*(?:e[ \t]*l?)?[ \t]*(\d{1,2})?[ \t]*(?:=|(?=[ \t]+[+\d]))[ \t]*([^\n]*)/gi;
+  const starts: Array<{ num: number; index: number; value: string }> = [];
+  let prev = 0;
   let m: RegExpExecArray | null;
   while ((m = telRegex.exec(region)) !== null) {
-    const num = parseInt(m[2], 10);
+    const num = m[2] ? parseInt(m[2], 10) : prev + 1;
     if (!Number.isFinite(num) || num < 1 || num > 20) continue;
-    const startIdx = m.index + m[1].length;
-    starts.push({ num, index: startIdx, firstLine: m[3] });
+    prev = num;
+    starts.push({ num, index: m.index + m[1].length, value: m[3] });
   }
 
-  for (let i = 0; i < starts.length; i++) {
-    const startIdx = starts[i].index;
-    const endIdx = i + 1 < starts.length ? starts[i + 1].index : regionEnd;
-    const raw = region.slice(startIdx, endIdx);
-    blocks.push({ num: starts[i].num, body: raw, raw });
+  return starts.map((s, i) => ({
+    num: s.num,
+    value: s.value,
+    body: region.slice(s.index, i + 1 < starts.length ? starts[i + 1].index : region.length),
+  }));
+}
+
+function readPhone(value: string): string | null {
+  const m = value.match(/^[,;:\s]*([\d+\-\s()\/]+)/);
+  return m ? normalizePhoneSegment(m[1].trim()) : null;
+}
+
+interface MarkedReason {
+  code: ReasonCode;
+  value: string;
+}
+
+/**
+ * Every a-j line with a value other than empty or 0, in order. Accepts
+ * `a.ថ្លៃពេក=1`, `c ខ្ញុំ...=1` and `I.ចាំរក... 1` (a space instead of `=`).
+ * Whitespace is [ \t] only, so an empty `a.ថ្លៃពេក=` line can't take the next
+ * line as its value (which would flip `b.…=1` into reason A).
+ */
+function readReasons(body: string): MarkedReason[] {
+  const out: MarkedReason[] = [];
+  const re = /^[ \t]*([a-jA-J])(?:[ \t]*[.)][ \t]*|[ \t]+|(?=[ \t]*=))([^=\n]*?)[ \t]*(?:=[ \t]*([^\n]*?)|[ \t]+(\d+))?[ \t]*$/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(body)) !== null) {
+    const value = (m[3] ?? m[4] ?? '').trim();
+    if (!value || value === '0') continue;
+    const code = REASON_LETTER_TO_CODE[m[1].toLowerCase()];
+    if (code) out.push({ code, value });
   }
-  return blocks;
+  return out;
 }
 
 interface SlotPartial {
@@ -205,16 +255,14 @@ interface SlotPartial {
   customerPhone: string | null;
   name: string | null;
   province: string | null;
-  reasonCode: ReasonCode | null;
-  reasonFreeText: string | null;
+  reasons: MarkedReason[];
   sourceFragments: string[];
   warnings: string[];
 }
 
-function parseTelBlockPartial(num: number, body: string): SlotPartial {
+function parseTelBlockPartial(block: TelBlock, withReasons: boolean): SlotPartial {
   const warnings: string[] = [];
-  const lines = body.split('\n');
-  const firstLine = lines[0] || '';
+  const body = block.body;
 
   // Fence: the /help template places `B.ប្រភពទំនាក់ទំនង (Connected by)` with its
   // a-f grid between Tel1's `j.ផ្សេងៗ=` line and `Tel2=`, which means the grid
@@ -227,59 +275,33 @@ function parseTelBlockPartial(num: number, body: string): SlotPartial {
   const scanBody = fenceMatch ? body.slice(0, fenceMatch.index) : body;
 
   let customerPhone: string | null = null;
-  const phoneMatch = firstLine.match(/=\s*([\d+\-\s()\/]+)/);
-  if (phoneMatch) {
-    const rawPhone = phoneMatch[1].trim();
-    try {
-      customerPhone = normalizePhoneSegment(rawPhone);
-    } catch {
-      warnings.push('Phone normalization failed');
-    }
+  try {
+    customerPhone = readPhone(block.value);
+  } catch {
+    warnings.push('Phone normalization failed');
   }
 
+  // `Nam=` is a common typo for `Name=`.
   let name: string | null = null;
-  const nameMatch = scanBody.match(/\bName\s*=\s*([^\n]+)/i);
+  const nameMatch = scanBody.match(/\bName?\s*=[ \t]*([^\n]+)/i);
   if (nameMatch) {
     const v = nameMatch[1].trim();
     if (v) name = v;
   }
 
   let province: string | null = null;
-  const pvMatch = scanBody.match(/\bPv\s*=\s*([^\n]+)/i);
+  const pvMatch = scanBody.match(/\bPv\s*=[ \t]*([^\n]+)/i);
   if (pvMatch) {
     const v = pvMatch[1].trim();
     if (v) province = v;
   }
 
-  let reasonCode: ReasonCode | null = null;
-  let reasonFreeText: string | null = null;
-  // Every whitespace run inside the pattern is restricted to [ \t]+ so that a
-  // line ending in `a.ថ្លៃពេក=` (empty value) doesn't let `\s*` swallow the
-  // newline and steal the next line's content as the value — which would flip
-  // `b.ទីតាំងមិនត្រូវ=1` into reason A instead of B.
-  const reasonLetterRegex = /^[ \t]*([a-jA-J])[ \t]*[\.\)]?[ \t]*(.*?)[ \t]*=[ \t]*(.*)$/gm;
-  let rm: RegExpExecArray | null;
-  while ((rm = reasonLetterRegex.exec(scanBody)) !== null) {
-    const letter = rm[1].toLowerCase();
-    const value = rm[3].trim();
-    if (!value || value === '0') continue;
-    const code = REASON_LETTER_TO_CODE[letter];
-    if (!code) continue;
-    if (reasonCode === null) {
-      reasonCode = code;
-      if (code === 'J' && value && !/^\d+$/.test(value)) {
-        reasonFreeText = value;
-      }
-    }
-  }
-
   return {
-    num,
+    num: block.num,
     customerPhone,
     name,
     province,
-    reasonCode,
-    reasonFreeText,
+    reasons: withReasons ? readReasons(scanBody) : [],
     sourceFragments: [body.trim()],
     warnings
   };
@@ -296,21 +318,56 @@ function mergeSlotPartials(partials: SlotPartial[]): Map<number, SlotPartial> {
     if (!existing.customerPhone && p.customerPhone) existing.customerPhone = p.customerPhone;
     if (!existing.name && p.name) existing.name = p.name;
     if (!existing.province && p.province) existing.province = p.province;
-    if (!existing.reasonCode && p.reasonCode) {
-      existing.reasonCode = p.reasonCode;
-      existing.reasonFreeText = p.reasonFreeText;
-    }
+    if (!existing.reasons.length && p.reasons.length) existing.reasons = p.reasons;
     existing.sourceFragments.push(...p.sourceFragments);
     existing.warnings.push(...p.warnings);
   }
   return merged;
 }
 
+/**
+ * The team's full format lists the a-j reasons in a second run of Tel blocks
+ * under `👉 g.ភ្ញៀវឆ្លើយតបដូចខាងក្រោម`, after the phones and the Connected-by
+ * grid. Returns that heading line's bounds, or null for the bot's short
+ * template, where each Tel carries its reasons inline.
+ */
+function findReasonList(text: string, end: number): { start: number; end: number } | null {
+  const m = /^[^\n]*ភ្ញៀវឆ្លើយតប[^\n]*$/m.exec(text.slice(0, end));
+  return m ? { start: m.index, end: m.index + m[0].length } : null;
+}
+
+/** Attach each reason block to its slot: by phone when it has one, else by slot number. */
+function applyReasonList(merged: Map<number, SlotPartial>, region: string): void {
+  for (const block of extractTelBlocks(region)) {
+    const reasons = readReasons(block.body);
+    if (!reasons.length) continue;
+    let phone: string | null = null;
+    try { phone = readPhone(block.value); } catch { phone = null; }
+    const byPhone = phone
+      ? Array.from(merged.values()).find(s => (s.customerPhone ?? '').split('/').includes(phone as string))
+      : undefined;
+    const target = byPhone ?? merged.get(block.num);
+    if (!target) continue;
+    if (!target.reasons.length) target.reasons = reasons;
+    target.sourceFragments.push(block.body.trim());
+  }
+}
+
 function slotPartialToDraft(p: SlotPartial, header: BulkReportHeader): LeadEventDraft | null {
   if (!p.customerPhone) return null;
+  const [primary, ...more] = p.reasons;
   const noteParts: string[] = [];
   if (p.province) noteParts.push(`Province: ${p.province}`);
-  if (p.reasonFreeText) noteParts.push(p.reasonFreeText);
+  if (primary?.code === 'J' && !/^\d+$/.test(primary.value)) noteParts.push(primary.value);
+  // Staff sometimes mark more than one reason. The lead keeps the first as its
+  // code; the rest are written into the note rather than dropped.
+  const seen = new Set<ReasonCode>(primary ? [primary.code] : []);
+  for (const r of more) {
+    if (seen.has(r.code)) continue;
+    seen.add(r.code);
+    const text = r.code === 'J' && !/^\d+$/.test(r.value) ? `: ${r.value}` : '';
+    noteParts.push(`Also: ${r.code} (${REASON_CODE_LABELS[r.code]})${text}`);
+  }
   const note = noteParts.length ? noteParts.join('; ') : null;
   return {
     slot: `Tel${p.num}`,
@@ -319,7 +376,7 @@ function slotPartialToDraft(p: SlotPartial, header: BulkReportHeader): LeadEvent
     page: header.page,
     customer_name: p.name,
     customer_phone: p.customerPhone,
-    reason_code: p.reasonCode,
+    reason_code: primary?.code ?? null,
     note,
     promise_date: null,
     source_fragment: p.sourceFragments.filter(Boolean).join('\n\n').slice(0, 500),
@@ -431,9 +488,11 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   const bounds = findSectionBounds(normalized);
   const counters = extractCounters(normalized.slice(0, bounds.datingStart));
 
-  const telBlocks = extractTelBlocks(normalized, bounds.datingStart);
-  const partials = telBlocks.map(b => parseTelBlockPartial(b.num, b.body));
+  const reasonList = findReasonList(normalized, bounds.datingStart);
+  const slotRegion = normalized.slice(0, reasonList ? reasonList.start : bounds.datingStart);
+  const partials = extractTelBlocks(slotRegion).map(b => parseTelBlockPartial(b, !reasonList));
   const merged = mergeSlotPartials(partials);
+  if (reasonList) applyReasonList(merged, normalized.slice(reasonList.end, bounds.datingStart));
   const drafts: LeadEventDraft[] = [];
   let emptySlots = 0;
   const totalTelSlotsExpected = 10;
