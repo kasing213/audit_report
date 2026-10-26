@@ -44,20 +44,31 @@ export class HelpCommand {
   }
 
   private buildBulkCopyTemplate(follower: string, date: string): string {
-    // Empty skeleton for Tel2..Tel10 — phone/name/Pv only. Reps add `a.ថ្លៃពេក=1`
-    // (or any other a–j line) under a slot when that lead has a rejection reason.
-    const blankSlot = (n: number) => [
+    // Every slot carries the full a-j list, so staff only type `=1` next to the
+    // reason instead of copying the list into each Tel. No example values: an
+    // example phone left in the paste was saved as a real lead.
+    const slot = (n: number) => [
       `Tel${n}=`,
       '   Name=',
       '   Pv=',
+      '   a.ថ្លៃពេក=',
+      '   b.ទីតាំងមិនត្រូវ=',
+      '   c ខ្ញុំមិនមែនអ្នកសំរេច=',
+      '   d គ្មានចំណាប់អារម្មណ៍=',
+      '   e.ត្រូវការកម្ចីច្រើន=',
+      '   f.ជំពាក់គេច្រើន=',
+      '   g.ខូចCBC=',
+      '   h.ដីរឺផ្ទះតូចពេក=',
+      '   I.ចាំរកថ្ងៃទំនេរមកមើល=',
+      '   j.ផ្សេងៗ=',
       ''
     ];
-    const blanks: string[] = [];
-    for (let n = 2; n <= 10; n++) blanks.push(...blankSlot(n));
+    const slots: string[] = [];
+    for (let n = 1; n <= 10; n++) slots.push(...slot(n));
 
     return [
       '📋 សារទី ១ — ទំរង់ Bulk (របាយការណ៍ប្រចាំថ្ងៃ)',
-      'កែឬលុបឧទាហរណ៍ រួចចម្លងទាំងអស់ទៅកាន់ទំព័រ Bulk',
+      'បំពេញលេខ ឈ្មោះ ខេត្ត និងដាក់ =1 នៅមូលហេតុ a–j រួចចម្លងទាំងអស់ទៅកាន់ទំព័រ Bulk',
       '',
       '💞Follow up',
       `#របាយការណ៍ថ្ងៃទី${date}`,
@@ -80,27 +91,10 @@ export class HelpCommand {
       '   e.Telegram=0',
       '   f.Other=0',
       '',
-      '# ── ឧទាហរណ៍ Tel1 (កែជាទិន្នន័យរបស់អ្នក ឬលុបដើម្បីទុកបន្ទាត់ទទេ) ──',
-      'Tel1=012345678',
-      '   Name=Sok Dara',
-      '   Pv=PP',
-      '   a.ថ្លៃពេក=1',
-      '   b.ទីតាំងមិនត្រូវ=',
-      '   c ខ្ញុំមិនមែនអ្នកសំរេច=',
-      '   d គ្មានចំណាប់អារម្មណ៍=',
-      '   e.ត្រូវការកម្ចីច្រើន=',
-      '   f.ជំពាក់គេច្រើន=',
-      '   g.ខូចCBC=',
-      '   h.ដីរឺផ្ទះតូចពេក=',
-      '   I.ចាំរកថ្ងៃទំនេរមកមើល=',
-      '   j.ផ្សេងៗ=',
-      '',
-      ...blanks,
+      ...slots,
       '🥰10 .Dating visit (សន្យាមកមើល)',
-      '# ── ឧទាហរណ៍: Tel1 សន្យាមកមើលម៉ោង 2pm ──',
-      '   1/លេខទូរស័ព្ =012345678',
-      `      a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង= 2pm ${date}`,
-      '      1/1-3day=1',
+      '   1/លេខទូរស័ព្ទ=',
+      '      a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង=',
       '   2/លេខទូរស័ព្ទ=',
       '      a ថ្ងៃ.ខែ.ឆ្នាំ.ម៉ោង=',
       '   3/លេខទូរស័ព្ទ=',
@@ -188,12 +182,11 @@ export class HelpCommand {
       `🧾 *Bulk paste:* \`${baseUrl}/data-entry/bulk\``,
       '',
       '1️⃣ ចម្លងទំរង់ខាងក្រោម',
-      '2️⃣ កែទិន្នន័យ Tel1..Tel10 ជំនួសឧទាហរណ៍ (លេខ ឈ្មោះ ខេត្ត មូលហេតុ a–j)',
+      '2️⃣ បំពេញ Tel1..Tel10 (លេខ ឈ្មោះ ខេត្ត) មូលហេតុ a–j មានរួចហើយក្រោម Tel នីមួយៗ',
       '3️⃣ បិទភ្ជាប់ត្រឡប់ក្នុងក្រុមនេះ ឬបើក link ខាងលើ → *Parse Preview* → *Confirm*',
       '',
       '💡 មូលហេតុ a–j៖ ដាក់ `=1` នៅបន្ទាត់ដែលត្រូវ (ឧ. `a.ថ្លៃពេក=1`)',
       '💡 Connected by៖ ដាក់ចំនួនក្នុងបន្ទាត់ a–f (ឧ. `a.Messenger=3`)',
-      '⚠️ បន្ទាត់ដែលចាប់ផ្តើមដោយ `#` ជាឧទាហរណ៍ — លុបចេញ ឬទុកក៏បានដែរ',
       '✅ ឈ្មោះ follower និងកាលបរិច្ឆេទបំពេញស្វ័យប្រវត្តិ',
       '',
       '━━━━━━━━━━━━━━━━━━━━━',
