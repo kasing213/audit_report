@@ -2,7 +2,7 @@ import { Context, Markup } from 'telegraf';
 import { randomBytes } from 'crypto';
 import { SalesCaseRepository } from '../../database/repository';
 import { LeadEventDocument, DailySummaryDocument } from '../../database/models';
-import { parseBulkReport, BulkReportParseResult } from '../../parser/bulk-report-parser';
+import { parseBulkReport, BulkReportParseResult, unflattenReport } from '../../parser/bulk-report-parser';
 import { GroupConfigManager } from '../../utils/group-config';
 import { Logger } from '../../utils/logger';
 import { formatReasonDisplay } from '../../constants/reason-codes';
@@ -33,7 +33,9 @@ export class BulkEntryFlow {
     // Header marker (Khmer "report" word or "date" word with a date) + at least one Tel slot line.
     const hasHeader = /របាយការណ៍|ថ្ងៃទី\s*\d{1,2}\s*[./-]\s*\d{1,2}\s*[./-]\s*\d{2,4}/.test(text);
     if (!hasHeader) return false;
-    const hasTel = /(^|\n)\s*T\s*el?\s*\d{1,2}\s*=/i.test(text);
+    // Look for Tel lines after restoring line breaks: a report copied out of
+    // Telegram can arrive with every field on one line.
+    const hasTel = /(^|\n)\s*T\s*el?\s*\d{1,2}\s*=/i.test(unflattenReport(text));
     return hasTel;
   }
 

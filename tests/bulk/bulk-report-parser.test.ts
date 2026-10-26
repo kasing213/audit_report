@@ -136,3 +136,48 @@ test('a report without a Dating section keeps its last line', () => {
   const text = ['#របាយការណ៍ថ្ងៃទី19/9/26', 'Tel1=012345678', '   b.ទីតាំងមិនត្រូវ=1'].join('\n');
   assert.equal(leads(text)[0].reason_code, 'B');
 });
+
+// ── The same report with its line breaks gone (how it really arrives) ──
+
+import { FLAT_FORMAT_REPORT } from './flat-format-fixture';
+
+test('flat paste: the bot recognises it as a bulk report', () => {
+  assert.equal(BulkEntryFlow.detectsBulkReport(FLAT_FORMAT_REPORT), true);
+});
+
+test('flat paste: same lead as the line-broken report', () => {
+  const drafts = leads(FLAT_FORMAT_REPORT);
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].customer_phone, '+855889475139');
+  assert.equal(drafts[0].customer_name, 'long ya');
+  assert.equal(drafts[0].reason_code, 'A');
+  assert.match(drafts[0].note ?? '', /Also: I/);
+});
+
+test('flat paste: header and counters', () => {
+  const r = parseBulkReport(FLAT_FORMAT_REPORT);
+  assert.deepEqual(r.header, { date: '2026-10-25', follower: 'Jim', page: 'Page Sun Tv (Biry)' });
+  assert.equal(r.summary.counters.messege, 8);
+  assert.equal(r.summary.counters.night, 3);
+  assert.equal(r.summary.counters.callin, 0);
+});
+
+test('flat paste: the saved raw text is the message as sent', () => {
+  assert.equal(parseBulkReport(FLAT_FORMAT_REPORT).summary.raw_text, FLAT_FORMAT_REPORT);
+});
+
+test('a name with a capital letter and a space is not split', () => {
+  const text = ['#របាយការណ៍ថ្ងៃទី19/9/26', 'Tel1=012345678 Name=Chan A Mony Pv=PP'].join('\n');
+  const [lead] = leads(text);
+  assert.equal(lead.customer_name, 'Chan A Mony');
+  assert.equal(lead.note, 'Province: PP');
+});
+
+test('a report pasted as one single line is still read', () => {
+  const oneLine = FLAT_FORMAT_REPORT.replace(/\s*\n\s*/g, ' ');
+  assert.equal(BulkEntryFlow.detectsBulkReport(oneLine), true);
+  const drafts = leads(oneLine);
+  assert.equal(drafts.length, 1);
+  assert.equal(drafts[0].customer_name, 'long ya');
+  assert.equal(drafts[0].reason_code, 'A');
+});

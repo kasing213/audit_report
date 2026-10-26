@@ -468,9 +468,38 @@ function parseDatingSection(
   return entries;
 }
 
+/**
+ * Field starts in the daily report. Each must begin right after whitespace,
+ * and a match puts it back on a line of its own.
+ */
+const FIELD_START = [
+  // section markers: 💞Follow up, #របាយការណ៍, 🚩Page, 👉, ☎️9.Phone, /🥰10 .Dating
+  '\\/?(?:💞|🚩|👉|☎|🥰)', '#(?=\\S)',
+  // the follower's name, standing just before 🚩Page
+  '[A-Za-z][A-Za-z0-9 _.-]{0,30}?[ \\t]+🚩',
+  // Tel slots: Tel1=, Tel 2=, T3=,0, Tel=0889..., T el 0889...
+  'T[ \\t]*(?:e[ \\t]*l?)?[ \\t]*\\d{0,2}[ \\t]*(?:=|[ \\t]+[+\\d])',
+  'Nam(?:e)?[ \\t]*=', 'Name\\b', 'Pv[ \\t]*=', 'comment\\b',
+  // a-j items: a.ថ្លៃពេក, c ខ្ញុំ..., a.Night(, c. Callin, d Group=
+  '[a-jA-J](?:\\.[ \\t]?|[ \\t])?[\\u1780-\\u17FF]', '[a-jA-J]\\.[ \\t]?[A-Za-z]', '[a-fA-F][ \\t][A-Z][a-z]+[ \\t]*=',
+  // numbered items: 1.Messege, 3..Fack, 2.ភ្ញៀវ; 1/Connected, 1/លេខ, 1/1-3day (not dates)
+  '\\d{1,2}\\.+[^\\d\\s]', '\\d{1,2}\\/(?:[A-Za-z\\u1780-\\u17FF]|\\d{1,2}-\\d)',
+].join('|');
+
+/**
+ * A report copied back out of Telegram often loses its line breaks, so the
+ * fields arrive run together on a few long lines. Put each field back on its
+ * own line. Leading indentation is left alone, so a report that still has its
+ * line breaks comes out unchanged.
+ */
+export function unflattenReport(text: string): string {
+  return text.replace(new RegExp(`(\\S)[ \\t]+(?=${FIELD_START})`, 'gu'), '$1\n');
+}
+
 export function parseBulkReport(text: string): BulkReportParseResult {
   const warnings: string[] = [];
-  const normalized = text.replace(/\r\n/g, '\n');
+  const original = text.replace(/\r\n/g, '\n');
+  const normalized = unflattenReport(original);
   const lines = normalized.split('\n');
 
   let dateLineIndex = -1;
@@ -549,7 +578,7 @@ export function parseBulkReport(text: string): BulkReportParseResult {
 
   const summary: BulkReportSummary = {
     counters,
-    raw_text: normalized
+    raw_text: original
   };
 
   return {
