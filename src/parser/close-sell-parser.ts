@@ -83,6 +83,17 @@ function normalizeKhmerDigits(text: string): string {
   return text.replace(/[០-៩]/g, d => String(d.charCodeAt(0) - 0x17E0));
 }
 
+// Copying from Messenger flattens the template into one or two lines, which
+// breaks the per-line regexes below. Put a line break back before each
+// template marker: #/🚩/B/, `N.`/`N/` items (not dates or decimals), and
+// `a.`-`j.` sub-items. Only applied to texts with almost no line breaks.
+const FLAT_MARKER = /(?<=\S)[ \t]+(?=#|🚩|B[ \t]*\/|[1-8][ \t]*[.\/][ \t]*(?:[^\s\d]|\d+-\d)|[a-jA-J][ \t]*[.)]?[ \t]*(?:[ក-៿=]|Other))/g;
+
+function restoreLineBreaks(text: string): string {
+  if (text.split('\n').length >= 10) return text;
+  return normalizeKhmerDigits(text).replace(FLAT_MARKER, '\n');
+}
+
 // NOTE: every field regex below uses `[ \t]*`, not `\s*`, around `=`. `\s`
 // matches newlines, so an empty `X=` line would otherwise capture the next
 // template line as its value (e.g. empty closer → "3/ភ្ញៀវមកពី=").
@@ -118,6 +129,7 @@ export function detectCloseSellKind(text: string): CloseSellHeaderKind | null {
  */
 export function detectCloseSellReport(text: string): boolean {
   if (!text || text.length < 30) return false;
+  text = restoreLineBreaks(text);
   if (detectCloseSellKind(text) == null) return false;
   const hasSection1 = /(^|\n)\s*1\s*\.\s*Date\s+(visited|captured)/i.test(text);
   const hasSection2 = /(^|\n)\s*2\s*\.\s*លទ្ឋផល/.test(text);
@@ -228,7 +240,8 @@ function extractFirstContact(s1: string): string | null {
   const block = s1.slice(idx);
   let m: RegExpExecArray | null;
   while ((m = re.exec(block)) !== null) {
-    const value = m[2].trim();
+    // `=-` / `=-1`: a leading dash is a placeholder, not part of the answer.
+    const value = m[2].trim().replace(/^-+/, '');
     if (!value || /^0+$/.test(value)) continue;
     const label = m[1].trim();
     return value === '1' ? label : `${label} (${value})`;
@@ -252,7 +265,7 @@ function extractResultNote(s2: string): string | null {
   const m = head.match(/3[ \t]*\/[ \t]*ផ្សេងៗ[ \t]*=[ \t]*([^\n]+)/);
   if (!m) return null;
   const v = m[1].trim();
-  return v || null;
+  return v && v !== '0' ? v : null;
 }
 
 function extractTourLeaders(s2: string): string[] {
@@ -289,8 +302,9 @@ function extractOrigin(s2: string): string | null {
 }
 
 function extractObstacles(s2: string): Array<{ letter: string; text: string }> {
-  // §2.loc.4 បញ្ហាភ្ញៀវ block — a-I letters with values.
-  const idx = s2.search(/4\s*\/\s*បញ្ហាភ្ញៀវ/);
+  // §2.loc.4 បញ្ហាភ្ញៀវ block — a-I letters with values. Some staff use an
+  // older copy where it is `5.បញ្ហាភ្ញៀវ` after §4, so callers also pass s4.
+  const idx = s2.search(/[45]\s*[\/.]\s*បញ្ហាភ្ញៀវ/);
   if (idx < 0) return [];
   const block = s2.slice(idx);
   const out: Array<{ letter: string; text: string }> = [];
@@ -335,7 +349,7 @@ function extractFinancial(s4: string): CloseSellParseResult['financial'] {
   if (inc && inc[1].trim()) fin.monthly_income = inc[1].trim();
   // Counts: the number, plus any text typed after it ("1(លក់ចាបហួយ)").
   const counts: Array<[keyof CloseSellParseResult['financial']['details'], RegExp]> = [
-    ['business_owners', /3[ \t]*\/[ \t]*អ្នករកសុី[ \t]*=[ \t]*0*(\d+)([^\n]*)/],
+    ['business_owners', /3[ \t]*\/[ \t]*អ្នករកសុី[ \t]*=?[ \t]*0*(\d+)([^\n]*)/],
     ['workers', /4[ \t]*\/[ \t]*អ្នកធ្វើការ[ \t]*=[ \t]*0*(\d+)([^\n]*)/],
     ['family_members', /5[ \t]*\/[ \t]*សមាជិកគ្រួសារ[ \t]*=[ \t]*0*(\d+)([^\n]*)/],
     ['earners', /6[ \t]*\/[ \t]*ចំនួនអ្នករកចំណូល[^=\n]*=[ \t]*0*(\d+)([^\n]*)/]
@@ -409,7 +423,7 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
 
   const warnings: string[] = [];
   // Parse a digit-normalized copy; raw_text below keeps the original.
-  const sections = splitSections(normalizeKhmerDigits(text));
+  const sections = splitSections(normalizeKhmerDigits(restoreLineBreaks(text)));
   if (!sections.s1 && !sections.s2) {
     return null;
   }
@@ -429,7 +443,8 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
   const tour_leaders = extractTourLeaders(sections.s2);
   const closer = extractCloser(sections.s2);
   const origin = extractOrigin(sections.s2);
-  const obstacles = extractObstacles(sections.s2);
+  const s2Obstacles = extractObstacles(sections.s2);
+  const obstacles = s2Obstacles.length ? s2Obstacles : extractObstacles(sections.s4);
   const primary_reason_code = (() => {
     for (const ob of obstacles) {
       const code = REASON_LETTER_TO_CODE[ob.letter];

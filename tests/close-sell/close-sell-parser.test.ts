@@ -135,3 +135,20 @@ test('close-sell preview: shows result note, every tour leader, every customer p
   assert.match(preview, /ថ្លៃពេក/);
   assert.match(preview, /ទីតាំងមិនត្រូវ/);
 });
+
+test('close-sell: Messenger-flattened paste (no line breaks) still parses', () => {
+  const flat = "💯Close sell #របាយការណ៍ថ្ងៃទី 30/10/26 (ធ្វើប្រចាំថ្ងៃបន្ទាប់មុនម៉ោង10ព្រឹក ទោះចំថ្ងៃសំរាកក៏ដោយ) 🚩 page sun TVភ្ញៀវ=ប៊ីរី B/Close sell 1.Date visited 1/ចង់បានដីឡូត៍លេខ=JL253\n2/ចង់បានផ្ទះលេខ= 3/ចង់បានផ្សេងៗ= 4/លេខទូរស័ព្ទ = 069506034 a ថ្ងៃ.ខែ.ឆ្នាំ11:45am30/10/26 b.ថ្ងៃ.ខែ.ឆ្នាំទាក់ទងដំបូងខាងក្រោម 1/1-3day=- 2/4-7day=-1 3/8-15day=-0 4/16-31day=0 5/1-3month=0 6/3-6month=0 7/6-12month=0 8/Over12month=0 2.លទ្ឋផលការបិទលក់ខាងក្រោម 1/ចំនួនកក់= 2/មិនទាន់កក់=1 3/ផ្សេងៗ=0 1/រាយឈ្មោះអ្នកដឹកនាំមើលគំរោង= 2 a.=ប៊ីរី b.=ស្រីភក្រ័ c.=\n   d.=\n   e.Other=\n2/ឈ្មោះអ្នកបិទលក់=ប៊ីរី 3/ភ្ញៀវមកពី=បុរីចំកាដូង 4.ស្ថានភាពហិរញ្ញវត្ថុ= 1/មានលុយក្នងដៃ= 0 a ការវាយតំលៃលទ្ឋភាពភ្ញៀវខាងក្រោម ១.ល្អ= ២.មធ្យម=01 ៣.ខ្សោយ= 2/លទ្ឋភាពចំណូលក្នុង១ខែ=350$ 3/អ្នករកសុី 1 4/អ្នកធ្វើការ=1 5/សមាជិកគ្រួសារ= 6/ចំនួនអ្នករកចំណូលក្នុងគ្រួសារ=2 7/អត្តចរិតខាងក្រោម a.ល្អ= b.មធ្យម=1 c.អន់= 5.បញ្ហាភ្ញៀវដូចខាងក្រោម a.ថ្លៃពេក= b.ទីតាំងមិនត្រូវ= d គ្មានចំណាប់អារម្មណ៍= e.ត្រូវការកម្ចីច្រើន= f.ជំពាក់គេច្រើន= g.ខូចCBC= h.ដីរឺផ្ទះតូចពេក= I.ផ្សង=សុំពិភក្សាជួយគ្រួសាសិន";
+  assert.ok(flat.split('\n').length < 10);
+  const p = parseCloseSellReport(flat)!;
+  assert.equal(p.phone, '+85569506034');
+  assert.deepEqual(p.tour_leaders, ['ប៊ីរី', 'ស្រីភក្រ័']);
+  assert.equal(p.closer, 'ប៊ីរី');
+  assert.equal(p.origin, 'បុរីចំកាដូង');
+  assert.equal(p.not_booked, 1);
+  assert.equal(p.result_note, null);
+  assert.equal(p.first_contact, '4-7day');
+  assert.equal(p.financial.business_owners, 1);
+  assert.equal(p.financial.monthly_income, '350$');
+  assert.deepEqual(p.obstacles, [{ letter: 'i', text: 'ផ្សង=សុំពិភក្សាជួយគ្រួសាសិន' }]);
+  assert.equal(p.raw_text, flat);
+});
