@@ -156,7 +156,7 @@ test('flat paste: same lead as the line-broken report', () => {
 
 test('flat paste: header and counters', () => {
   const r = parseBulkReport(FLAT_FORMAT_REPORT);
-  assert.deepEqual(r.header, { date: '2026-10-25', follower: 'Jim', page: 'Page Sun Tv (Biry)' });
+  assert.deepEqual(r.header, { date: '2026-10-25', follower: 'Jim', page: 'Page Sun Tv (Biry)', owner_name: 'Biry' });
   assert.equal(r.summary.counters.messege, 8);
   assert.equal(r.summary.counters.night, 3);
   assert.equal(r.summary.counters.callin, 0);

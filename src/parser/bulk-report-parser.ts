@@ -21,6 +21,9 @@ export interface BulkReportHeader {
   date: string;
   follower: string | null;
   page: string | null;
+  // The report owner's name, typed in brackets at the end of the Page line:
+  // "🚩Page Sun Tv (Biry)" → "Biry".
+  owner_name: string | null;
 }
 
 export interface BulkReportSummary {
@@ -122,6 +125,11 @@ function extractPage(lines: string[]): string | null {
     }
   }
   return null;
+}
+
+export function extractOwnerName(page: string | null): string | null {
+  const m = page?.match(/\(([^()]+)\)\s*$/);
+  return m && m[1].trim() ? m[1].trim() : null;
 }
 
 function extractCounters(section: string): Record<string, number> {
@@ -512,7 +520,7 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   const headerDate = extractDate(lines, warnings);
   const follower = extractFollower(lines, dateLineIndex >= 0 ? dateLineIndex : 0);
   const page = extractPage(lines);
-  const header: BulkReportHeader = { date: headerDate, follower, page };
+  const header: BulkReportHeader = { date: headerDate, follower, page, owner_name: extractOwnerName(page) };
 
   const bounds = findSectionBounds(normalized);
   const counters = extractCounters(normalized.slice(0, bounds.datingStart));

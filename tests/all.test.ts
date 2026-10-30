@@ -16,3 +16,4 @@ import './close-sell/close-sell-parser.test';
 import './bulk/bulk-report-parser.test';
 import './bulk/bulk-template.test';
 import './groups/closing-group.test';
+import './staff/staff-resolver.test';

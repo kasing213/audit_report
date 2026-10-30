@@ -1,6 +1,6 @@
 import { Collection, ObjectId } from 'mongodb';
 import DatabaseConnection from './connection';
-import { LeadEventDocument, AuditLog, CustomerCase, ChangeLogDocument, DailySummaryDocument } from './models';
+import { LeadEventDocument, AuditLog, CustomerCase, ChangeLogDocument, DailySummaryDocument, StaffNameAliasDocument } from './models';
 import { ensureIndexes } from './indexes';
 import {
   buildCasesByFollowerAndMonthPipeline,
@@ -20,6 +20,7 @@ export class SalesCaseRepository {
   private auditCollection: Collection<AuditLog>;
   private changeLogsCollection: Collection<ChangeLogDocument>;
   private dailySummariesCollection: Collection<DailySummaryDocument>;
+  private staffAliasesCollection: Collection<StaffNameAliasDocument>;
 
   constructor() {
     const database = this.db.getDb();
@@ -27,11 +28,25 @@ export class SalesCaseRepository {
     this.auditCollection = database.collection<AuditLog>('audit_logs');
     this.changeLogsCollection = database.collection<ChangeLogDocument>('change_logs');
     this.dailySummariesCollection = database.collection<DailySummaryDocument>('daily_summaries');
+    this.staffAliasesCollection = database.collection<StaffNameAliasDocument>('staff_name_aliases');
 
     // Ensure indexes exist (non-blocking)
     ensureIndexes(this.leadsEventsCollection).catch(err => {
       Logger.error('Index creation warning', err as Error);
     });
+  }
+
+  async getStaffAliases(): Promise<StaffNameAliasDocument[]> {
+    return this.staffAliasesCollection.find({}).toArray();
+  }
+
+  /** Remember a typed name spelling for an employee; first writer wins. */
+  async saveStaffAlias(normalized: string, employeeId: string, source: StaffNameAliasDocument['source']): Promise<void> {
+    await this.staffAliasesCollection.updateOne(
+      { normalized },
+      { $setOnInsert: { normalized, employee_id: employeeId, source, created_at: new Date() } },
+      { upsert: true },
+    );
   }
 
   async saveLeadEvent(leadEvent: LeadEventDocument): Promise<string> {
