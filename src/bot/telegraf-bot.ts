@@ -485,13 +485,13 @@ export class TelegrafBotService {
     Logger.info('Telegraf bot started successfully');
   }
 
-  public async sendPhoto(chatId: string, buffer: Buffer, filename: string): Promise<void> {
+  public async sendPhoto(chatId: string, buffer: Buffer, filename: string, caption?: string): Promise<void> {
     try {
       await this.bot.telegram.sendPhoto(chatId, {
         source: buffer,
         filename: filename
       }, {
-        caption: `📊 ${filename.replace('.jpg', '').replace('-', ' ').toUpperCase()}\n\nGenerated: ${new Date().toLocaleString()}`
+        caption: caption ?? `📊 ${filename.replace('.jpg', '').replace('-', ' ').toUpperCase()}\n\nGenerated: ${new Date().toLocaleString()}`
       });
       Logger.info(`Photo sent to chat ${chatId}: ${filename}`);
     } catch (error) {
