@@ -275,6 +275,9 @@ export class CloseSellEntryFlow {
       status_text: parsed.result_note,
       reason_code: parsed.primary_reason_code,
       note: parsed.packed_note || null,
+      closer: parsed.closer,
+      booked: parsed.booked,
+      not_booked: parsed.not_booked,
       group_id: null,
       source: {
         telegram_msg_id: `closesell-tg-${ts}-${randomBytes(2).toString('hex')}`,

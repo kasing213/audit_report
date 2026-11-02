@@ -15,6 +15,11 @@ export interface LeadEventDocument {
   status_text: string | null;
   reason_code?: string | null;
   note?: string | null;
+  // Close-sell records only (source.model 'closesell-telegram*'). Older records
+  // carry these inside `note` instead; see closeSellInfo() in reports.
+  closer?: string | null;
+  booked?: number;
+  not_booked?: number;
   promise_date?: string | null;
   promise_status?: 'pending' | 'came' | 'didnt_come' | null;
   group_id?: string | null;

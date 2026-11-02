@@ -43,8 +43,8 @@ async function main(): Promise<void> {
     const auditChatId = process.env.AUDIT_CHAT_ID || process.env.REPORT_CHAT_ID;
     if (auditChatId) {
       const auditDailyScheduler = new DailyScheduler(auditChatId);
-      auditDailyScheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string) => {
-        await telegramBot.sendPhoto(chatId, buffer, filename);
+      auditDailyScheduler.setSendReportCallback(async (chatId: string, buffer: Buffer, filename: string, caption?: string) => {
+        await telegramBot.sendPhoto(chatId, buffer, filename, caption);
       });
       auditDailyScheduler.startScheduler();
       Logger.info(`- Audit Daily Reports: Enabled (Audit Chat ID: ${auditChatId})`);

@@ -3,52 +3,51 @@ import { ReportDataService } from './data-service';
 import type { LeadEventDocument, CustomerCase } from '../database/models';
 import { Logger } from '../utils/logger';
 import { formatReasonDisplay } from '../constants/reason-codes';
+import { cleanFollower, followerKey } from './follower-daily';
+
+const EVENT_COLUMNS: Array<{ header: string; width: number }> = [
+  { header: 'Date', width: 12 },
+  { header: 'Time Created', width: 15 },
+  { header: 'Customer Name', width: 20 },
+  { header: 'Phone Number', width: 15 },
+  { header: 'Platform/Page', width: 15 },
+  { header: 'Destination', width: 15 },
+  { header: 'Follower', width: 15 },
+  { header: 'Reason', width: 30 },
+  { header: 'Promise Date', width: 12 },
+  { header: 'Promise Status', width: 14 },
+  { header: 'Source ID', width: 15 },
+  { header: 'Model', width: 15 }
+];
+
+/**
+ * Sheet-name base for a follower: no characters Excel forbids, short enough for
+ * "Events - " + base to fit 31 chars, and unique (case-insensitive, as Excel
+ * compares) among bases already in `used`.
+ */
+export function uniqueSheetBase(name: string, used: Set<string>): string {
+  const clean = name.replace(/[\\/?*[\]:]/g, '-').trim() || 'Unnamed';
+  let base = clean.substring(0, 22);
+  for (let n = 2; used.has(base.toLowerCase()); n++) {
+    const suffix = ` (${n})`;
+    base = clean.substring(0, 22 - suffix.length) + suffix;
+  }
+  used.add(base.toLowerCase());
+  return base;
+}
 
 export class ExcelReportGenerator {
-  private dataService: ReportDataService;
+  private _dataService?: ReportDataService;
 
-  constructor() {
-    this.dataService = new ReportDataService();
+  // Lazy: the repository needs a live DB connection at construction time.
+  private get dataService(): ReportDataService {
+    return this._dataService ??= new ReportDataService();
   }
-
 
   private formatTime(date: Date | null): string {
     if (!date) return 'N/A';
     return new Date(date).toLocaleTimeString();
   }
-
-  private setupWorksheetColumns(worksheet: ExcelJS.Worksheet): void {
-    worksheet.columns = [
-      { header: 'Date', key: 'date', width: 12 },
-      { header: 'Time Created', key: 'time_created', width: 15 },
-      { header: 'Customer Name', key: 'customer_name', width: 20 },
-      { header: 'Phone Number', key: 'phone_number', width: 15 },
-      { header: 'Platform/Page', key: 'page', width: 15 },
-      { header: 'Destination', key: 'destination', width: 15 },
-      { header: 'Follower', key: 'follower', width: 15 },
-      { header: 'Reason', key: 'status_text', width: 30 },
-      { header: 'Promise Date', key: 'promise_date', width: 12 },
-      { header: 'Promise Status', key: 'promise_status', width: 14 },
-      { header: 'Source ID', key: 'telegram_msg_id', width: 15 },
-      { header: 'Model', key: 'model', width: 15 }
-    ];
-
-    // Style the header row
-    const headerRow = worksheet.getRow(1);
-    headerRow.eachCell((cell) => {
-      cell.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FF007bff' }
-      };
-      cell.font = {
-        color: { argb: 'FFFFFF' },
-        bold: true
-      };
-      cell.alignment = { vertical: 'middle', horizontal: 'center' };
-    });
-  }
-
 
   public async generateMonthlyReport(year: number, month: number): Promise<{ buffer: Buffer; followers: string[] }> {
     try {
@@ -59,45 +58,7 @@ export class ExcelReportGenerator {
       const allCases: CustomerCase[] = await this.dataService.getMonthlyCasesSummary(year, month);
       const allEvents: LeadEventDocument[] = await this.dataService.getMonthlyLeadEvents(year, month);
 
-      // Extract unique followers
-      const followerSet = new Set<string>();
-      allEvents.forEach(e => {
-        if (e.follower) followerSet.add(e.follower);
-      });
-      allCases.forEach(c => {
-        if (c.follower) followerSet.add(c.follower);
-      });
-      const followers = Array.from(followerSet).sort();
-
-      const workbook = new ExcelJS.Workbook();
-      workbook.creator = 'Audit Sales System';
-      workbook.created = new Date();
-
-      // Create per-follower sheets (Cases + Events for each)
-      for (const follower of followers) {
-        const followerCases = allCases.filter(c => c.follower === follower);
-        const followerEvents = allEvents.filter(e => e.follower === follower);
-
-        // Truncate sheet name to fit Excel 31-char limit
-        const safeName = follower.length > 22 ? follower.substring(0, 22) : follower;
-
-        const casesSheet = workbook.addWorksheet(`Cases - ${safeName}`);
-        this.buildCasesSummarySheet(casesSheet, followerCases, monthName, year, follower);
-
-        const eventsSheet = workbook.addWorksheet(`Events - ${safeName}`);
-        this.buildEventHistorySheet(eventsSheet, followerEvents, monthName, year, follower);
-      }
-
-      // Handle events/cases with no follower assigned
-      const noFollowerCases = allCases.filter(c => !c.follower);
-      const noFollowerEvents = allEvents.filter(e => !e.follower);
-      if (noFollowerCases.length > 0 || noFollowerEvents.length > 0) {
-        const casesSheet = workbook.addWorksheet('Cases - Unassigned');
-        this.buildCasesSummarySheet(casesSheet, noFollowerCases, monthName, year, 'Unassigned');
-
-        const eventsSheet = workbook.addWorksheet('Events - Unassigned');
-        this.buildEventHistorySheet(eventsSheet, noFollowerEvents, monthName, year, 'Unassigned');
-      }
+      const { workbook, followers } = this.buildMonthlyWorkbook(allCases, allEvents, year, month);
 
       const buffer = await workbook.xlsx.writeBuffer();
       Logger.info(`Monthly Excel report generated successfully for ${monthName} ${year} with ${followers.length} follower(s)`);
@@ -108,6 +69,61 @@ export class ExcelReportGenerator {
       Logger.error('Failed to generate Excel report', error as Error);
       throw error;
     }
+  }
+
+  /** One Cases + one Events sheet per follower (trim/case-insensitive), plus Unassigned. */
+  public buildMonthlyWorkbook(
+    allCases: CustomerCase[],
+    allEvents: LeadEventDocument[],
+    year: number,
+    month: number
+  ): { workbook: ExcelJS.Workbook; followers: string[] } {
+    const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
+
+    // Unique followers by key; first spelling seen is the display name.
+    const followerNames = new Map<string, string>();
+    for (const f of [...allEvents.map(e => e.follower), ...allCases.map(c => c.follower)]) {
+      const key = followerKey(f);
+      if (key && !followerNames.has(key)) followerNames.set(key, cleanFollower(f));
+    }
+    const followerKeys = Array.from(followerNames.keys())
+      .sort((a, b) => followerNames.get(a)!.localeCompare(followerNames.get(b)!));
+    const followers = followerKeys.map(k => followerNames.get(k)!);
+    const usedSheetNames = new Set<string>();
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Audit Sales System';
+    workbook.created = new Date();
+
+    // Create per-follower sheets (Cases + Events for each)
+    for (const key of followerKeys) {
+      const follower = followerNames.get(key)!;
+      const followerCases = allCases.filter(c => followerKey(c.follower) === key);
+      const followerEvents = allEvents.filter(e => followerKey(e.follower) === key);
+
+      // Fit Excel's 31-char limit without two followers colliding
+      const safeName = uniqueSheetBase(follower, usedSheetNames);
+
+      const casesSheet = workbook.addWorksheet(`Cases - ${safeName}`);
+      this.buildCasesSummarySheet(casesSheet, followerCases, monthName, year, follower);
+
+      const eventsSheet = workbook.addWorksheet(`Events - ${safeName}`);
+      this.buildEventHistorySheet(eventsSheet, followerEvents, monthName, year, follower);
+    }
+
+    // Handle events/cases with no follower assigned
+    const noFollowerCases = allCases.filter(c => !followerKey(c.follower));
+    const noFollowerEvents = allEvents.filter(e => !followerKey(e.follower));
+    if (noFollowerCases.length > 0 || noFollowerEvents.length > 0) {
+      const safeName = uniqueSheetBase('Unassigned', usedSheetNames);
+      const casesSheet = workbook.addWorksheet(`Cases - ${safeName}`);
+      this.buildCasesSummarySheet(casesSheet, noFollowerCases, monthName, year, 'Unassigned');
+
+      const eventsSheet = workbook.addWorksheet(`Events - ${safeName}`);
+      this.buildEventHistorySheet(eventsSheet, noFollowerEvents, monthName, year, 'Unassigned');
+    }
+
+    return { workbook, followers };
   }
 
   private buildCasesSummarySheet(
@@ -204,14 +220,13 @@ export class ExcelReportGenerator {
     // Empty row 3
     worksheet.addRow([]);
 
-    // Setup columns starting from row 4
-    this.setupWorksheetColumns(worksheet);
-
-    // Move headers to row 4
+    // Headers (row 4). Not via worksheet.columns: that writes headers into
+    // row 1 and overwrote the title above.
     const headerRow = worksheet.getRow(4);
-    worksheet.columns.forEach((col, index) => {
+    EVENT_COLUMNS.forEach((col, index) => {
+      worksheet.getColumn(index + 1).width = col.width;
       const cell = headerRow.getCell(index + 1);
-      cell.value = col.header as string;
+      cell.value = col.header;
       cell.fill = {
         type: 'pattern',
         pattern: 'solid',
