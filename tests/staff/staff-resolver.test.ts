@@ -60,6 +60,12 @@ test('owner: an admin may enter a report for someone else', () => {
   assert.deepEqual(d.problems, []);
 });
 
+test('owner: a username that looks like an admin gets no admin rights', () => {
+  const d = decideOwner(STAFF, [], { id: 999, username: 'theary_fake' }, 'Bery');
+  assert.equal(d.sender?.employee_id, 'theary');
+  assert.deepEqual(d.problems, ['other_person']);
+});
+
 test('owner: regular staff naming another person is flagged', () => {
   const d = decideOwner(STAFF, [], SONY, 'Bery');
   assert.equal(d.owner?.employee_id, 'bery');

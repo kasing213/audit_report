@@ -5,7 +5,7 @@
  * Bery's report) or the group name as follower. The owner is the `(name)` on
  * the Page line, checked against the sender — the same rule the bot now uses
  * (src/staff/staff-resolver.ts). Close-sell records get the sender, follower
- * and closer ids; their typed follower is left as is.
+ * and closer ids; a follower that matches an employee takes the employee's name.
  *
  * Usage (prints the plan; writes nothing):
  *   railway run npx ts-node src/scripts/backfill-staff-owner.ts
@@ -15,6 +15,8 @@
  *                                  (repeatable), e.g. Theary's @Sunnimex
  *   --alias=<spelling>:<employee_id>        a spelling someone else typed for an
  *                                  employee (repeatable), e.g. ប៊ីរី for Bery
+ *   --name=<spelling>:<display>    the follower name for someone not on the roster
+ *                                  (repeatable), e.g. លក្ខិណា:Lakhena
  *   --apply                        write the changes and save learned spellings
  */
 
@@ -86,6 +88,10 @@ async function main(): Promise<void> {
     }
   }
   const allAliases = [...aliases, ...learned];
+  const displayNames = new Map(arg('name').map(a => {
+    const i = a.lastIndexOf(':');
+    return [normalizeStaffName(a.slice(0, i)), a.slice(i + 1)] as const;
+  }));
 
   // Pass 2: the plan.
   let changes = 0;
@@ -98,7 +104,8 @@ async function main(): Promise<void> {
       const ids: string[] = log.parsed_result?.event_ids ?? [];
       const typed = bulkOwnerName(log);
       const d = decideOwner(staff, allAliases, from, typed);
-      const set = { follower: d.owner?.name ?? typed, employee_id: d.owner?.employee_id ?? null, entered_by: by };
+      const offRoster = typed ? displayNames.get(normalizeStaffName(typed)) ?? typed : null;
+      const set = { follower: d.owner?.name ?? offRoster, employee_id: d.owner?.employee_id ?? null, entered_by: by };
       const old = ids.length ? (await events.findOne({ _id: new ObjectId(ids[0]) }))?.follower : log.parsed_result?.header?.follower;
       console.log(`${when} bulk  @${log.username ?? log.user_id}  (${typed ?? '—'})  ${old ?? '—'} → ${set.follower ?? '—'}` +
         `  [${ids.length} rec]${d.problems.length ? '  ⚠ ' + d.problems.join(',') : ''}`);
@@ -113,12 +120,14 @@ async function main(): Promise<void> {
       const ev = id ? await events.findOne({ _id: new ObjectId(id) }) : null;
       if (!ev) continue;
       const closer = String(ev.note ?? '').match(/អ្នកបិទលក់៖ ([^;]+)/)?.[1]?.trim() ?? null;
+      const follower = ev.follower ? findStaffByName(staff, allAliases, ev.follower) : null;
       const set = {
-        employee_id: ev.follower ? findStaffByName(staff, allAliases, ev.follower)?.employee_id ?? null : null,
+        follower: follower?.name ?? ev.follower ?? null,
+        employee_id: follower?.employee_id ?? null,
         closer_employee_id: closer ? findStaffByName(staff, allAliases, closer)?.employee_id ?? null : null,
         entered_by: by,
       };
-      console.log(`${when} close @${log.username ?? log.user_id}  follower ${ev.follower ?? '—'} → ${set.employee_id ?? '?'}  closer ${closer ?? '—'} → ${set.closer_employee_id ?? '?'}`);
+      console.log(`${when} close @${log.username ?? log.user_id}  follower ${ev.follower ?? '—'} → ${set.employee_id ? set.follower : '?'}  closer ${closer ?? '—'} → ${set.closer_employee_id ?? '?'}`);
       changes++;
       if (apply) await events.updateOne({ _id: ev._id }, { $set: set });
     }

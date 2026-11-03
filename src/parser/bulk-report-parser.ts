@@ -107,12 +107,16 @@ function extractDate(lines: string[], warnings: string[]): string {
   return today;
 }
 
+// Name lines that never meant a person: "Jim" was copied from Bery's report,
+// the group name was a bot fallback, YourName is the template placeholder.
+const NOT_A_FOLLOWER = /^(jim|sales[\s_-]*management[\s_-]*group|your[\s_-]*name)$/i;
+
 function extractFollower(lines: string[], dateLineIndex: number): string | null {
   for (let i = dateLineIndex + 1; i < Math.min(lines.length, dateLineIndex + 8); i++) {
     const trimmed = lines[i].trim();
     if (!trimmed) continue;
     const m = trimmed.match(/^([A-Za-z][A-Za-z0-9 _.-]{0,30})$/);
-    if (m) return m[1].trim();
+    if (m) return NOT_A_FOLLOWER.test(m[1].trim()) ? null : m[1].trim();
   }
   return null;
 }

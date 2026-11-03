@@ -109,16 +109,18 @@ export function decideOwner(
   const { member: sender, matched_by } = resolveSender(staff, from.id, from.username);
   const problems: OwnerProblem[] = sender ? [] : ['unregistered_sender'];
   const base = { sender, sender_matched_by: matched_by, owner_name: ownerName, learn_alias: null };
+  // A username is self-chosen: it may identify the sender, never grant admin.
+  const isAdmin = matched_by === 'id' && !!sender?.is_admin;
 
   if (!ownerName) {
     return { ...base, owner: sender, problems: [...problems, 'missing_name'] };
   }
   const named = findStaffByName(staff, aliases, ownerName);
   if (named) {
-    if (sender && named.employee_id !== sender.employee_id && !sender.is_admin) problems.push('other_person');
+    if (sender && named.employee_id !== sender.employee_id && !isAdmin) problems.push('other_person');
     return { ...base, owner: named, problems };
   }
-  if (sender && !sender.is_admin) {
+  if (sender && !isAdmin) {
     return { ...base, owner: sender, problems, learn_alias: matched_by === 'id' ? normalizeStaffName(ownerName) : null };
   }
   return { ...base, owner: null, problems: [...problems, 'unknown_name'] };
