@@ -1,3 +1,5 @@
+import type { EnteredBy } from '../staff/staff-resolver';
+
 export interface LeadEventDocument {
   _id?: string;
   // Outreach workspace this record belongs to ('company' | 'personal'). Absent
@@ -25,6 +27,10 @@ export interface LeadEventDocument {
   deleted?: boolean;
   deleted_at?: Date | null;
   deleted_by?: string | null;
+  // Staff ownership (see src/staff/staff-resolver.ts). Absent on older records.
+  employee_id?: string | null;          // the owner, a Payment-Tracker employee
+  closer_employee_id?: string | null;   // Close-sell §2 closer
+  entered_by?: EnteredBy;               // the Telegram account that sent it
   source: {
     telegram_msg_id: string;
     model: string;
@@ -71,9 +77,19 @@ export interface DailySummaryDocument {
   page: string | null;
   counters: Record<string, number>;
   raw_text: string;
+  employee_id?: string | null;
+  entered_by?: EnteredBy;
   source: {
     model: string;
   };
+  created_at: Date;
+}
+
+export interface StaffNameAliasDocument {
+  _id?: string;
+  normalized: string;         // normalizeStaffName() of the typed spelling
+  employee_id: string;
+  source: 'self' | 'backfill';
   created_at: Date;
 }
 

@@ -3,7 +3,10 @@ import { randomBytes } from 'crypto';
 import { SalesCaseRepository } from '../../database/repository';
 import { LeadEventDocument, DailySummaryDocument } from '../../database/models';
 import { parseBulkReport, BulkReportParseResult, unflattenReport } from '../../parser/bulk-report-parser';
-import { GroupConfigManager } from '../../utils/group-config';
+import {
+  OwnerDecision, StaffDirectory, staffDirectory, resolveReportOwner, enteredBy,
+  describeProblems, staffOwnershipEnforced,
+} from '../../staff/staff-resolver';
 import { Logger } from '../../utils/logger';
 import { formatReasonDisplay } from '../../constants/reason-codes';
 
@@ -11,6 +14,8 @@ interface PendingBulk {
   parsed: BulkReportParseResult;
   chatId: number;
   userId: number;
+  username: string | null;
+  owner: OwnerDecision | null;  // null when there is no staff roster to check against
   expiresAt: number;
 }
 
@@ -20,12 +25,12 @@ const PREVIEW_DRAFT_LIMIT = 10;
 export class BulkEntryFlow {
   private repository: SalesCaseRepository;
   private pending: Map<string, PendingBulk>; // token → state
-  private groupConfig: GroupConfigManager;
+  private staff: StaffDirectory;
 
-  constructor(repository: SalesCaseRepository) {
+  constructor(repository: SalesCaseRepository, staff: StaffDirectory = staffDirectory) {
     this.repository = repository;
     this.pending = new Map();
-    this.groupConfig = GroupConfigManager.getInstance();
+    this.staff = staff;
   }
 
   static detectsBulkReport(text: string): boolean {
@@ -49,15 +54,7 @@ export class BulkEntryFlow {
     if (!userId || chatId === undefined) return false;
 
     const parsed = parseBulkReport(text);
-
-    // Auto-fill follower from group config when posting in a sales group.
-    if (!parsed.header.follower && this.groupConfig.isSalesGroupChat(chatId)) {
-      const groupId = this.groupConfig.getGroupIdFromChatId(chatId);
-      const cfg = groupId ? this.groupConfig.getGroupConfig(groupId) : null;
-      if (cfg?.name) {
-        parsed.header.follower = cfg.name;
-      }
-    }
+    const username = ctx.from?.username ?? null;
 
     if (parsed.drafts.length === 0 && Object.keys(parsed.summary.counters).length === 0) {
       await ctx.reply(
@@ -66,17 +63,26 @@ export class BulkEntryFlow {
       return true;
     }
 
+    // The owner is the `(name)` on the Page line, checked against the sender.
+    const owner = await resolveReportOwner(this.staff, this.repository, { id: userId, username }, parsed.header.owner_name);
+    if (owner?.problems.length && staffOwnershipEnforced()) {
+      await ctx.reply(`⚠️ មិនទាន់រក្សាទុកទេ៖\n• ${describeProblems(owner).join('\n• ')}`);
+      return true;
+    }
+
     const token = randomBytes(4).toString('hex');
     this.pending.set(token, {
       parsed,
       chatId,
       userId,
+      username,
+      owner,
       expiresAt: Date.now() + TTL_MS,
     });
     this.gcExpired();
     Logger.info(`[bulk-confirm] preview created token=${token} user=${userId} chat=${chatId} drafts=${parsed.drafts.length} counters=${Object.keys(parsed.summary.counters).length} pendingSize=${this.pending.size}`);
 
-    const previewText = this.buildPreview(parsed);
+    const previewText = this.buildPreview(parsed, owner);
     const keyboard = Markup.inlineKeyboard([
       [
         Markup.button.callback('✅ បញ្ជាក់ / Confirm', `bulk_confirm:${token}`),
@@ -117,7 +123,13 @@ export class BulkEntryFlow {
     Logger.info(`[bulk-confirm] token=${token} drafts=${pending.parsed.drafts.length} counters=${Object.keys(pending.parsed.summary.counters).length} header=${JSON.stringify(pending.parsed.header)}`);
 
     try {
-      const { events, skipped } = this.buildEvents(pending.parsed);
+      const owner = pending.owner;
+      const ownerFields = {
+        employee_id: owner?.owner?.employee_id ?? null,
+        entered_by: enteredBy(owner?.sender, { id: pending.userId, username: pending.username }),
+      };
+      const { events, skipped } = this.buildEvents(pending.parsed, owner);
+      for (const ev of events) Object.assign(ev, ownerFields);
       Logger.info(`[bulk-confirm] buildEvents → events=${events.length} skipped=${skipped} firstPhone=${events[0]?.customer?.phone ?? 'n/a'}`);
       const eventIds = events.length ? await this.repository.saveLeadEvents(events) : [];
       Logger.info(`[bulk-confirm] saveLeadEvents returned ${eventIds.length} ids: ${eventIds.join(',')}`);
@@ -126,10 +138,11 @@ export class BulkEntryFlow {
       if (Object.keys(pending.parsed.summary.counters).length > 0) {
         const summaryDoc: DailySummaryDocument = {
           date: pending.parsed.header.date,
-          follower: pending.parsed.header.follower,
+          follower: ownerFollower(pending.parsed, owner),
           page: pending.parsed.header.page,
           counters: pending.parsed.summary.counters,
           raw_text: pending.parsed.summary.raw_text.slice(0, 20_000),
+          ...ownerFields,
           source: { model: 'bulk-telegram' },
           created_at: new Date(),
         };
@@ -168,8 +181,14 @@ export class BulkEntryFlow {
           imported: events.length,
           skipped,
           header: pending.parsed.header,
+          ...ownerFields,
+          owner_problems: owner?.problems ?? null,
         },
       });
+
+      if (owner?.learn_alias && owner.owner) {
+        await this.repository.saveStaffAlias(owner.learn_alias, owner.owner.employee_id, 'self');
+      }
 
       const summaryLine = summaryId ? ' + daily summary' : '';
       Logger.info(`[bulk-confirm] token=${token} SUCCESS events=${events.length} summary=${summaryId ?? 'none'} skipped=${skipped}`);
@@ -200,13 +219,13 @@ export class BulkEntryFlow {
     await ctx.reply('🚫 បានលុបរបាយការណ៍។');
   }
 
-  private buildPreview(parsed: BulkReportParseResult): string {
+  private buildPreview(parsed: BulkReportParseResult, owner: OwnerDecision | null): string {
     const { header, drafts, summary, empty_slots, warnings } = parsed;
     const lines: string[] = [];
     lines.push('📋 <b>Bulk Daily Report</b>');
     lines.push('');
     lines.push(`📅 <b>Date:</b> ${escapeHtml(header.date)}`);
-    lines.push(`👤 <b>Follower:</b> ${escapeHtml(header.follower || '—')}`);
+    lines.push(`👤 <b>Owner:</b> ${escapeHtml(ownerFollower(parsed, owner) || '—')}${enteredByNote(owner)}`);
     if (header.page) lines.push(`📣 <b>Page:</b> ${escapeHtml(header.page)}`);
     lines.push('');
     lines.push(`<b>Leads: ${drafts.length}</b> (empty slots: ${empty_slots})`);
@@ -241,12 +260,18 @@ export class BulkEntryFlow {
       lines.push(`⚠️ ${escapeHtml(warnings.join('; '))}`);
     }
 
+    if (owner?.problems.length) {
+      lines.push('');
+      for (const p of describeProblems(owner)) lines.push(`⚠️ ${escapeHtml(p)}`);
+    }
+
     lines.push('');
     lines.push('<i>Confirm within 5 minutes.</i>');
     return lines.join('\n');
   }
 
-  private buildEvents(parsed: BulkReportParseResult): { events: LeadEventDocument[]; skipped: number } {
+  private buildEvents(parsed: BulkReportParseResult, owner: OwnerDecision | null): { events: LeadEventDocument[]; skipped: number } {
+    const follower = ownerFollower(parsed, owner);
     const events: LeadEventDocument[] = [];
     const ts = Date.now();
     let skipped = 0;
@@ -261,7 +286,7 @@ export class BulkEntryFlow {
         },
         page: d.page || parsed.header.page || null,
         destination: null,
-        follower: d.follower || parsed.header.follower || null,
+        follower,
         status_text: null,
         reason_code: d.reason_code || null,
         note: d.note || null,
@@ -284,6 +309,20 @@ export class BulkEntryFlow {
       if (state.expiresAt < now) this.pending.delete(token);
     }
   }
+}
+
+/**
+ * The follower stored on the records: the owner's registered name, else the
+ * `(name)` as typed, else the old free-text name line.
+ */
+function ownerFollower(parsed: BulkReportParseResult, owner: OwnerDecision | null): string | null {
+  return owner?.owner?.name ?? parsed.header.owner_name ?? parsed.header.follower ?? null;
+}
+
+function enteredByNote(owner: OwnerDecision | null): string {
+  const sender = owner?.sender;
+  if (!sender || !owner?.owner || sender.employee_id === owner.owner.employee_id) return '';
+  return ` · <i>entered by ${escapeHtml(sender.name)}</i>`;
 }
 
 function escapeHtml(s: string | null | undefined): string {

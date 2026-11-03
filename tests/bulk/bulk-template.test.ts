@@ -5,7 +5,7 @@ import { HelpCommand } from '../../src/bot/commands/help-command';
 import { COLLEAGUE_REPORT } from './colleague-fixture';
 
 const template = (): string =>
-  (new HelpCommand() as any).buildBulkCopyTemplate('Sales-management-group', '26/10/26');
+  (new HelpCommand() as any).buildBulkCopyTemplate('26/10/26');
 
 const slot = (tpl: string, n: number): string => {
   const start = tpl.indexOf(`Tel${n}=`);

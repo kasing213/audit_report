@@ -7,7 +7,8 @@ import { GroupConfigManager } from '../utils/group-config';
 import { formatTelegramLink, formatPhoneDisplay } from '../utils/phone-utils';
 import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
-import { parseBulkReport } from '../parser/bulk-report-parser';
+import { parseBulkReport, extractOwnerName } from '../parser/bulk-report-parser';
+import { staffDirectory, loadRoster, findStaffByName, StaffMember } from '../staff/staff-resolver';
 
 const router = express.Router();
 
@@ -310,11 +311,10 @@ router.post('/api/bulk/preview', express.json({ limit: '256kb' }), async (req: R
 
     const parsed = parseBulkReport(text);
 
-    const groupConfig = GroupConfigManager.getInstance();
-    const followers = groupConfig.getAllFollowerNames();
-    if (parsed.header.follower && !followers.includes(parsed.header.follower)) {
-      parsed.warnings.push(`Unknown follower: ${parsed.header.follower}`);
-    }
+    // The dashboard enters reports for others, like an admin: the owner is the
+    // `(name)` on the Page line and must be a registered employee.
+    const owner = await dashboardOwner(getRepository(), parsed.header.page);
+    if (owner.warning) parsed.warnings.push(owner.warning);
 
     res.json({
       preview: true,
@@ -347,6 +347,12 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
     const events: LeadEventDocument[] = [];
     const ts = Date.now();
     let skipped = 0;
+    const owner = await dashboardOwner(repository, header.page);
+    const follower = owner.member?.name ?? owner.typed ?? header.follower ?? null;
+    const ownerFields = {
+      employee_id: owner.member?.employee_id ?? null,
+      entered_by: { telegram_id: 0, username: 'dashboard', employee_id: null, name: null },
+    };
 
     for (const d of drafts) {
       const phone = (d?.customer_phone || '').trim();
@@ -363,7 +369,7 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
         },
         page: d?.page || header.page || null,
         destination: null,
-        follower: d?.follower || header.follower || null,
+        follower,
         status_text: null,
         reason_code: reasonCode,
         note: d?.note || null,
@@ -374,6 +380,7 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
           telegram_msg_id: `bulk-${ts}-${slot}`,
           model: 'bulk-paste'
         },
+        ...ownerFields,
         created_at: new Date()
       });
     }
@@ -384,8 +391,9 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
     if (summary && summary.counters && Object.keys(summary.counters).length > 0) {
       const summaryDoc: DailySummaryDocument = {
         date: header.date,
-        follower: header.follower || null,
+        follower,
         page: header.page || null,
+        ...ownerFields,
         counters: summary.counters,
         raw_text: typeof summary.raw_text === 'string' ? summary.raw_text.slice(0, 20000) : '',
         source: { model: 'bulk-paste' },
@@ -431,3 +439,15 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
 });
 
 export default router;
+
+async function dashboardOwner(
+  repository: SalesCaseRepository,
+  page: string | null | undefined,
+): Promise<{ typed: string | null; member: StaffMember | null; warning: string | null }> {
+  const typed = extractOwnerName(page ?? null);
+  if (!typed) return { typed, member: null, warning: 'No (name) on the Page line — add the owner, e.g. 🚩Page Sun Tv (Bery)' };
+  const roster = await loadRoster(staffDirectory, repository);
+  if (!roster) return { typed, member: null, warning: null };
+  const member = findStaffByName(roster.staff, roster.aliases, typed);
+  return { typed, member, warning: member ? null : `Owner "${typed}" is not in the staff list` };
+}

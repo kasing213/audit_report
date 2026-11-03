@@ -20,9 +20,8 @@ export class HelpCommand {
       const dateShort = this.isoToDdMmYy(getTodayDate());
 
       if (role === 'sales') {
-        const follower = this.getFollowerForChat(chatId) || 'YourName';
         await ctx.reply(this.buildSalesHelpMessage(), { parse_mode: 'Markdown' });
-        await ctx.reply(this.buildBulkCopyTemplate(follower, dateShort));
+        await ctx.reply(this.buildBulkCopyTemplate(dateShort));
         if (!closingConfigured) await ctx.reply(this.buildCloseSellTemplate(dateShort));
       } else if (role === 'closing') {
         await ctx.reply(this.buildClosingHelpMessage(), { parse_mode: 'Markdown' });
@@ -38,20 +37,12 @@ export class HelpCommand {
     }
   }
 
-  private getFollowerForChat(chatId: number | undefined): string | null {
-    if (chatId == null) return null;
-    const gm = GroupConfigManager.getInstance();
-    const groupId = gm.getGroupIdFromChatId(chatId);
-    if (!groupId) return null;
-    return gm.getGroupConfig(groupId)?.name ?? null;
-  }
-
   private isoToDdMmYy(iso: string): string {
     const [y, m, d] = iso.split('-');
     return `${parseInt(d, 10)}/${parseInt(m, 10)}/${y.slice(-2)}`;
   }
 
-  private buildBulkCopyTemplate(follower: string, date: string): string {
+  private buildBulkCopyTemplate(date: string): string {
     // Every slot carries the full a-j list, so staff only type `=1` next to the
     // reason instead of copying the list into each Tel. No example values: an
     // example phone left in the paste was saved as a real lead.
@@ -80,8 +71,8 @@ export class HelpCommand {
       '',
       '💞Follow up',
       `#របាយការណ៍ថ្ងៃទី${date}`,
-      follower,
-      '🚩Page ឈ្មោះផេករបស់អ្នក',
+      // The (name) is the report's owner; the bot matches it to the staff list.
+      '🚩Page ឈ្មោះផេករបស់អ្នក (ឈ្មោះរបស់អ្នក)',
       '',
       'A.Follow (Boots Page)',
       '   1.Messege=0',
@@ -210,7 +201,7 @@ export class HelpCommand {
       '',
       '💡 មូលហេតុ a–j៖ ដាក់ `=1` នៅបន្ទាត់ដែលត្រូវ (ឧ. `a.ថ្លៃពេក=1`)',
       '💡 Connected by៖ ដាក់ចំនួនក្នុងបន្ទាត់ a–f (ឧ. `a.Messenger=3`)',
-      '✅ ឈ្មោះ follower និងកាលបរិច្ឆេទបំពេញស្វ័យប្រវត្តិ',
+      '👤 ដាក់ឈ្មោះរបស់អ្នកក្នុងវង់ក្រចក នៅបន្ទាត់ Page (ឧ. `🚩Page Sun Tv (Bery)`)',
       '',
       '━━━━━━━━━━━━━━━━━━━━━',
       '🔸 *កែ/លុប*',

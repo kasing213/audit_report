@@ -8,7 +8,9 @@ import {
   financialLines,
   CloseSellParseResult
 } from '../../parser/close-sell-parser';
-import { GroupConfigManager } from '../../utils/group-config';
+import {
+  StaffDirectory, StaffMember, staffDirectory, loadRoster, findStaffByName, resolveSender, enteredBy,
+} from '../../staff/staff-resolver';
 import { Logger } from '../../utils/logger';
 import { formatReasonDisplay } from '../../constants/reason-codes';
 
@@ -17,7 +19,17 @@ interface PendingCloseSell {
   priorEventCount: number;
   chatId: number;
   userId: number;
+  username: string | null;
+  staff: CloseSellStaff | null;  // null when there is no staff roster to check against
   expiresAt: number;
+}
+
+// Names here are typed for other people by design (tour leaders, closer), so
+// matching only informs the preview and the stored ids; it never blocks.
+interface CloseSellStaff {
+  sender: StaffMember | null;
+  follower: StaffMember | null;
+  closer: StaffMember | null;
 }
 
 const TTL_MS = 5 * 60 * 1000;
@@ -26,12 +38,12 @@ const PRIOR_PREVIEW_LIMIT = 3;
 export class CloseSellEntryFlow {
   private repository: SalesCaseRepository;
   private pending: Map<string, PendingCloseSell>;
-  private groupConfig: GroupConfigManager;
+  private staffDir: StaffDirectory;
 
-  constructor(repository: SalesCaseRepository) {
+  constructor(repository: SalesCaseRepository, staff: StaffDirectory = staffDirectory) {
     this.repository = repository;
     this.pending = new Map();
-    this.groupConfig = GroupConfigManager.getInstance();
+    this.staffDir = staff;
   }
 
   /**
@@ -57,16 +69,13 @@ export class CloseSellEntryFlow {
     const parsed = parseCloseSellReport(text);
     if (!parsed) return false;
 
-    // Auto-fill follower from sales group config when closer + tour leaders
-    // are both empty (signals first-touch capture under the Customer Potential
-    // header, where staff often omit those fields).
-    if (!parsed.follower && this.groupConfig.isSalesGroupChat(chatId)) {
-      const groupId = this.groupConfig.getGroupIdFromChatId(chatId);
-      const cfg = groupId ? this.groupConfig.getGroupConfig(groupId) : null;
-      if (cfg?.name) {
-        parsed.follower = cfg.name;
-      }
-    }
+    const username = ctx.from?.username ?? null;
+    const roster = await loadRoster(this.staffDir, this.repository);
+    const staff: CloseSellStaff | null = roster && {
+      sender: resolveSender(roster.staff, userId, username).member,
+      follower: parsed.follower ? findStaffByName(roster.staff, roster.aliases, parsed.follower) : null,
+      closer: parsed.closer ? findStaffByName(roster.staff, roster.aliases, parsed.closer) : null,
+    };
 
     if (!parsed.phone) {
       // Surface the diagnostic and signal not-handled so other paths can try.
@@ -92,12 +101,14 @@ export class CloseSellEntryFlow {
       priorEventCount,
       chatId,
       userId,
+      username,
+      staff,
       expiresAt: Date.now() + TTL_MS
     });
     this.gcExpired();
     Logger.info(`[closesell] preview created token=${token} kind=${parsed.kind} user=${userId} chat=${chatId} priorEvents=${priorEventCount}`);
 
-    const previewText = this.buildPreview(parsed, priorEvents);
+    const previewText = this.buildPreview(parsed, priorEvents, staff);
     const keyboard = Markup.inlineKeyboard([
       [
         Markup.button.callback('✅ បញ្ជាក់ / Confirm', `closesell_confirm:${token}`),
@@ -135,6 +146,11 @@ export class CloseSellEntryFlow {
 
     try {
       const event = this.buildEvent(pending.parsed);
+      Object.assign(event, {
+        employee_id: pending.staff?.follower?.employee_id ?? null,
+        closer_employee_id: pending.staff?.closer?.employee_id ?? null,
+        entered_by: enteredBy(pending.staff?.sender, { id: pending.userId, username: pending.username }),
+      });
       const eventId = await this.repository.saveLeadEvent(event);
       Logger.info(`[closesell-confirm] saveLeadEvent id=${eventId}`);
 
@@ -162,7 +178,10 @@ export class CloseSellEntryFlow {
           event_id: eventId,
           kind: pending.parsed.kind,
           phone: pending.parsed.phone,
-          prior_event_count: pending.priorEventCount
+          prior_event_count: pending.priorEventCount,
+          employee_id: event.employee_id,
+          closer_employee_id: event.closer_employee_id,
+          entered_by: event.entered_by
         }
       });
 
@@ -193,7 +212,7 @@ export class CloseSellEntryFlow {
     await ctx.reply('🚫 បានលុបរបាយការណ៍។');
   }
 
-  private buildPreview(parsed: CloseSellParseResult, priorEvents: LeadEventDocument[]): string {
+  private buildPreview(parsed: CloseSellParseResult, priorEvents: LeadEventDocument[], staff: CloseSellStaff | null): string {
     const lines: string[] = [];
     const label = parsed.kind === 'customer-potential' ? 'Customer Potential' : 'Close sell';
     lines.push(`📋 <b>${label}</b>`);
@@ -201,8 +220,8 @@ export class CloseSellEntryFlow {
     lines.push(`📅 <b>Date:</b> ${escapeHtml(parsed.date)}`);
     if (parsed.page) lines.push(`📣 <b>Page:</b> ${escapeHtml(parsed.page)}`);
     lines.push(`📞 <b>Phone:</b> <code>${escapeHtml(parsed.phone || '?')}</code>`);
-    lines.push(`👤 <b>Follower (អ្នកដឹកនាំ):</b> ${escapeHtml(parsed.follower || '—')}`);
-    lines.push(`🤝 <b>Closer (អ្នកបិទលក់):</b> ${escapeHtml(parsed.closer || '—')}`);
+    lines.push(`👤 <b>Follower (អ្នកដឹកនាំ):</b> ${escapeHtml(parsed.follower || '—')}${staffMark(parsed.follower, staff?.follower, staff)}`);
+    lines.push(`🤝 <b>Closer (អ្នកបិទលក់):</b> ${escapeHtml(parsed.closer || '—')}${staffMark(parsed.closer, staff?.closer, staff)}`);
     if (parsed.tour_leaders.length > 1) {
       lines.push(`👥 <b>អ្នកដឹកនាំទាំងអស់:</b> ${escapeHtml(parsed.tour_leaders.join(', '))}`);
     }
@@ -290,6 +309,13 @@ export class CloseSellEntryFlow {
       if (state.expiresAt < now) this.pending.delete(token);
     }
   }
+}
+
+/** " → Bery ✅" when a typed name is a registered employee, " ⚠️ …" when not. */
+function staffMark(typed: string | null, match: StaffMember | null | undefined, staff: CloseSellStaff | null): string {
+  if (!typed || !staff) return '';
+  if (!match) return ' ⚠️ <i>មិនមានក្នុងបញ្ជីបុគ្គលិក</i>';
+  return match.name === typed ? ' ✅' : ` → ${escapeHtml(match.name)} ✅`;
 }
 
 function escapeHtml(s: string | null | undefined): string {

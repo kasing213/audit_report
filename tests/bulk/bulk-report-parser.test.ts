@@ -13,7 +13,7 @@ test('full format: the customer in the first list becomes a lead', () => {
   assert.equal(drafts.length, 1);
   assert.equal(drafts[0].customer_phone, '+855889475139');
   assert.equal(drafts[0].customer_name, 'long ya');
-  assert.equal(drafts[0].follower, 'Jim');
+  assert.equal(drafts[0].follower, null);  // "Jim" is a copied name line, never a follower
   assert.equal(drafts[0].date, '2026-10-25');
 });
 
@@ -156,7 +156,7 @@ test('flat paste: same lead as the line-broken report', () => {
 
 test('flat paste: header and counters', () => {
   const r = parseBulkReport(FLAT_FORMAT_REPORT);
-  assert.deepEqual(r.header, { date: '2026-10-25', follower: 'Jim', page: 'Page Sun Tv (Biry)' });
+  assert.deepEqual(r.header, { date: '2026-10-25', follower: null, page: 'Page Sun Tv (Biry)', owner_name: 'Biry' });
   assert.equal(r.summary.counters.messege, 8);
   assert.equal(r.summary.counters.night, 3);
   assert.equal(r.summary.counters.callin, 0);
@@ -180,4 +180,14 @@ test('a report pasted as one single line is still read', () => {
   assert.equal(drafts.length, 1);
   assert.equal(drafts[0].customer_name, 'long ya');
   assert.equal(drafts[0].reason_code, 'A');
+});
+
+test('bulk: "Jim" or the group name on the name line is never a follower', () => {
+  for (const line of ['Jim', 'Sales-management-group', 'YourName']) {
+    const p = parseBulkReport(`#របាយការណ៍ថ្ងៃទី3/11/26\n${line}\n🚩Page sun tv\nA.Follow (Boots Page)\nTel1=012345678`);
+    assert.equal(p.header.follower, null, line);
+  }
+  const biry = parseBulkReport('#របាយការណ៍ថ្ងៃទី3/11/26\nJim\n🚩Page sun tv(Biry)\nA.Follow (Boots Page)\nTel1=012345678');
+  assert.equal(biry.header.follower, null);
+  assert.equal(biry.header.owner_name, 'Biry');
 });

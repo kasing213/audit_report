@@ -21,6 +21,9 @@ export interface BulkReportHeader {
   date: string;
   follower: string | null;
   page: string | null;
+  // The report owner's name, typed in brackets at the end of the Page line:
+  // "🚩Page Sun Tv (Biry)" → "Biry".
+  owner_name: string | null;
 }
 
 export interface BulkReportSummary {
@@ -104,12 +107,16 @@ function extractDate(lines: string[], warnings: string[]): string {
   return today;
 }
 
+// Name lines that never meant a person: "Jim" was copied from Bery's report,
+// the group name was a bot fallback, YourName is the template placeholder.
+const NOT_A_FOLLOWER = /^(jim|sales[\s_-]*management[\s_-]*group|your[\s_-]*name)$/i;
+
 function extractFollower(lines: string[], dateLineIndex: number): string | null {
   for (let i = dateLineIndex + 1; i < Math.min(lines.length, dateLineIndex + 8); i++) {
     const trimmed = lines[i].trim();
     if (!trimmed) continue;
     const m = trimmed.match(/^([A-Za-z][A-Za-z0-9 _.-]{0,30})$/);
-    if (m) return m[1].trim();
+    if (m) return NOT_A_FOLLOWER.test(m[1].trim()) ? null : m[1].trim();
   }
   return null;
 }
@@ -122,6 +129,11 @@ function extractPage(lines: string[]): string | null {
     }
   }
   return null;
+}
+
+export function extractOwnerName(page: string | null): string | null {
+  const m = page?.match(/\(([^()]+)\)\s*$/);
+  return m && m[1].trim() ? m[1].trim() : null;
 }
 
 function extractCounters(section: string): Record<string, number> {
@@ -512,7 +524,7 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   const headerDate = extractDate(lines, warnings);
   const follower = extractFollower(lines, dateLineIndex >= 0 ? dateLineIndex : 0);
   const page = extractPage(lines);
-  const header: BulkReportHeader = { date: headerDate, follower, page };
+  const header: BulkReportHeader = { date: headerDate, follower, page, owner_name: extractOwnerName(page) };
 
   const bounds = findSectionBounds(normalized);
   const counters = extractCounters(normalized.slice(0, bounds.datingStart));
