@@ -1,4 +1,4 @@
-import type { LeadEventDocument } from '../database/models';
+import type { DailySummaryDocument, LeadEventDocument } from '../database/models';
 
 // Sources that are not a staff member's own sales entry: spreadsheet imports,
 // outreach sends, Meta lead ads and Payment Tracker proposals. They stay in the
@@ -18,6 +18,7 @@ export interface FollowerDailyGroup {
   follower: string;
   followUps: LeadEventDocument[];
   closings: LeadEventDocument[];
+  messages: number | null; // sum of `1.Messege=` from the follower's bulk reports; null when none sent it
 }
 
 export interface FollowerDailyPage {
@@ -30,6 +31,9 @@ export interface FollowerDailyPage {
   closingStart: number;
   totalFollowUps: number;
   totalClosings: number;
+  totalMessages: number | null;
+  totalWithNumber: number;         // distinct phone numbers among the follow-ups
+  totalMessageOnly: number | null; // messages that gave no number
   totalBooked: number;
   totalNotBooked: number;
 }
@@ -68,18 +72,31 @@ export function closeSellInfo(e: LeadEventDocument): CloseSellInfo {
   };
 }
 
-/** Staff entries split per follower (sorted by name, Unassigned last). */
-export function groupByFollower(events: LeadEventDocument[]): FollowerDailyGroup[] {
+/**
+ * Staff entries and bulk-report counters split per follower (sorted by name,
+ * Unassigned last). A follower who only sent counters still gets a group.
+ */
+export function groupByFollower(events: LeadEventDocument[], summaries: DailySummaryDocument[] = []): FollowerDailyGroup[] {
   const groups = new Map<string, FollowerDailyGroup>();
-  for (const e of events) {
-    if (!isStaffSalesEntry(e)) continue;
-    const key = followerKey(e.follower);
+  const groupFor = (follower: string | null | undefined): FollowerDailyGroup => {
+    const key = followerKey(follower);
     let g = groups.get(key);
     if (!g) {
-      g = { follower: cleanFollower(e.follower) || UNASSIGNED, followUps: [], closings: [] };
+      g = { follower: cleanFollower(follower) || UNASSIGNED, followUps: [], closings: [], messages: null };
       groups.set(key, g);
     }
+    return g;
+  };
+  for (const e of events) {
+    if (!isStaffSalesEntry(e)) continue;
+    const g = groupFor(e.follower);
     (isCloseSell(e) ? g.closings : g.followUps).push(e);
+  }
+  for (const s of summaries) {
+    const n = s.counters?.messege;
+    if (typeof n !== 'number') continue;
+    const g = groupFor(s.follower);
+    g.messages = (g.messages ?? 0) + n;
   }
   const unassigned = groups.get('');
   groups.delete('');
@@ -95,9 +112,13 @@ export function paginateGroup(g: FollowerDailyGroup, maxRows = MAX_ROWS_PER_IMAG
   ];
   const pages = Math.max(1, Math.ceil(rows.length / maxRows));
   const infos = g.closings.map(closeSellInfo);
+  const withNumber = new Set(g.followUps.map(e => e.customer?.phone).filter(Boolean)).size;
   const totals = {
     totalFollowUps: g.followUps.length,
     totalClosings: g.closings.length,
+    totalMessages: g.messages,
+    totalWithNumber: withNumber,
+    totalMessageOnly: g.messages === null ? null : Math.max(0, g.messages - withNumber),
     totalBooked: infos.reduce((s, i) => s + i.booked, 0),
     totalNotBooked: infos.reduce((s, i) => s + i.not_booked, 0)
   };
@@ -118,13 +139,23 @@ export function paginateGroup(g: FollowerDailyGroup, maxRows = MAX_ROWS_PER_IMAG
   return out;
 }
 
-export function buildFollowerDailyPages(events: LeadEventDocument[], maxRows = MAX_ROWS_PER_IMAGE): FollowerDailyPage[] {
-  return groupByFollower(events).flatMap(g => paginateGroup(g, maxRows));
+export function buildFollowerDailyPages(
+  events: LeadEventDocument[],
+  summaries: DailySummaryDocument[] = [],
+  maxRows = MAX_ROWS_PER_IMAGE
+): FollowerDailyPage[] {
+  return groupByFollower(events, summaries).flatMap(g => paginateGroup(g, maxRows));
 }
 
 export function followerPageCaption(p: FollowerDailyPage, date: string): string {
   const part = p.pages > 1 ? ` (${p.page}/${p.pages})` : '';
-  return `📊 ${p.follower} — ${date}${part}\nFollow-ups: ${p.totalFollowUps} · Closing sales: ${p.totalClosings}`;
+  const counts = [
+    ...(p.totalMessages !== null ? [`Messages: ${p.totalMessages}`] : []),
+    `Numbers: ${p.totalWithNumber}`,
+    ...(p.totalMessageOnly !== null ? [`Message only: ${p.totalMessageOnly}`] : []),
+    ...(p.totalClosings > 0 ? [`Closing: ${p.totalClosings}`] : [])
+  ];
+  return `📊 ${p.follower} — ${date}${part}\n${counts.join(' · ')}`;
 }
 
 export function followerPageFilename(p: FollowerDailyPage, date: string): string {

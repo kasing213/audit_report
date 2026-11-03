@@ -58,20 +58,19 @@
     <div class="header">
         <h1>{{follower}}</h1>
         <div class="date">
-            Daily Sales Report · {{date}}
+            Follower · {{date}}
             {{#if multiPage}}<div class="part">Page {{page}}/{{pages}}</div>{{/if}}
         </div>
     </div>
 
-    <div class="totals">
-        Follow-ups: <b>{{totalFollowUps}}</b> &nbsp;·&nbsp;
-        Closing sales: <b>{{totalClosings}}</b>
-        {{#if totalClosings}}(booked <b>{{totalBooked}}</b>, not booked <b>{{totalNotBooked}}</b>){{/if}}
-    </div>
-
     {{#if showFollowUps}}
     <div class="section followups">
-        <h2>Follow-ups <span class="count">{{totalFollowUps}}</span></h2>
+        <h2>1 · Follow-ups</h2>
+        <div class="totals">
+            {{#if hasMessages}}Messages: <b>{{totalMessages}}</b> &nbsp;·&nbsp;{{/if}}
+            Gave a number: <b>{{totalWithNumber}}</b>
+            {{#if hasMessages}}&nbsp;·&nbsp; Message only (no number): <b>{{totalMessageOnly}}</b>{{/if}}
+        </div>
         {{#if followUpRows.length}}
         <table>
             <thead>
@@ -91,14 +90,15 @@
             </tbody>
         </table>
         {{else}}
-        <div class="none">No follow-ups.</div>
+        <div class="none">No numbers given.</div>
         {{/if}}
     </div>
     {{/if}}
 
     {{#if showClosings}}
     <div class="section closings">
-        <h2>Closing sales <span class="count">{{totalClosings}}</span></h2>
+        <h2>2 · Closing <span class="count">{{totalClosings}}</span></h2>
+        <div class="totals">Booked: <b>{{totalBooked}}</b> &nbsp;·&nbsp; Not booked: <b>{{totalNotBooked}}</b></div>
         {{#if closingRows.length}}
         <table>
             <thead>

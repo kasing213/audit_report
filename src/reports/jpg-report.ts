@@ -32,7 +32,9 @@ function followerPageView(p: FollowerDailyPage, date: string, timeZone: string) 
     date,
     multiPage: p.pages > 1,
     showFollowUps: p.followUps.length > 0 || (p.totalFollowUps === 0 && p.page === 1),
-    showClosings: p.closings.length > 0 || (p.totalClosings === 0 && p.page === p.pages),
+    // Closings are rare: the section only appears on a day that has one.
+    showClosings: p.closings.length > 0,
+    hasMessages: p.totalMessages !== null,
     followUpRows: p.followUps.map((e, i) => ({
       n: p.followUpStart + i + 1,
       time: formatTimeIn(e.created_at, timeZone),
@@ -117,8 +119,9 @@ export class JpgReportGenerator {
   public async generateFollowerDailyReports(date: string, timezone?: string): Promise<FollowerDailyImage[]> {
     const tz = timezone || process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
     const events = await this.dataService.getLeadEventsByEntryDay(date, undefined, tz);
-    const pages = buildFollowerDailyPages(events);
-    Logger.info(`Daily per-follower report for ${date}: ${events.length} entries -> ${pages.length} image(s)`);
+    const summaries = await this.dataService.getDailySummariesByEntryDay(date, tz);
+    const pages = buildFollowerDailyPages(events, summaries);
+    Logger.info(`Daily per-follower report for ${date}: ${events.length} entries, ${summaries.length} bulk counters -> ${pages.length} image(s)`);
     return renderFollowerDailyImages(pages, date, tz);
   }
 

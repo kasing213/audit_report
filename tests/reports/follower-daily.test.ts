@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import type { LeadEventDocument } from '../../src/database/models';
+import type { DailySummaryDocument, LeadEventDocument } from '../../src/database/models';
 import {
   buildFollowerDailyPages,
   closeSellInfo,
@@ -56,6 +56,48 @@ test('non-staff sources never reach the daily images', () => {
 test('a follower with only non-staff rows gets no image', () => {
   const pages = buildFollowerDailyPages([ev('Seyi', 'outreach-worker'), ev('Bery')]);
   assert.deepEqual(pages.map(p => p.follower), ['Bery']);
+});
+
+// ── Messages vs numbers given ──
+
+function sum(follower: string | null, counters: Record<string, number>): DailySummaryDocument {
+  return { date: '2026-11-01', follower, page: 'Sun Tv', counters, raw_text: '', source: { model: 'bulk-telegram' }, created_at: new Date() };
+}
+
+test('messages come from 1.Messege, message-only is messages minus numbers given', () => {
+  const [p] = buildFollowerDailyPages(
+    [ev('Bery'), ev('Bery'), ev('Bery', 'bulk-telegram', { customer: { name: 'x', phone: null } })],
+    [sum('Bery', { messege: 8, phone: 2 }), sum('bery', { messege: 4 })]
+  );
+  assert.equal(p.totalMessages, 12);
+  assert.equal(p.totalWithNumber, 2);
+  assert.equal(p.totalMessageOnly, 10);
+  assert.equal(followerPageCaption(p, '2026-11-01'), '📊 Bery — 2026-11-01\nMessages: 12 · Numbers: 2 · Message only: 10');
+});
+
+test('the same phone twice counts as one number', () => {
+  const [p] = buildFollowerDailyPages([
+    ev('Bery', 'bulk-telegram', { customer: { name: 'a', phone: '+85512' } }),
+    ev('Bery', 'bulk-telegram', { customer: { name: 'a', phone: '+85512' } })
+  ]);
+  assert.equal(p.totalWithNumber, 1);
+});
+
+test('a follower who only sent counters still gets a report', () => {
+  const pages = buildFollowerDailyPages([], [sum('Seyi', { messege: 5 }), sum('Sros', { fake: 1 })]);
+  assert.deepEqual(pages.map(p => [p.follower, p.totalMessages, p.totalMessageOnly]), [['Seyi', 5, 5]]);
+});
+
+test('without a 1.Messege counter there is no message-only figure', () => {
+  const [p] = buildFollowerDailyPages([ev('Bery')]);
+  assert.equal(p.totalMessages, null);
+  assert.equal(p.totalMessageOnly, null);
+  assert.equal(followerPageCaption(p, '2026-11-01'), '📊 Bery — 2026-11-01\nNumbers: 1');
+});
+
+test('closing shows in the caption only on a day that has one', () => {
+  const [p] = buildFollowerDailyPages([ev('Bery'), ev('Bery', 'closesell-telegram')]);
+  assert.match(followerPageCaption(p, '2026-11-01'), /Numbers: 1 · Closing: 1$/);
 });
 
 // ── Close-sell closer and counts ──

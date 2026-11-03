@@ -1,5 +1,5 @@
 import { SalesCaseRepository } from '../database/repository';
-import { LeadEventDocument, CustomerCase } from '../database/models';
+import { LeadEventDocument, CustomerCase, DailySummaryDocument } from '../database/models';
 import { getZonedDayRangeUtc } from '../utils/time';
 
 export class ReportDataService {
@@ -52,6 +52,21 @@ export class ReportDataService {
       return await collection.find(query).sort({ created_at: 1 }).toArray();
     } catch (error) {
       console.error('Error fetching lead events by entry day:', error);
+      return [];
+    }
+  }
+
+  /** Bulk report counter blocks (1.Messege=, 9.Phone=, ...) entered on `entryDate`. */
+  public async getDailySummariesByEntryDay(entryDate: string, timezone?: string): Promise<DailySummaryDocument[]> {
+    try {
+      const range = getZonedDayRangeUtc(entryDate, timezone);
+      if (!range) return [];
+      const db = this.repository['db'];
+      return await db.getDb().collection<DailySummaryDocument>('daily_summaries')
+        .find({ created_at: { $gte: range.start, $lt: range.end } })
+        .toArray();
+    } catch (error) {
+      console.error('Error fetching daily summaries by entry day:', error);
       return [];
     }
   }
