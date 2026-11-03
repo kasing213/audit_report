@@ -1,6 +1,7 @@
 import * as cron from 'node-cron';
 import { ExcelReportGenerator } from '../reports/excel-report';
 import { Logger } from '../utils/logger';
+import { getPreviousMonth } from '../utils/time';
 
 export class MonthlyScheduler {
   private excelGenerator: ExcelReportGenerator;
@@ -18,11 +19,9 @@ export class MonthlyScheduler {
 
   private async generateAndSendMonthlyReport(): Promise<void> {
     try {
-      // Get previous month's date
-      const now = new Date();
-      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-      const year = lastMonth.getFullYear();
-      const month = lastMonth.getMonth() + 1;
+      // Previous month in report timezone (not server UTC)
+      const { year, month } = getPreviousMonth(process.env.REPORT_TIMEZONE || process.env.TIMEZONE);
+      const lastMonth = new Date(year, month - 1, 1);
       const monthString = `${year}-${String(month).padStart(2, '0')}`;
       const monthName = lastMonth.toLocaleString('default', { month: 'long', year: 'numeric' });
 
@@ -91,11 +90,8 @@ export class MonthlyScheduler {
         targetMonth = monthString;
         [year, month] = monthString.split('-').map(Number);
       } else {
-        // Default to previous month
-        const now = new Date();
-        const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
-        year = lastMonth.getFullYear();
-        month = lastMonth.getMonth() + 1;
+        // Default to previous month in report timezone
+        ({ year, month } = getPreviousMonth(process.env.REPORT_TIMEZONE || process.env.TIMEZONE));
         targetMonth = `${year}-${String(month).padStart(2, '0')}`;
       }
 

@@ -15,6 +15,8 @@ import { CloseSellEntryFlow } from './flows/close-sell-entry-flow';
 import { GroupConfigManager } from '../utils/group-config';
 import { chatRole, describeChat, routePaste, WRONG_GROUP_REPLY } from './routing';
 import { isInlineExpired } from './actions/inline-edit-delete';
+import { JpgReportGenerator } from '../reports/jpg-report';
+import { getDateNDaysAgo } from '../utils/time';
 import dotenv from 'dotenv';
 
 dotenv.config();
@@ -127,6 +129,36 @@ export class TelegrafBotService {
       } catch (error) {
         Logger.error('Error handling /report command', error as Error);
         await ctx.reply('Failed to process report request.');
+      }
+    });
+
+    // /daily [YYYY-MM-DD] - the 10:00 per-follower pictures on demand (default
+    // yesterday), sent to the chat that asked. Only in summary/audit chat.
+    this.bot.command('daily', async (ctx: Context) => {
+      try {
+        if (!this.groupConfigManager.isCommandAllowedInChat(ctx.chat?.id || 0)) {
+          await ctx.reply('❌ ពាក្យបញ្ជានេះមិនអាចប្រើនៅទីនេះបានទេ');
+          return;
+        }
+        const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+        const arg = text.trim().split(/\s+/)[1];
+        if (arg && !/^\d{4}-\d{2}-\d{2}$/.test(arg)) {
+          await ctx.reply('Use: /daily or /daily 2026-11-02');
+          return;
+        }
+        const tz = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
+        const date = arg || getDateNDaysAgo(1, tz);
+        const images = await new JpgReportGenerator().generateFollowerDailyReports(date, tz);
+        if (images.length === 0) {
+          await ctx.reply(`No staff entries on ${date}.`);
+          return;
+        }
+        for (const img of images) {
+          await this.sendPhoto(String(ctx.chat!.id), img.buffer, img.filename, img.caption);
+        }
+      } catch (error) {
+        Logger.error('Error handling /daily command', error as Error);
+        await ctx.reply('❌ Failed to build the daily report.');
       }
     });
 
@@ -485,13 +517,13 @@ export class TelegrafBotService {
     Logger.info('Telegraf bot started successfully');
   }
 
-  public async sendPhoto(chatId: string, buffer: Buffer, filename: string): Promise<void> {
+  public async sendPhoto(chatId: string, buffer: Buffer, filename: string, caption?: string): Promise<void> {
     try {
       await this.bot.telegram.sendPhoto(chatId, {
         source: buffer,
         filename: filename
       }, {
-        caption: `📊 ${filename.replace('.jpg', '').replace('-', ' ').toUpperCase()}\n\nGenerated: ${new Date().toLocaleString()}`
+        caption: caption ?? `📊 ${filename.replace('.jpg', '').replace('-', ' ').toUpperCase()}\n\nGenerated: ${new Date().toLocaleString()}`
       });
       Logger.info(`Photo sent to chat ${chatId}: ${filename}`);
     } catch (error) {

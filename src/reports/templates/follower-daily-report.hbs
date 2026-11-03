@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html lang="km">
+<head>
+    <meta charset="UTF-8">
+    <title>{{follower}} - {{date}}</title>
+    <style>
+        body {
+            font-family: 'Noto Sans Khmer', 'Khmer OS', 'Khmer UI', Arial, sans-serif;
+            margin: 0;
+            padding: 16px;
+            background-color: #f5f5f5;
+            font-size: 17px;
+            color: #222;
+        }
+        .container {
+            background-color: white;
+            padding: 22px 24px;
+            border-radius: 8px;
+        }
+        .header {
+            border-bottom: 3px solid #007bff;
+            padding-bottom: 12px;
+            margin-bottom: 16px;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+        }
+        .header h1 { color: #007bff; margin: 0; font-size: 32px; }
+        .header .date { color: #444; font-size: 20px; text-align: right; }
+        .header .part { color: #888; font-size: 16px; }
+        .totals { font-size: 19px; margin-bottom: 18px; }
+        .totals b { color: #007bff; }
+        .section { margin-top: 18px; }
+        .section h2 {
+            margin: 0 0 8px 0;
+            font-size: 22px;
+            padding: 6px 12px;
+            border-radius: 5px;
+            color: white;
+        }
+        .followups h2 { background-color: #007bff; }
+        .closings h2 { background-color: #1e8e3e; }
+        .section h2 .count { float: right; font-weight: normal; }
+        table { width: 100%; border-collapse: collapse; }
+        th, td { border: 1px solid #ccc; padding: 8px 10px; text-align: left; vertical-align: top; }
+        th { background-color: #eef3fb; font-size: 16px; }
+        .closings th { background-color: #e8f5ec; }
+        tr:nth-child(even) td { background-color: #fafafa; }
+        td.num { text-align: right; white-space: nowrap; }
+        td.time { white-space: nowrap; }
+        .booked { color: #1e8e3e; font-weight: bold; }
+        .tag { font-size: 13px; background: #fff3cd; border: 1px solid #e0c060; border-radius: 3px; padding: 0 4px; }
+        .none { color: #777; font-style: italic; padding: 6px 2px; }
+    </style>
+</head>
+<body>
+<div class="container">
+    <div class="header">
+        <h1>{{follower}}</h1>
+        <div class="date">
+            Follower · {{date}}
+            {{#if multiPage}}<div class="part">Page {{page}}/{{pages}}</div>{{/if}}
+        </div>
+    </div>
+
+    {{#if showFollowUps}}
+    <div class="section followups">
+        <h2>1 · Follow-ups</h2>
+        <div class="totals">
+            {{#if hasMessages}}Messages: <b>{{totalMessages}}</b> &nbsp;·&nbsp;{{/if}}
+            Gave a number: <b>{{totalWithNumber}}</b>
+            {{#if hasMessages}}&nbsp;·&nbsp; Message only (no number): <b>{{totalMessageOnly}}</b>{{/if}}
+        </div>
+        {{#if followUpRows.length}}
+        <table>
+            <thead>
+                <tr><th>#</th><th>Time</th><th>Customer Name</th><th>Phone Number</th><th>Platform/Page</th><th>Reason</th></tr>
+            </thead>
+            <tbody>
+                {{#each followUpRows}}
+                <tr>
+                    <td class="num">{{this.n}}</td>
+                    <td class="time">{{this.time}}</td>
+                    <td>{{this.name}}</td>
+                    <td>{{this.phone}}</td>
+                    <td>{{this.page}}</td>
+                    <td>{{this.reason}}</td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+        {{else}}
+        <div class="none">No numbers given.</div>
+        {{/if}}
+    </div>
+    {{/if}}
+
+    {{#if showClosings}}
+    <div class="section closings">
+        <h2>2 · Closing <span class="count">{{totalClosings}}</span></h2>
+        <div class="totals">Booked: <b>{{totalBooked}}</b> &nbsp;·&nbsp; Not booked: <b>{{totalNotBooked}}</b></div>
+        {{#if closingRows.length}}
+        <table>
+            <thead>
+                <tr><th>#</th><th>Time</th><th>Phone Number</th><th>Platform/Page</th><th>Closer</th><th>Booked</th><th>Not booked</th><th>Result</th></tr>
+            </thead>
+            <tbody>
+                {{#each closingRows}}
+                <tr>
+                    <td class="num">{{this.n}}</td>
+                    <td class="time">{{this.time}}</td>
+                    <td>{{this.phone}}</td>
+                    <td>{{this.page}}</td>
+                    <td>{{this.closer}}</td>
+                    <td class="num {{#if this.booked}}booked{{/if}}">{{this.booked}}</td>
+                    <td class="num">{{this.not_booked}}</td>
+                    <td>{{#if this.potential}}<span class="tag">Potential</span> {{/if}}{{this.reason}}</td>
+                </tr>
+                {{/each}}
+            </tbody>
+        </table>
+        {{else}}
+        <div class="none">No closing sales.</div>
+        {{/if}}
+    </div>
+    {{/if}}
+</div>
+</body>
+</html>

@@ -1,20 +1,17 @@
 import * as cron from 'node-cron';
 import { JpgReportGenerator } from '../reports/jpg-report';
 import { Logger } from '../utils/logger';
-import { ReportDataService } from '../reports/data-service';
 import { getDateNDaysAgo, getTodayDate } from '../utils/time';
 
 export class DailyScheduler {
   private jpgGenerator: JpgReportGenerator;
-  private dataService: ReportDataService;
   private telegramChatId: string;
   private groupId?: string;
   private groupName?: string;
-  private sendReportCallback?: (chatId: string, buffer: Buffer, filename: string) => Promise<void>;
+  private sendReportCallback?: (chatId: string, buffer: Buffer, filename: string, caption?: string) => Promise<void>;
 
   constructor(telegramChatId: string, groupId?: string, groupName?: string) {
     this.jpgGenerator = new JpgReportGenerator();
-    this.dataService = new ReportDataService();
     this.telegramChatId = telegramChatId;
 
     if (groupId !== undefined) {
@@ -26,8 +23,36 @@ export class DailyScheduler {
     }
   }
 
-  public setSendReportCallback(callback: (chatId: string, buffer: Buffer, filename: string) => Promise<void>): void {
+  public setSendReportCallback(callback: (chatId: string, buffer: Buffer, filename: string, caption?: string) => Promise<void>): void {
     this.sendReportCallback = callback;
+  }
+
+  /**
+   * One photo per follower (split into parts when long) for entries logged on
+   * `dateString`. Followers with no entries get nothing.
+   */
+  private async sendFollowerReports(dateString: string, reportTimezone: string): Promise<number> {
+    const images = await this.jpgGenerator.generateFollowerDailyReports(dateString, reportTimezone);
+    if (images.length === 0) {
+      Logger.warn(`No staff sales entries made on ${dateString}; no daily images sent`);
+      return 0;
+    }
+    if (!this.sendReportCallback) {
+      Logger.warn('No send report callback configured');
+      return 0;
+    }
+    let sent = 0;
+    for (const img of images) {
+      try {
+        await this.sendReportCallback(this.telegramChatId, img.buffer, img.filename, img.caption);
+        sent++;
+      } catch (error) {
+        // One rejected photo must not stop the other followers' reports.
+        Logger.error(`Failed to send daily report image ${img.filename}`, error as Error);
+      }
+    }
+    Logger.info(`Daily report: sent ${sent}/${images.length} image(s) for ${dateString} to chat ${this.telegramChatId}`);
+    return sent;
   }
 
   private async generateAndSendDailyReport(): Promise<void> {
@@ -39,39 +64,8 @@ export class DailyScheduler {
       const reportTimezone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
       const dateString = getDateNDaysAgo(1, reportTimezone); // yesterday in Cambodia time
 
-      const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
-      Logger.info(`Generating scheduled daily report for entries on ${dateString}${groupInfo}`);
-
-      // Check if there are any sales entries made yesterday for this group
-      const leadEvents = await this.dataService.getLeadEventsByEntryDay(dateString, this.groupId, reportTimezone);
-
-      if (leadEvents.length === 0) {
-        const noReportMsg = this.groupId
-          ? `No sales entries made yesterday (${dateString}) for ${this.groupName || this.groupId}`
-          : `No sales entries made yesterday (${dateString})`;
-        Logger.warn(noReportMsg);
-      } else {
-        const foundMsg = this.groupId
-          ? `Found ${leadEvents.length} sales entry(ies) on ${dateString} in ${this.groupName || this.groupId}`
-          : `Found ${leadEvents.length} sales entry(ies) on ${dateString}`;
-        Logger.info(foundMsg);
-      }
-
-      const reportBuffer = await this.jpgGenerator.generateDailyReport(dateString, this.groupId, { byEntryDay: true, timezone: reportTimezone });
-      const filename = this.groupId
-        ? `daily-report-${dateString}-${this.groupId}.jpg`
-        : `daily-report-${dateString}.jpg`;
-
-      if (this.sendReportCallback) {
-        await this.sendReportCallback(this.telegramChatId, reportBuffer, filename);
-        const sentMsg = this.groupId
-          ? `Daily report sent to ${this.groupName || this.groupId} chat: ${this.telegramChatId}`
-          : `Daily report sent to Telegram chat: ${this.telegramChatId}`;
-        Logger.info(sentMsg);
-      } else {
-        Logger.warn('No send report callback configured');
-      }
-
+      Logger.info(`Generating scheduled per-follower daily report for entries on ${dateString}`);
+      await this.sendFollowerReports(dateString, reportTimezone);
     } catch (error) {
       Logger.error('Failed to generate/send daily report', error as Error);
     }
@@ -108,28 +102,7 @@ export class DailyScheduler {
   public async sendManualReport(date?: string): Promise<void> {
     const reportTimezone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
     const targetDate = date || getTodayDate(reportTimezone);
-
-    const groupInfo = this.groupId ? ` for ${this.groupName || this.groupId}` : '';
-    Logger.info(`Generating manual daily report for entries on ${targetDate}${groupInfo}`);
-
-    try {
-      const reportBuffer = await this.jpgGenerator.generateDailyReport(targetDate, this.groupId, { byEntryDay: true, timezone: reportTimezone });
-      const filename = this.groupId
-        ? `daily-report-${targetDate}-${this.groupId}.jpg`
-        : `daily-report-${targetDate}.jpg`;
-
-      if (this.sendReportCallback) {
-        await this.sendReportCallback(this.telegramChatId, reportBuffer, filename);
-        const sentMsg = this.groupId
-          ? `Manual daily report sent for ${targetDate} to ${this.groupName || this.groupId}`
-          : `Manual daily report sent for ${targetDate}`;
-        Logger.info(sentMsg);
-      } else {
-        Logger.warn('No send report callback configured');
-      }
-    } catch (error) {
-      Logger.error('Failed to send manual report', error as Error);
-      throw error;
-    }
+    Logger.info(`Generating manual per-follower daily report for entries on ${targetDate}`);
+    await this.sendFollowerReports(targetDate, reportTimezone);
   }
 }

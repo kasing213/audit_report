@@ -97,3 +97,22 @@ export function toZonedDateTime(dateStr: string, timeStr: string = '00:00', time
     return baseDate;
   }
 }
+
+/**
+ * The calendar month before `now`'s month in `timezoneEnv` (default report
+ * timezone). The monthly cron fires at 00:01 Cambodia on the 1st, which is
+ * still the previous day in UTC, so server-local month math picks the wrong
+ * month.
+ */
+export function getPreviousMonth(timezoneEnv?: string, now: Date = new Date()): { year: number; month: number } {
+  const timeZone = timezoneEnv || process.env.REPORT_TIMEZONE || process.env.TIMEZONE || 'Asia/Phnom_Penh';
+  let today: string;
+  try {
+    today = new Intl.DateTimeFormat('en-CA', { timeZone }).format(now);
+  } catch (error) {
+    Logger.warn(`Invalid TIMEZONE "${timeZone}", falling back to UTC.`);
+    today = new Intl.DateTimeFormat('en-CA', { timeZone: 'UTC' }).format(now);
+  }
+  const [year, month] = today.split('-').map(Number);
+  return month === 1 ? { year: year - 1, month: 12 } : { year, month: month - 1 };
+}
