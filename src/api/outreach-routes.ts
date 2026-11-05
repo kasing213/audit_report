@@ -421,6 +421,12 @@ router.post('/report-inbound', express.json(), agentOnly, requireWorkerOrg, asyn
       return;
     }
 
+    // Reply is still saved above; only the group post is skipped.
+    if (process.env.INBOUND_ALERTS_PAUSED !== 'false') {
+      res.json({ ok: true, alert: 'paused' });
+      return;
+    }
+
     const chatId = process.env.AUDIT_CHAT_ID || process.env.SUMMARY_CHAT_ID;
     if (!chatId) {
       Logger.warn('report-inbound: AUDIT_CHAT_ID and SUMMARY_CHAT_ID both unset, dropping alert');
