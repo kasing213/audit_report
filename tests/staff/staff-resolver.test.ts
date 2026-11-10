@@ -69,7 +69,8 @@ test('owner: an admin may enter a report for someone else', () => {
 test('owner: a username that looks like an admin gets no admin rights', () => {
   const d = decideOwner(STAFF, [], { id: 999, username: 'theary_fake' }, 'Bery');
   assert.equal(d.sender?.employee_id, 'theary');
-  assert.deepEqual(d.problems, ['unregistered_sender', 'other_person']);
+  assert.equal(d.owner?.employee_id, 'bery', 'a username guess never outranks the typed name');
+  assert.deepEqual(d.problems, ['unregistered_sender']);
 });
 
 test('owner: regular staff naming another person is flagged and credited to themselves', () => {
@@ -112,8 +113,10 @@ function fakeRepo(aliases: StaffAlias[] = []) {
     saveDailySummary: async (s: any) => { saved.summaries.push(s); return 's1'; },
     saveChangeLog: async () => undefined,
     logAudit: async (a: any) => { saved.audits.push(a); },
-    reportExists: async (hash: string) =>
-      [...saved.events, ...saved.summaries].some(d => d.report_hash === hash),
+    savedReport: async (hash: string) => ({
+      leads: saved.events.some(d => d.report_hash === hash),
+      summary: saved.summaries.some(d => d.report_hash === hash),
+    }),
   };
   return { repo: repo as any, saved };
 }
@@ -321,4 +324,40 @@ test('edit with no staff roster: only leads this account entered', async () => {
   await cmd.handleCommand(ctx);
   await cmd.handlePending(ctx, '012345678');
   assert.match(replies[replies.length - 1], /ទិន្នន័យដែលរកឃើញ \(1\)/);
+});
+
+test('bulk: a report whose leads were deleted can be pasted again; its summary is not doubled', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+  const first = fakeCtx(BERY);
+  await flow.tryBulkEntry(first.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(first.ctx, tokenOf(first.ctx));
+  const n = saved.events.length;
+  saved.events.length = 0; // staff /delete'd every lead
+
+  const again = fakeCtx(BERY);
+  await flow.tryBulkEntry(again.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(again.ctx, tokenOf(again.ctx));
+  assert.equal(saved.events.length, n);
+  assert.equal(saved.summaries.length, 1);
+});
+
+test('owner: an unregistered account guessed by username never outranks the typed name', () => {
+  const d = decideOwner(STAFF, [], BERY_ROEUN, 'Srey Ka');
+  assert.equal(d.owner?.employee_id, 'ka');
+});
+
+test('owner: the placeholder with hidden Khmer spaces is still no name', () => {
+  assert.equal(extractOwnerName('Page x (ឈ្មោះ​របស់​អ្នក)'), null);
+});
+
+test('edit: a lead from before ownership was stored is matched by its follower name', async () => {
+  const old = { ...leadOf(null, SONY), employee_id: undefined, entered_by: undefined, follower: 'ឆៃ សុនី' };
+  assert.match(await runPhoneStep(EditCommand, SONY, [old]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  assert.match(await runPhoneStep(EditCommand, BERY, [old]), /មានតែម្ចាស់ ឬ admin/);
+});
+
+test('edit: a dashboard lead (telegram_id 0) is not unlocked by the username "dashboard"', async () => {
+  const dash = { ...leadOf(null, SONY), entered_by: { telegram_id: 0, username: 'dashboard', employee_id: null, name: null } };
+  assert.match(await runPhoneStep(EditCommand, { id: 55, username: 'dashboard' }, [dash]), /មានតែម្ចាស់ ឬ admin/);
 });

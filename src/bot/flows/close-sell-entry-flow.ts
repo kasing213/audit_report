@@ -9,7 +9,7 @@ import {
   CloseSellParseResult
 } from '../../parser/close-sell-parser';
 import {
-  StaffDirectory, StaffMember, staffDirectory, loadRoster, findStaffByName, resolveSender, enteredBy,
+  StaffDirectory, StaffMember, staffDirectory, loadRoster, findStaffByName, resolveSender, enteredBy, normalizeStaffName,
 } from '../../staff/staff-resolver';
 import { Logger } from '../../utils/logger';
 import { formatReasonDisplay } from '../../constants/reason-codes';
@@ -149,7 +149,7 @@ export class CloseSellEntryFlow {
       Object.assign(event, {
         // Registered name, as bulk reports save it, so "Biry" and "Bery"
         // are one person in the daily images and monthly sheets.
-        follower: pending.staff?.follower?.name ?? event.follower,
+        follower: canonicalFollower(event.follower, pending.staff?.follower),
         employee_id: pending.staff?.follower?.employee_id ?? null,
         closer_employee_id: pending.staff?.closer?.employee_id ?? null,
         entered_by: enteredBy(pending.staff?.sender, { id: pending.userId, username: pending.username }),
@@ -318,6 +318,12 @@ export class CloseSellEntryFlow {
 }
 
 /** " → Bery ✅" when a typed name is a registered employee, " ⚠️ …" when not. */
+/** The roster name for a typed follower, unless it was only a 1-2 letter name part (tour leaders aren't all staff). */
+function canonicalFollower(typed: string | null, match: StaffMember | null | undefined): string | null {
+  if (!match || !typed || normalizeStaffName(typed).replace(/\s/g, '').length < 3) return typed;
+  return match.name;
+}
+
 function staffMark(typed: string | null, match: StaffMember | null | undefined, staff: CloseSellStaff | null): string {
   if (!typed || !staff) return '';
   if (!match) return ' ⚠️ <i>មិនមានក្នុងបញ្ជីបុគ្គលិក</i>';

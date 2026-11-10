@@ -31,6 +31,7 @@ export class SalesCaseRepository {
     this.staffAliasesCollection = database.collection<StaffNameAliasDocument>('staff_name_aliases');
 
     // Ensure indexes exist (non-blocking)
+    this.dailySummariesCollection.createIndex({ report_hash: 1 }, { name: 'report_hash_idx', sparse: true }).catch(() => undefined);
     ensureIndexes(this.leadsEventsCollection).catch(err => {
       Logger.error('Index creation warning', err as Error);
     });
@@ -60,12 +61,14 @@ export class SalesCaseRepository {
     return Object.values(result.insertedIds).map(id => id.toString());
   }
 
-  /** True when a report with this reportHash() was already saved and not deleted. */
-  async reportExists(hash: string): Promise<boolean> {
+  /** What is still saved of a report with this reportHash(): any of its leads, its daily summary. */
+  async savedReport(hash: string): Promise<{ leads: boolean; summary: boolean }> {
     const query = { report_hash: hash, deleted: { $ne: true } };
     const options = { projection: { _id: 1 } };
-    return !!(await this.leadsEventsCollection.findOne(query, options))
-      || !!(await this.dailySummariesCollection.findOne(query, options));
+    return {
+      leads: !!(await this.leadsEventsCollection.findOne(query, options)),
+      summary: !!(await this.dailySummariesCollection.findOne(query, options)),
+    };
   }
 
   async saveDailySummary(summary: DailySummaryDocument): Promise<string> {

@@ -129,7 +129,9 @@ export function decideOwner(
   }
   const named = findStaffByName(staff, aliases, ownerName);
   if (named) {
-    if (sender && named.employee_id !== sender.employee_id && !isAdmin) {
+    // Only a sender known by Telegram id outranks the typed name; a username
+    // match is just a guess.
+    if (sender && matched_by === 'id' && named.employee_id !== sender.employee_id && !isAdmin) {
       // Usually a colleague's report text pasted as-is: credit who sent it.
       return { ...base, owner: sender, problems: [...problems, 'other_person'] };
     }
@@ -158,7 +160,7 @@ export function enteredBy(sender: StaffMember | null | undefined, from: { id: nu
  * is used just for old leads saved before the Telegram id was stored. With no
  * roster to check against, only the leads this account entered.
  */
-export async function changeableEvents<T extends { employee_id?: string | null; entered_by?: EnteredBy }>(
+export async function changeableEvents<T extends { employee_id?: string | null; entered_by?: EnteredBy; follower?: string | null }>(
   directory: StaffDirectory,
   from: { id: number; username: string | null },
   events: T[],
@@ -168,10 +170,14 @@ export async function changeableEvents<T extends { employee_id?: string | null; 
   const me = matched_by === 'id' ? member : null;
   if (me?.is_admin) return events;
   const username = from.username?.toLowerCase();
+  const legacy = (e: T) => e.entered_by?.telegram_id === undefined || e.entered_by?.telegram_id === null;
   return events.filter(e =>
     (me && e.employee_id === me.employee_id)
     || e.entered_by?.telegram_id === from.id
-    || (!e.entered_by?.telegram_id && !!username && e.entered_by?.username?.toLowerCase() === username));
+    || (legacy(e) && !!username && e.entered_by?.username?.toLowerCase() === username)
+    // Before ownership was stored: the follower named on the lead.
+    || (!!me && !!staff && !e.employee_id && !e.entered_by && !!e.follower
+      && findStaffByName(staff, [], e.follower)?.employee_id === me.employee_id));
 }
 
 export const NOT_YOURS_TEXT = '❌ ទិន្នន័យនេះជារបស់បុគ្គលិកផ្សេង — មានតែម្ចាស់ ឬ admin ទេដែលអាចកែ ឬលុបបាន។';
@@ -184,7 +190,7 @@ export function staffOwnershipEnforced(): boolean {
 const PROBLEM_TEXT: Record<OwnerProblem, (d: OwnerDecision) => string> = {
   missing_name: () => 'សូមដាក់ឈ្មោះរបស់អ្នកក្នុងវង់ក្រចក នៅបន្ទាត់ Page ឧ. 🚩Page Sun Tv (Bery)',
   unknown_name: d => `រកមិនឃើញឈ្មោះ «${d.owner_name}» ក្នុងបញ្ជីបុគ្គលិកទេ`,
-  other_person: d => `«${d.owner_name}» មិនមែនជាឈ្មោះរបស់អ្នកទេ — រក្សាទុកក្រោមឈ្មោះ ${d.owner?.name}។ មានតែ admin ទេដែលអាចបញ្ចូលជំនួសគេបាន`,
+  other_person: d => `«${d.owner_name}» មិនមែនជាឈ្មោះរបស់អ្នកទេ — របាយការណ៍នេះជារបស់ ${d.owner?.name}។ មានតែ admin ទេដែលអាចបញ្ចូលជំនួសគេបាន`,
   unregistered_sender: () => 'គណនី Telegram នេះមិនទាន់បានចុះឈ្មោះជាបុគ្គលិកទេ',
 };
 

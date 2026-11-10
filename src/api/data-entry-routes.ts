@@ -9,6 +9,7 @@ import { Logger } from '../utils/logger';
 import { renderPage } from './template-helper';
 import { parseBulkReport, extractOwnerName } from '../parser/bulk-report-parser';
 import { reportHash } from '../utils/report-hash';
+import { isDuplicate } from '../bot/flows/bulk-entry-flow';
 import { staffDirectory, loadRoster, findStaffByName, StaffMember } from '../staff/staff-resolver';
 
 const router = express.Router();
@@ -357,10 +358,6 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
       counters: summary?.counters,
       drafts,
     });
-    if (await repository.reportExists(report_hash)) {
-      res.status(409).json({ error: 'This report is already saved — the second copy was not saved.' });
-      return;
-    }
     const ownerFields = {
       employee_id: owner.member?.employee_id ?? null,
       entered_by: { telegram_id: 0, username: 'dashboard', employee_id: null, name: null },
@@ -398,10 +395,16 @@ router.post('/api/bulk/confirm', express.json({ limit: '512kb' }), async (req: R
       });
     }
 
+    const saved = await repository.savedReport(report_hash);
+    if (isDuplicate(saved, events.length > 0)) {
+      res.status(409).json({ error: 'This report is already saved — the second copy was not saved.' });
+      return;
+    }
+
     const eventIds = events.length ? await repository.saveLeadEvents(events) : [];
 
     let summaryId: string | null = null;
-    if (summary && summary.counters && Object.keys(summary.counters).length > 0) {
+    if (!saved.summary && summary && summary.counters && Object.keys(summary.counters).length > 0) {
       const summaryDoc: DailySummaryDocument = {
         date: header.date,
         follower,

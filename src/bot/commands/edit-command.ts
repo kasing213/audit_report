@@ -116,8 +116,9 @@ export class EditCommand {
 
   private async handlePhoneStep(ctx: Context, text: string, pending: PendingEdit, userId: number): Promise<boolean> {
     const phone = text.trim();
-    const found = await this.repository.findEventsByPhone(phone);
-    const events = await changeableEvents(this.staff, { id: userId, username: ctx.from?.username ?? null }, found);
+    // Filter before limiting, so your own older lead isn't cut by colleagues' newer ones.
+    const found = await this.repository.findEventsByPhone(phone, 200);
+    const events = (await changeableEvents(this.staff, { id: userId, username: ctx.from?.username ?? null }, found)).slice(0, 10);
     if (found.length > 0 && events.length === 0) {
       await ctx.reply(NOT_YOURS_TEXT);
       this.pendingEdits.delete(userId);
