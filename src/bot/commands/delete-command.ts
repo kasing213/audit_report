@@ -2,6 +2,7 @@ import { Context, Markup } from 'telegraf';
 import { SalesCaseRepository } from '../../database/repository';
 import { LeadEventDocument } from '../../database/models';
 import { Logger } from '../../utils/logger';
+import { StaffDirectory, staffDirectory, changeableEvents, NOT_YOURS_TEXT } from '../../staff/staff-resolver';
 import { formatReasonDisplay } from '../../constants/reason-codes';
 
 type DeleteStep = 'awaiting_phone' | 'awaiting_selection' | 'awaiting_confirm';
@@ -21,7 +22,7 @@ export class DeleteCommand {
   private pendingDeletes: Map<number, PendingDelete> = new Map();
   private ttlMs = 5 * 60 * 1000;
 
-  constructor(repository: SalesCaseRepository) {
+  constructor(repository: SalesCaseRepository, private readonly staff: StaffDirectory = staffDirectory) {
     this.repository = repository;
   }
 
@@ -89,6 +90,10 @@ export class DeleteCommand {
     const userId = ctx.from?.id;
     const chatId = ctx.chat?.id;
     if (!userId || chatId === undefined) return;
+    if (!(await changeableEvents(this.staff, { id: userId, username: ctx.from?.username ?? null }, [event])).length) {
+      await ctx.reply(NOT_YOURS_TEXT);
+      return;
+    }
 
     this.pendingDeletes.set(userId, {
       chatId,
@@ -115,7 +120,13 @@ export class DeleteCommand {
 
   private async handlePhoneStep(ctx: Context, text: string, pending: PendingDelete, userId: number): Promise<boolean> {
     const phone = text.trim();
-    const events = await this.repository.findEventsByPhone(phone);
+    const found = await this.repository.findEventsByPhone(phone);
+    const events = await changeableEvents(this.staff, { id: userId, username: ctx.from?.username ?? null }, found);
+    if (found.length > 0 && events.length === 0) {
+      await ctx.reply(NOT_YOURS_TEXT);
+      this.pendingDeletes.delete(userId);
+      return true;
+    }
 
     if (events.length === 0) {
       await ctx.reply('❌ រកមិនឃើញទិន្នន័យសម្រាប់លេខនេះ។\nសូមវាយ /delete ម្តងទៀត។');

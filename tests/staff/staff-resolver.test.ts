@@ -6,6 +6,8 @@ import {
 import { BulkEntryFlow } from '../../src/bot/flows/bulk-entry-flow';
 import { FULL_FORMAT_REPORT } from '../bulk/full-format-fixture';
 import { extractOwnerName } from '../../src/parser/bulk-report-parser';
+import { EditCommand } from '../../src/bot/commands/edit-command';
+import { DeleteCommand } from '../../src/bot/commands/delete-command';
 
 // Mirrors production (30/10/26): Bery's registered name carries a hidden
 // character, Theary is a group admin, Bery's second account is unregistered.
@@ -260,4 +262,49 @@ test('bulk: a corrected report (one field different) is not a duplicate', async 
   await flow.tryBulkEntry(fixed.ctx, FULL_FORMAT_REPORT.replace('(Biry)', '(Bery)'));
   await flow.handleConfirm(fixed.ctx, tokenOf(fixed.ctx));
   assert.ok(saved.events.length > n);
+});
+
+// ── /edit and /delete: only the lead's owner, whoever entered it, or an admin ──
+
+const leadOf = (employee_id: string | null, entered: { id: number; username: string | null }) => ({
+  date: '2026-11-01', customer: { name: 'C', phone: '012345678' }, page: 'Sun Tv', follower: null,
+  status_text: null, source: { telegram_msg_id: 'm', model: 'bulk-telegram' }, created_at: new Date(),
+  employee_id, entered_by: { telegram_id: entered.id, username: entered.username, employee_id, name: null },
+});
+
+async function runPhoneStep(Cmd: any, from: { id: number; username: string | null }, events: any[]) {
+  const repo: any = { findEventsByPhone: async () => events };
+  const cmd = new Cmd(repo, new StaffDirectory(async () => STAFF));
+  const { ctx, replies } = fakeCtx(from);
+  await cmd.handleCommand(ctx);
+  await cmd.handlePending(ctx, '012345678');
+  return replies[replies.length - 1];
+}
+
+for (const [label, Cmd] of [['edit', EditCommand], ['delete', DeleteCommand]] as const) {
+  test(`${label}: a colleague's lead is refused`, async () => {
+    assert.match(await runPhoneStep(Cmd, SONY, [leadOf('bery', BERY)]), /មានតែម្ចាស់ ឬ admin/);
+  });
+
+  test(`${label}: your own lead, and any lead for an admin, is offered`, async () => {
+    assert.match(await runPhoneStep(Cmd, BERY, [leadOf('bery', BERY)]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+    assert.match(await runPhoneStep(Cmd, THEARY, [leadOf('bery', BERY)]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  });
+
+  test(`${label}: an old lead with no employee id is matched by who entered it`, async () => {
+    assert.match(await runPhoneStep(Cmd, SONY, [leadOf(null, { id: 1, username: 'sony1681' })]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  });
+}
+
+test('edit/delete buttons under a saved report also refuse a colleague', async () => {
+  const lead = leadOf('bery', BERY);
+  const edit = new EditCommand({ findEventById: async () => lead } as any, new StaffDirectory(async () => STAFF));
+  const del = new DeleteCommand({} as any, new StaffDirectory(async () => STAFF));
+  const a = fakeCtx(SONY);
+  await edit.startEditFromEvent(a.ctx, 'e1');
+  assert.match(a.replies[0], /មានតែម្ចាស់ ឬ admin/);
+  const b = fakeCtx(SONY);
+  await del.startDeleteFromEvent(b.ctx, lead as any);
+  assert.match(b.replies[0], /មានតែម្ចាស់ ឬ admin/);
+  assert.equal(del.isPending(SONY.id), false);
 });
