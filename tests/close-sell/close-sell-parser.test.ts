@@ -204,3 +204,12 @@ test('close-sell: no (name) on the page line → no follower and a warning; a to
 test('close-sell: the template placeholder (ឈ្មោះអ្នក Follow) left unfilled is no follower', () => {
   assert.equal(parseCloseSellReport(template({ page: 'Sun Tv (ឈ្មោះអ្នក Follow)' }))!.follower, null);
 });
+
+test('close-sell: the page line may use a space, =, : or / after "page"', () => {
+  for (const sep of [' ', '=', ': ', '/']) {
+    const text = template({}).replace('🚩page TestPage', `🚩 page${sep}Sun Tv (Bery)`);
+    const p = parseCloseSellReport(text)!;
+    assert.equal(p.page, 'Sun Tv (Bery)', `separator ${JSON.stringify(sep)}`);
+    assert.equal(p.follower, 'Bery');
+  }
+});

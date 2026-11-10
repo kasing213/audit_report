@@ -178,8 +178,8 @@ function splitSections(text: string): SectionMap {
 function extractPage(preamble: string): string | null {
   for (const line of preamble.split('\n')) {
     const trimmed = line.trim().replace(/^🚩\s*/, '');
-    // "page Sun Tv", "page=Sun Tv" and "page: Sun Tv" are all written.
-    const m = trimmed.match(/^(?:page|ផេក)(?:\s*[=:]\s*|\s+)(.+)$/i);
+    // "page Sun Tv", "page=Sun Tv", "page: Sun Tv" and "page/Sun Tv" are all written.
+    const m = trimmed.match(/^(?:page|ផេក)(?:\s*[=:/]\s*|\s+)(.+)$/i);
     if (m && m[1].trim()) return m[1].trim();
   }
   return null;
