@@ -5,6 +5,7 @@ import {
 } from '../../src/staff/staff-resolver';
 import { BulkEntryFlow } from '../../src/bot/flows/bulk-entry-flow';
 import { FULL_FORMAT_REPORT } from '../bulk/full-format-fixture';
+import { extractOwnerName } from '../../src/parser/bulk-report-parser';
 
 // Mirrors production (30/10/26): Bery's registered name carries a hidden
 // character, Theary is a group admin, Bery's second account is unregistered.
@@ -17,6 +18,9 @@ const STAFF: StaffMember[] = [
   member('bery', 'លោកគ្រូ​Bery', '2101995560', { telegram_username: 'sunhiring' }),
   member('sony', 'ឆៃ សុនី', '5011482628', { telegram_username: 'sony1681' }),
   member('ka', 'Srey Ka', '6264359963'),
+  member('pich', 'Srey Pich', '7000000001'),
+  member('neang', 'Srey Neang', '7000000002'),
+  member('dara', 'Sok Dara', '7000000003'),
 ];
 const BERY_ROEUN = { id: 1845110247, username: 'Bery_roeun' };
 const THEARY = { id: 5757448268, username: null };
@@ -63,12 +67,12 @@ test('owner: an admin may enter a report for someone else', () => {
 test('owner: a username that looks like an admin gets no admin rights', () => {
   const d = decideOwner(STAFF, [], { id: 999, username: 'theary_fake' }, 'Bery');
   assert.equal(d.sender?.employee_id, 'theary');
-  assert.deepEqual(d.problems, ['other_person']);
+  assert.deepEqual(d.problems, ['unregistered_sender', 'other_person']);
 });
 
-test('owner: regular staff naming another person is flagged', () => {
+test('owner: regular staff naming another person is flagged and credited to themselves', () => {
   const d = decideOwner(STAFF, [], SONY, 'Bery');
-  assert.equal(d.owner?.employee_id, 'bery');
+  assert.equal(d.owner?.employee_id, 'sony');
   assert.deepEqual(d.problems, ['other_person']);
 });
 
@@ -89,9 +93,9 @@ test('owner: unregistered account and missing name are flagged', () => {
 test('directory: keeps the last roster when Payment-Tracker stops answering', async () => {
   let calls = 0;
   const dir = new StaffDirectory(async () => { if (calls++ === 0) return STAFF; throw new Error('down'); });
-  assert.equal((await dir.list())?.length, 5);
+  assert.equal((await dir.list())?.length, STAFF.length);
   (dir as any).loadedAt = 0; // force a refresh
-  assert.equal((await dir.list())?.length, 5);
+  assert.equal((await dir.list())?.length, STAFF.length);
   assert.equal(await new StaffDirectory(async () => null).list(), null);
 });
 
@@ -158,7 +162,7 @@ test('bulk: problems warn by default and refuse when enforcement is on', async (
 
   const warn = fakeCtx(SONY);
   await flow.tryBulkEntry(warn.ctx, report);
-  assert.match(warn.replies[0], /⚠️ «Bery» ជារបាយការណ៍របស់/);
+  assert.match(warn.replies[0], /⚠️ «Bery» មិនមែនជាឈ្មោះរបស់អ្នកទេ/);
   assert.ok(warn.ctx.lastExtra?.reply_markup, 'warn mode still offers Confirm');
 
   process.env.STAFF_OWNERSHIP_ENFORCE = 'true';
@@ -181,4 +185,31 @@ test('bulk: without a roster the typed (name) is stored, never the group name', 
   assert.equal(saved.events[0].follower, 'Biry');
   assert.equal(saved.events[0].employee_id, null);
   assert.equal(saved.events[0].entered_by.telegram_id, SONY.id);
+});
+
+const PICH = { id: 7000000001, username: null };
+const NEANG = { id: 7000000002, username: null };
+
+test('owner: the template placeholder is never a name, so it is never learned', () => {
+  const d = decideOwner(STAFF, [], SONY, extractOwnerName('Page ឈ្មោះផេករបស់អ្នក (ឈ្មោះរបស់អ្នក)'));
+  assert.equal(d.owner?.employee_id, 'sony');
+  assert.deepEqual(d.problems, ['missing_name']);
+  assert.equal(d.learn_alias, null);
+});
+
+test('owner: an ambiguous name ("Srey") is not learned for whoever typed it first', () => {
+  const d = decideOwner(STAFF, [], PICH, 'Srey');
+  assert.equal(d.owner?.employee_id, 'pich');
+  assert.equal(d.learn_alias, null);
+});
+
+test('owner: an exact registered name beats a wrongly learned spelling', () => {
+  const wrong: StaffAlias[] = [{ normalized: 'srey neang', employee_id: 'pich' }];
+  assert.equal(decideOwner(STAFF, wrong, NEANG, 'Srey Neang').owner?.employee_id, 'neang');
+});
+
+test('sender: a username only matches a whole name part of 4+ letters, and is always flagged', () => {
+  assert.equal(resolveSender(STAFF, 1, 'soksan_kh').member, null, '"sok" is too short to identify Sok Dara');
+  assert.equal(resolveSender(STAFF, 1, 'berylin').member, null, '"bery" inside "berylin" is not a name part');
+  assert.equal(decideOwner(STAFF, [], BERY_ROEUN, null).problems.includes('unregistered_sender'), true);
 });

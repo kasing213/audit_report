@@ -33,7 +33,7 @@ import {
 dotenv.config();
 
 // Name lines that never meant a person.
-const NOT_A_NAME = new Set(['jim', 'sales-management-group', 'yourname']);
+const NOT_A_NAME = new Set(['jim', 'sales-management-group', 'yourname', 'ឈ្មោះរបស់អ្នក']);
 
 function arg(name: string): string[] {
   return process.argv.slice(2).filter(a => a.startsWith(`--${name}=`)).map(a => a.slice(name.length + 3));

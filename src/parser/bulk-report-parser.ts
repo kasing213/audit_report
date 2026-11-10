@@ -131,9 +131,13 @@ function extractPage(lines: string[]): string | null {
   return null;
 }
 
+// The /help template's own placeholder: left in, it means no name was given.
+const PLACEHOLDER_NAMES = new Set(['ឈ្មោះរបស់អ្នក', 'yourname', 'your name']);
+
 export function extractOwnerName(page: string | null): string | null {
   const m = page?.match(/\(([^()]+)\)\s*$/);
-  return m && m[1].trim() ? m[1].trim() : null;
+  const name = m?.[1].trim();
+  return name && !PLACEHOLDER_NAMES.has(name.toLowerCase()) ? name : null;
 }
 
 function extractCounters(section: string): Record<string, number> {
