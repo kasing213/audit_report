@@ -154,8 +154,9 @@ export function enteredBy(sender: StaffMember | null | undefined, from: { id: nu
 
 /**
  * The leads this account may /edit or /delete: its own, ones it entered, or
- * any for an admin. An old lead with no employee id is matched by who entered
- * it. With no roster to check against, everything (as before).
+ * any for an admin. Only stable ids count; a username (which can change hands)
+ * is used just for old leads saved before the Telegram id was stored. With no
+ * roster to check against, only the leads this account entered.
  */
 export async function changeableEvents<T extends { employee_id?: string | null; entered_by?: EnteredBy }>(
   directory: StaffDirectory,
@@ -163,15 +164,14 @@ export async function changeableEvents<T extends { employee_id?: string | null; 
   events: T[],
 ): Promise<T[]> {
   const staff = await directory.list();
-  if (!staff) return events;
-  const { member, matched_by } = resolveSender(staff, from.id, from.username);
+  const { member, matched_by } = staff ? resolveSender(staff, from.id, from.username) : { member: null, matched_by: null };
   const me = matched_by === 'id' ? member : null;
   if (me?.is_admin) return events;
   const username = from.username?.toLowerCase();
   return events.filter(e =>
     (me && e.employee_id === me.employee_id)
     || e.entered_by?.telegram_id === from.id
-    || (!!username && e.entered_by?.username?.toLowerCase() === username));
+    || (!e.entered_by?.telegram_id && !!username && e.entered_by?.username?.toLowerCase() === username));
 }
 
 export const NOT_YOURS_TEXT = '❌ ទិន្នន័យនេះជារបស់បុគ្គលិកផ្សេង — មានតែម្ចាស់ ឬ admin ទេដែលអាចកែ ឬលុបបាន។';

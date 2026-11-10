@@ -291,8 +291,13 @@ for (const [label, Cmd] of [['edit', EditCommand], ['delete', DeleteCommand]] as
     assert.match(await runPhoneStep(Cmd, THEARY, [leadOf('bery', BERY)]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
   });
 
-  test(`${label}: an old lead with no employee id is matched by who entered it`, async () => {
-    assert.match(await runPhoneStep(Cmd, SONY, [leadOf(null, { id: 1, username: 'sony1681' })]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  test(`${label}: an old lead with no ids is matched by the username that entered it`, async () => {
+    const old = { ...leadOf(null, SONY), entered_by: { telegram_id: undefined, username: 'sony1681', employee_id: null, name: null } };
+    assert.match(await runPhoneStep(Cmd, SONY, [old]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  });
+
+  test(`${label}: a username alone never unlocks a lead that stored a different Telegram id`, async () => {
+    assert.match(await runPhoneStep(Cmd, SONY, [leadOf(null, { id: 1, username: 'sony1681' })]), /មានតែម្ចាស់ ឬ admin/);
   });
 }
 
@@ -307,4 +312,13 @@ test('edit/delete buttons under a saved report also refuse a colleague', async (
   await del.startDeleteFromEvent(b.ctx, lead as any);
   assert.match(b.replies[0], /មានតែម្ចាស់ ឬ admin/);
   assert.equal(del.isPending(SONY.id), false);
+});
+
+test('edit with no staff roster: only leads this account entered', async () => {
+  const repo: any = { findEventsByPhone: async () => [leadOf('bery', BERY), leadOf('sony', SONY)] };
+  const cmd = new EditCommand(repo, new StaffDirectory(async () => null));
+  const { ctx, replies } = fakeCtx(SONY);
+  await cmd.handleCommand(ctx);
+  await cmd.handlePending(ctx, '012345678');
+  assert.match(replies[replies.length - 1], /ទិន្នន័យដែលរកឃើញ \(1\)/);
 });
