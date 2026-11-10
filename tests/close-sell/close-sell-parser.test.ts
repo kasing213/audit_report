@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { parseCloseSellReport } from '../../src/parser/close-sell-parser';
 import { CloseSellEntryFlow } from '../../src/bot/flows/close-sell-entry-flow';
+import { StaffDirectory } from '../../src/staff/staff-resolver';
 
 // Mirrors the template the bot hands out (help-command buildCloseSellTemplate),
 // with the fields under test filled in. Empty fields stay as bare `X=` lines,
@@ -151,4 +152,31 @@ test('close-sell: Messenger-flattened paste (no line breaks) still parses', () =
   assert.equal(p.financial.monthly_income, '350$');
   assert.deepEqual(p.obstacles, [{ letter: 'i', text: 'ផ្សង=សុំពិភក្សាជួយគ្រួសាសិន' }]);
   assert.equal(p.raw_text, flat);
+});
+
+test('close-sell: the follower is saved under their registered name, as bulk reports are', async () => {
+  const saved: any[] = [];
+  const repo: any = {
+    getStaffAliases: async () => [{ normalized: 'biry', employee_id: 'bery' }],
+    findEventsByPhones: async () => [],
+    saveLeadEvent: async (e: any) => { saved.push(e); return 'e1'; },
+    saveChangeLog: async () => undefined,
+  };
+  const staff = [{
+    employee_id: 'bery', name: 'Bery', status: 'ACTIVE', role: 'SALES',
+    telegram_chat_id: '1', telegram_username: null, is_admin: false,
+  }];
+  const flow = new CloseSellEntryFlow(repo, new StaffDirectory(async () => staff));
+  const ctx: any = {
+    from: { id: 1 }, chat: { id: -100 },
+    reply: async (_t: string, extra?: any) => { ctx.lastExtra = extra; },
+    answerCbQuery: async () => undefined,
+    editMessageText: async () => undefined,
+    editMessageReplyMarkup: async () => undefined,
+  };
+  assert.equal(await flow.tryCloseSellEntry(ctx, template({ leader: 'Biry', booked: '1' })), true);
+  const token = ctx.lastExtra.reply_markup.inline_keyboard[0][0].callback_data.split(':')[1];
+  await flow.handleConfirm(ctx, token);
+  assert.equal(saved[0].follower, 'Bery');
+  assert.equal(saved[0].employee_id, 'bery');
 });

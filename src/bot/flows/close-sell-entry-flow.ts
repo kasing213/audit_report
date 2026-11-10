@@ -147,6 +147,9 @@ export class CloseSellEntryFlow {
     try {
       const event = this.buildEvent(pending.parsed);
       Object.assign(event, {
+        // Registered name, as bulk reports save it, so "Biry" and "Bery"
+        // are one person in the daily images and monthly sheets.
+        follower: pending.staff?.follower?.name ?? event.follower,
         employee_id: pending.staff?.follower?.employee_id ?? null,
         closer_employee_id: pending.staff?.closer?.employee_id ?? null,
         entered_by: enteredBy(pending.staff?.sender, { id: pending.userId, username: pending.username }),
