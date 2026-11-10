@@ -361,3 +361,8 @@ test('edit: a dashboard lead (telegram_id 0) is not unlocked by the username "da
   const dash = { ...leadOf(null, SONY), entered_by: { telegram_id: 0, username: 'dashboard', employee_id: null, name: null } };
   assert.match(await runPhoneStep(EditCommand, { id: 55, username: 'dashboard' }, [dash]), /មានតែម្ចាស់ ឬ admin/);
 });
+
+test('edit: an old lead naming only part of your name ("សុនី") does not unlock it', async () => {
+  const old = { ...leadOf(null, SONY), employee_id: undefined, entered_by: undefined, follower: 'សុនី' };
+  assert.match(await runPhoneStep(EditCommand, SONY, [old]), /មានតែម្ចាស់ ឬ admin/);
+});

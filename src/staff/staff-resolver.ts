@@ -175,10 +175,12 @@ export async function changeableEvents<T extends { employee_id?: string | null; 
     (me && e.employee_id === me.employee_id)
     || e.entered_by?.telegram_id === from.id
     || (legacy(e) && !!username && e.entered_by?.username?.toLowerCase() === username)
-    // Before ownership was stored: the follower named on the lead.
-    || (!!me && !!staff && !e.employee_id && !e.entered_by && !!e.follower
-      && findStaffByName(staff, [], e.follower)?.employee_id === me.employee_id));
+    // Before ownership was stored: the follower on the lead is exactly your
+    // registered name (no name parts or learned spellings: this grants access).
+    || (!!me && !e.employee_id && !e.entered_by && !!e.follower && compactName(e.follower) === compactName(me.name)));
 }
+
+const compactName = (name: string) => normalizeStaffName(name).replace(/\s/g, '');
 
 export const NOT_YOURS_TEXT = '❌ ទិន្នន័យនេះជារបស់បុគ្គលិកផ្សេង — មានតែម្ចាស់ ឬ admin ទេដែលអាចកែ ឬលុបបាន។';
 
