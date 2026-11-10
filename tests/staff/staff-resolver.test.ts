@@ -110,6 +110,8 @@ function fakeRepo(aliases: StaffAlias[] = []) {
     saveDailySummary: async (s: any) => { saved.summaries.push(s); return 's1'; },
     saveChangeLog: async () => undefined,
     logAudit: async (a: any) => { saved.audits.push(a); },
+    reportExists: async (hash: string) =>
+      [...saved.events, ...saved.summaries].some(d => d.report_hash === hash),
   };
   return { repo: repo as any, saved };
 }
@@ -212,4 +214,50 @@ test('sender: a username only matches a whole name part of 4+ letters, and is al
   assert.equal(resolveSender(STAFF, 1, 'soksan_kh').member, null, '"sok" is too short to identify Sok Dara');
   assert.equal(resolveSender(STAFF, 1, 'berylin').member, null, '"bery" inside "berylin" is not a name part');
   assert.equal(decideOwner(STAFF, [], BERY_ROEUN, null).problems.includes('unregistered_sender'), true);
+});
+
+test('bulk: the same report pasted twice (every field equal) is saved once', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+
+  const first = fakeCtx(BERY);
+  await flow.tryBulkEntry(first.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(first.ctx, tokenOf(first.ctx));
+  const eventsAfterFirst = saved.events.length;
+  assert.ok(eventsAfterFirst > 0);
+
+  const again = fakeCtx(BERY);
+  await flow.tryBulkEntry(again.ctx, FULL_FORMAT_REPORT);
+  assert.match(again.replies[0], /បានរក្សាទុករួចហើយ/);
+  assert.equal(again.ctx.lastExtra, undefined, 'no Confirm button for a duplicate');
+  assert.equal(saved.events.length, eventsAfterFirst);
+  assert.equal(saved.summaries.length, 1);
+});
+
+test('bulk: two identical pastes confirmed one after the other still save once', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+  const a = fakeCtx(BERY);
+  const b = fakeCtx(BERY);
+  await flow.tryBulkEntry(a.ctx, FULL_FORMAT_REPORT);
+  await flow.tryBulkEntry(b.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(a.ctx, tokenOf(a.ctx));
+  const n = saved.events.length;
+  await flow.handleConfirm(b.ctx, tokenOf(b.ctx));
+  assert.equal(saved.events.length, n);
+  assert.equal(saved.summaries.length, 1);
+});
+
+test('bulk: a corrected report (one field different) is not a duplicate', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+  const first = fakeCtx(BERY);
+  await flow.tryBulkEntry(first.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(first.ctx, tokenOf(first.ctx));
+  const n = saved.events.length;
+
+  const fixed = fakeCtx(BERY);
+  await flow.tryBulkEntry(fixed.ctx, FULL_FORMAT_REPORT.replace('(Biry)', '(Bery)'));
+  await flow.handleConfirm(fixed.ctx, tokenOf(fixed.ctx));
+  assert.ok(saved.events.length > n);
 });

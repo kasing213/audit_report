@@ -60,6 +60,14 @@ export class SalesCaseRepository {
     return Object.values(result.insertedIds).map(id => id.toString());
   }
 
+  /** True when a report with this reportHash() was already saved and not deleted. */
+  async reportExists(hash: string): Promise<boolean> {
+    const query = { report_hash: hash, deleted: { $ne: true } };
+    const options = { projection: { _id: 1 } };
+    return !!(await this.leadsEventsCollection.findOne(query, options))
+      || !!(await this.dailySummariesCollection.findOne(query, options));
+  }
+
   async saveDailySummary(summary: DailySummaryDocument): Promise<string> {
     const result = await this.dailySummariesCollection.insertOne(summary);
     return result.insertedId.toString();

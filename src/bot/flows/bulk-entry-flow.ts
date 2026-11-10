@@ -8,6 +8,7 @@ import {
   describeProblems, staffOwnershipEnforced,
 } from '../../staff/staff-resolver';
 import { Logger } from '../../utils/logger';
+import { reportHash } from '../../utils/report-hash';
 import { formatReasonDisplay } from '../../constants/reason-codes';
 
 interface PendingBulk {
@@ -16,6 +17,7 @@ interface PendingBulk {
   userId: number;
   username: string | null;
   owner: OwnerDecision | null;  // null when there is no staff roster to check against
+  hash: string;
   expiresAt: number;
 }
 
@@ -70,6 +72,12 @@ export class BulkEntryFlow {
       return true;
     }
 
+    const hash = bulkReportHash(parsed, owner);
+    if (await this.repository.reportExists(hash)) {
+      await ctx.reply(DUPLICATE_TEXT);
+      return true;
+    }
+
     const token = randomBytes(4).toString('hex');
     this.pending.set(token, {
       parsed,
@@ -77,6 +85,7 @@ export class BulkEntryFlow {
       userId,
       username,
       owner,
+      hash,
       expiresAt: Date.now() + TTL_MS,
     });
     this.gcExpired();
@@ -123,10 +132,17 @@ export class BulkEntryFlow {
     Logger.info(`[bulk-confirm] token=${token} drafts=${pending.parsed.drafts.length} counters=${Object.keys(pending.parsed.summary.counters).length} header=${JSON.stringify(pending.parsed.header)}`);
 
     try {
+      // Also caught here: the same report pasted twice before either was confirmed.
+      if (await this.repository.reportExists(pending.hash)) {
+        await ctx.answerCbQuery('ℹ️ មានរួចហើយ / already saved');
+        await ctx.reply(DUPLICATE_TEXT);
+        return;
+      }
       const owner = pending.owner;
       const ownerFields = {
         employee_id: owner?.owner?.employee_id ?? null,
         entered_by: enteredBy(owner?.sender, { id: pending.userId, username: pending.username }),
+        report_hash: pending.hash,
       };
       const { events, skipped } = this.buildEvents(pending.parsed, owner);
       for (const ev of events) Object.assign(ev, ownerFields);
@@ -315,6 +331,18 @@ export class BulkEntryFlow {
  * The follower stored on the records: the owner's registered name, else the
  * `(name)` as typed, else the old free-text name line.
  */
+const DUPLICATE_TEXT = 'ℹ️ របាយការណ៍នេះបានរក្សាទុករួចហើយ — ច្បាប់ចម្លងទីពីរមិនត្រូវបានរក្សាទុកទេ។';
+
+function bulkReportHash(parsed: BulkReportParseResult, owner: OwnerDecision | null): string {
+  return reportHash({
+    date: parsed.header.date,
+    page: parsed.header.page,
+    owner: owner?.owner?.employee_id ?? ownerFollower(parsed, owner),
+    counters: parsed.summary.counters,
+    drafts: parsed.drafts,
+  });
+}
+
 function ownerFollower(parsed: BulkReportParseResult, owner: OwnerDecision | null): string | null {
   return owner?.owner?.name ?? parsed.header.owner_name ?? parsed.header.follower ?? null;
 }

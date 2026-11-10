@@ -1,6 +1,7 @@
 import type { EnteredBy } from '../staff/staff-resolver';
 
 export interface LeadEventDocument {
+  report_hash?: string;       // reportHash() of the paste it came from
   _id?: string;
   // Outreach workspace this record belongs to ('company' | 'personal'). Absent
   // on all pre-multi-org data and every sales-group ingestion record, which are
@@ -84,6 +85,7 @@ export interface DailySummaryDocument {
   raw_text: string;
   employee_id?: string | null;
   entered_by?: EnteredBy;
+  report_hash?: string;       // reportHash() of the paste, to drop an identical second paste
   source: {
     model: string;
   };
