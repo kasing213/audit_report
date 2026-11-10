@@ -185,6 +185,18 @@ function extractPage(preamble: string): string | null {
   return null;
 }
 
+/**
+ * Whose customer it is, from the page line. Staff write it as "ភ្ញៀវ" (customer
+ * of) + the name: "ភ្ញៀវ សុនី", "ភ្ញៀវ=ប៊ីរី", "/ភ្ញៀវសុឺអុី", "(ភ្ញៀវ ស្រីស្រស់)";
+ * else a "(name)" at the end, as in the bulk report.
+ */
+function extractFollower(page: string | null): string | null {
+  const m = page?.match(/ភ្ញៀវ\s*[=:/]?\s*([^()=]+)/);
+  const name = m?.[1].trim();
+  if (name) return extractOwnerName(`(${name})`); // same placeholder rules
+  return extractOwnerName(page);
+}
+
 function extractReportDate(preamble: string): string | null {
   for (const line of preamble.split('\n')) {
     if (/របាយការណ៍|ថ្ងៃទី/.test(line)) {
@@ -460,8 +472,8 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
   // Follower = whose customer it is: the (name) on the page line, as in the
   // bulk report. Tour leaders (§2.loc.1) only showed the customer around and
   // the closer (§2.loc.2) closed it; neither is ever promoted into follower.
-  const follower = extractOwnerName(page);
-  if (!follower) warnings.push('សូមដាក់ឈ្មោះអ្នក Follow ក្នុងវង់ក្រចក នៅបន្ទាត់ page ឧ. 🚩page Sun Tv (Bery)');
+  const follower = extractFollower(page);
+  if (!follower) warnings.push('សូមសរសេរ ភ្ញៀវ=ឈ្មោះអ្នក Follow នៅបន្ទាត់ page ឧ. 🚩page Sun Tv ភ្ញៀវ=សុឺអុី');
   const packed_note = packNote({
     result_note,
     origin,

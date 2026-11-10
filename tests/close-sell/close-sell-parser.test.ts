@@ -184,20 +184,19 @@ test('close-sell: the follower is saved under their registered name, as bulk rep
 });
 
 test('close-sell: a real report — Seyi customer, shown around by Sros and Sony', () => {
-  const text = readFileSync(join(__dirname, 'seyi-report.txt'), 'utf8')
-    .replace('🚩 page=ទិញដីផ្ទះតូបកក់100$=ភ្ញៀវសុឺអុី', '🚩 page=ទិញដីផ្ទះតូបកក់100$ (សុឺអុី)');
+  const text = readFileSync(join(__dirname, 'seyi-report.txt'), 'utf8'); // written as staff write it
   const p = parseCloseSellReport(text)!;
   assert.equal(p.follower, 'សុឺអុី');
   assert.deepEqual(p.tour_leaders, ['គ្រូស្រីស្រស់', 'គ្រូសុនី']);
   assert.equal(p.closer, 'ស្រីស្រស់');
-  assert.equal(p.page, 'ទិញដីផ្ទះតូបកក់100$ (សុឺអុី)', 'page= with an equals sign is read');
+  assert.equal(p.page, 'ទិញដីផ្ទះតូបកក់100$=ភ្ញៀវសុឺអុី', 'page= with an equals sign is read');
   assert.match(p.packed_note, /អ្នកដឹកនាំ៖ គ្រូស្រីស្រស់, គ្រូសុនី/);
 });
 
 test('close-sell: no (name) on the page line → no follower and a warning; a tour leader never takes the credit', () => {
   const p = parseCloseSellReport(template({ leader: 'Dara', closer: 'Sok' }))!;
   assert.equal(p.follower, null);
-  assert.ok(p.warnings.some((w) => /ឈ្មោះអ្នក Follow/.test(w)));
+  assert.ok(p.warnings.some((w) => /ភ្ញៀវ=ឈ្មោះអ្នក Follow/.test(w)));
   assert.match(p.packed_note, /អ្នកដឹកនាំ៖ Dara/);
 });
 
@@ -212,4 +211,25 @@ test('close-sell: the page line may use a space, =, : or / after "page"', () => 
     assert.equal(p.page, 'Sun Tv (Bery)', `separator ${JSON.stringify(sep)}`);
     assert.equal(p.follower, 'Bery');
   }
+});
+
+test('close-sell: the follower is read the way staff write it — ភ្ញៀវ + name', () => {
+  const cases: Array<[string, string | null]> = [
+    ['sun TVភ្ញៀវ សុនី', 'សុនី'],
+    ['sun TVភ្ញៀវ=ប៊ីរី', 'ប៊ីរី'],
+    ['ទិញដីផ្ទះតូបកក់100$/ភ្ញៀវសុឺអុី', 'សុឺអុី'],
+    ['ទិញដីផ្ទះតូបកក់100$(ភ្ញៀវ ស្រីស្រស់)', 'ស្រីស្រស់'],
+    ['sun TVភ្ញៀវ ស្រី កា', 'ស្រី កា'],
+    ['sun TVភ្ញៀវលក្ខណា(លេខបានមកពីរpage)', 'លក្ខណា'],
+    ['Sun Tv (Bery)', 'Bery'],
+    ['ផ្ទះថ្មីអចលនទ្រព្រ', null],
+  ];
+  for (const [page, follower] of cases) {
+    const p = parseCloseSellReport(template({}).replace('🚩page TestPage', `🚩page ${page}`))!;
+    assert.equal(p.follower, follower, page);
+  }
+});
+
+test('close-sell: the template placeholder ភ្ញៀវ=ឈ្មោះអ្នក Follow left unfilled is no follower', () => {
+  assert.equal(parseCloseSellReport(template({ page: 'Sun Tv ភ្ញៀវ=ឈ្មោះអ្នក Follow' }))!.follower, null);
 });
