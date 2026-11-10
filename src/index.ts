@@ -123,7 +123,7 @@ async function main(): Promise<void> {
 
     if (auditChatId) {
       Logger.info('- Daily Reports: 11:59 PM → consolidated JPG to AUDIT_CHAT_ID');
-      Logger.info('- Monthly Reports: 1st day 12:01 AM → Excel files');
+      Logger.info('- Monthly Reports: 2nd day 10:00 AM → Excel files');
     }
 
     const shutdown = async (): Promise<void> => {

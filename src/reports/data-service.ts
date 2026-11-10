@@ -1,6 +1,7 @@
 import { SalesCaseRepository } from '../database/repository';
 import { LeadEventDocument, CustomerCase, DailySummaryDocument } from '../database/models';
 import { getZonedDayRangeUtc } from '../utils/time';
+import { DEFAULT_ORG, orgMatch } from '../outreach/orgs';
 
 export class ReportDataService {
   private repository: SalesCaseRepository;
@@ -81,8 +82,11 @@ export class ReportDataService {
       const db = this.repository['db'];
       const collection = db.getDb().collection<LeadEventDocument>('leads_events');
 
+      // Same filters as the Cases sheet, so the two sheets agree.
       const query: any = {
-        date: { $gte: startDate, $lte: endDate }
+        date: { $gte: startDate, $lte: endDate },
+        deleted: { $ne: true },
+        org_id: orgMatch(DEFAULT_ORG)
       };
       if (groupId) {
         query.group_id = groupId;

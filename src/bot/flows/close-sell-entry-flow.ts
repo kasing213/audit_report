@@ -9,7 +9,7 @@ import {
   CloseSellParseResult
 } from '../../parser/close-sell-parser';
 import {
-  StaffDirectory, StaffMember, staffDirectory, loadRoster, findStaffByName, resolveSender, enteredBy,
+  StaffDirectory, StaffMember, staffDirectory, loadRoster, findStaffByName, resolveSender, enteredBy, normalizeStaffName,
 } from '../../staff/staff-resolver';
 import { Logger } from '../../utils/logger';
 import { formatReasonDisplay } from '../../constants/reason-codes';
@@ -147,6 +147,9 @@ export class CloseSellEntryFlow {
     try {
       const event = this.buildEvent(pending.parsed);
       Object.assign(event, {
+        // Registered name, as bulk reports save it, so "Biry" and "Bery"
+        // are one person in the daily images and monthly sheets.
+        follower: canonicalFollower(event.follower, pending.staff?.follower),
         employee_id: pending.staff?.follower?.employee_id ?? null,
         closer_employee_id: pending.staff?.closer?.employee_id ?? null,
         entered_by: enteredBy(pending.staff?.sender, { id: pending.userId, username: pending.username }),
@@ -220,10 +223,10 @@ export class CloseSellEntryFlow {
     lines.push(`📅 <b>Date:</b> ${escapeHtml(parsed.date)}`);
     if (parsed.page) lines.push(`📣 <b>Page:</b> ${escapeHtml(parsed.page)}`);
     lines.push(`📞 <b>Phone:</b> <code>${escapeHtml(parsed.phone || '?')}</code>`);
-    lines.push(`👤 <b>Follower (អ្នកដឹកនាំ):</b> ${escapeHtml(parsed.follower || '—')}${staffMark(parsed.follower, staff?.follower, staff)}`);
+    lines.push(`👤 <b>Follower (អ្នក Follow):</b> ${escapeHtml(parsed.follower || '—')}${staffMark(parsed.follower, staff?.follower, staff)}`);
     lines.push(`🤝 <b>Closer (អ្នកបិទលក់):</b> ${escapeHtml(parsed.closer || '—')}${staffMark(parsed.closer, staff?.closer, staff)}`);
-    if (parsed.tour_leaders.length > 1) {
-      lines.push(`👥 <b>អ្នកដឹកនាំទាំងអស់:</b> ${escapeHtml(parsed.tour_leaders.join(', '))}`);
+    if (parsed.tour_leaders.length > 0) {
+      lines.push(`👥 <b>អ្នកដឹកនាំមើលគំរោង:</b> ${escapeHtml(parsed.tour_leaders.join(', '))}`);
     }
     if (parsed.origin) lines.push(`📍 <b>From:</b> ${escapeHtml(parsed.origin)}`);
     for (const w of parsed.wants) {
@@ -315,6 +318,12 @@ export class CloseSellEntryFlow {
 }
 
 /** " → Bery ✅" when a typed name is a registered employee, " ⚠️ …" when not. */
+/** The roster name for a typed follower, unless it was only a 1-2 letter name part (tour leaders aren't all staff). */
+function canonicalFollower(typed: string | null, match: StaffMember | null | undefined): string | null {
+  if (!match || !typed || normalizeStaffName(typed).replace(/\s/g, '').length < 3) return typed;
+  return match.name;
+}
+
 function staffMark(typed: string | null, match: StaffMember | null | undefined, staff: CloseSellStaff | null): string {
   if (!typed || !staff) return '';
   if (!match) return ' ⚠️ <i>មិនមានក្នុងបញ្ជីបុគ្គលិក</i>';

@@ -2,6 +2,7 @@ import { Context, Markup } from 'telegraf';
 import { SalesCaseRepository } from '../../database/repository';
 import { LeadEventDocument } from '../../database/models';
 import { Logger } from '../../utils/logger';
+import { StaffDirectory, staffDirectory, changeableEvents, NOT_YOURS_TEXT } from '../../staff/staff-resolver';
 import {
   buildReasonKeyboardRows,
   buildReasonPrompt,
@@ -45,7 +46,7 @@ export class EditCommand {
   private pendingEdits: Map<number, PendingEdit> = new Map();
   private ttlMs = 5 * 60 * 1000;
 
-  constructor(repository: SalesCaseRepository) {
+  constructor(repository: SalesCaseRepository, private readonly staff: StaffDirectory = staffDirectory) {
     this.repository = repository;
   }
 
@@ -115,7 +116,14 @@ export class EditCommand {
 
   private async handlePhoneStep(ctx: Context, text: string, pending: PendingEdit, userId: number): Promise<boolean> {
     const phone = text.trim();
-    const events = await this.repository.findEventsByPhone(phone);
+    // Filter before limiting, so your own older lead isn't cut by colleagues' newer ones.
+    const found = await this.repository.findEventsByPhone(phone, 200);
+    const events = (await changeableEvents(this.staff, { id: userId, username: ctx.from?.username ?? null }, found)).slice(0, 10);
+    if (found.length > 0 && events.length === 0) {
+      await ctx.reply(NOT_YOURS_TEXT);
+      this.pendingEdits.delete(userId);
+      return true;
+    }
 
     if (events.length === 0) {
       await ctx.reply('❌ រកមិនឃើញទិន្នន័យសម្រាប់លេខនេះ។\nសូមវាយ /edit ម្តងទៀត។');
@@ -297,6 +305,10 @@ export class EditCommand {
     const event = await this.repository.findEventById(eventId);
     if (!event) {
       await ctx.reply('❌ រកមិនឃើញទិន្នន័យនេះទេ។');
+      return;
+    }
+    if (!(await changeableEvents(this.staff, { id: userId, username: ctx.from?.username ?? null }, [event])).length) {
+      await ctx.reply(NOT_YOURS_TEXT);
       return;
     }
 

@@ -9,6 +9,7 @@ import {
   followerPageCaption
 } from '../../src/reports/follower-daily';
 import { ExcelReportGenerator, uniqueSheetBase } from '../../src/reports/excel-report';
+import { ReportDataService } from '../../src/reports/data-service';
 import { getPreviousMonth } from '../../src/utils/time';
 
 let seq = 0;
@@ -181,4 +182,21 @@ test('previous month uses Cambodia time, not UTC', () => {
   const now = new Date('2026-10-31T17:01:00Z');
   assert.deepEqual(getPreviousMonth('Asia/Phnom_Penh', now), { year: 2026, month: 10 });
   assert.deepEqual(getPreviousMonth('Asia/Phnom_Penh', new Date('2026-01-01T00:00:00+07:00')), { year: 2025, month: 12 });
+});
+
+test('monthly Events sheet shows the time in Phnom Penh, not server UTC', () => {
+  const { workbook } = new ExcelReportGenerator().buildMonthlyWorkbook(
+    [], [ev('Bery', 'bulk-telegram', { created_at: new Date('2026-11-01T02:30:00Z') })], 2026, 11);
+  assert.match(String(workbook.getWorksheet('Events - Bery')!.getCell('B5').value), /^09:30/);
+});
+
+test('monthly events leave out deleted customers and other orgs', async () => {
+  let query: any;
+  const service: any = Object.create(ReportDataService.prototype);
+  service.repository = { db: { getDb: () => ({ collection: () => ({
+    find: (q: any) => { query = q; return { toArray: async () => [] }; },
+  }) }) } };
+  await service.getMonthlyLeadEvents(2026, 10);
+  assert.deepEqual(query.deleted, { $ne: true });
+  assert.deepEqual(query.org_id, { $in: [null, 'company'] });
 });

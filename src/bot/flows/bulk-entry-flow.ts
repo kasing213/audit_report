@@ -8,6 +8,7 @@ import {
   describeProblems, staffOwnershipEnforced,
 } from '../../staff/staff-resolver';
 import { Logger } from '../../utils/logger';
+import { reportHash } from '../../utils/report-hash';
 import { formatReasonDisplay } from '../../constants/reason-codes';
 
 interface PendingBulk {
@@ -16,6 +17,8 @@ interface PendingBulk {
   userId: number;
   username: string | null;
   owner: OwnerDecision | null;  // null when there is no staff roster to check against
+  hash: string;
+  hasLeads: boolean;
   expiresAt: number;
 }
 
@@ -25,6 +28,7 @@ const PREVIEW_DRAFT_LIMIT = 10;
 export class BulkEntryFlow {
   private repository: SalesCaseRepository;
   private pending: Map<string, PendingBulk>; // token → state
+  private confirming = new Set<string>();    // report hashes being saved right now
   private staff: StaffDirectory;
 
   constructor(repository: SalesCaseRepository, staff: StaffDirectory = staffDirectory) {
@@ -70,6 +74,13 @@ export class BulkEntryFlow {
       return true;
     }
 
+    const hash = bulkReportHash(parsed, owner);
+    const hasLeads = this.buildEvents(parsed, owner).events.length > 0;
+    if (isDuplicate(await this.repository.savedReport(hash), hasLeads)) {
+      await ctx.reply(DUPLICATE_TEXT);
+      return true;
+    }
+
     const token = randomBytes(4).toString('hex');
     this.pending.set(token, {
       parsed,
@@ -77,6 +88,8 @@ export class BulkEntryFlow {
       userId,
       username,
       owner,
+      hash,
+      hasLeads,
       expiresAt: Date.now() + TTL_MS,
     });
     this.gcExpired();
@@ -122,11 +135,26 @@ export class BulkEntryFlow {
     this.pending.delete(token);
     Logger.info(`[bulk-confirm] token=${token} drafts=${pending.parsed.drafts.length} counters=${Object.keys(pending.parsed.summary.counters).length} header=${JSON.stringify(pending.parsed.header)}`);
 
+    // Also caught here: the same report pasted twice and both confirmed
+    // (even at the same moment, hence the in-process set).
+    if (this.confirming.has(pending.hash)) {
+      await ctx.answerCbQuery('ℹ️ មានរួចហើយ / already saved');
+      await ctx.reply(DUPLICATE_TEXT);
+      return;
+    }
+    this.confirming.add(pending.hash);
     try {
+      const saved = await this.repository.savedReport(pending.hash);
+      if (isDuplicate(saved, pending.hasLeads)) {
+        await ctx.answerCbQuery('ℹ️ មានរួចហើយ / already saved');
+        await ctx.reply(DUPLICATE_TEXT);
+        return;
+      }
       const owner = pending.owner;
       const ownerFields = {
         employee_id: owner?.owner?.employee_id ?? null,
         entered_by: enteredBy(owner?.sender, { id: pending.userId, username: pending.username }),
+        report_hash: pending.hash,
       };
       const { events, skipped } = this.buildEvents(pending.parsed, owner);
       for (const ev of events) Object.assign(ev, ownerFields);
@@ -135,7 +163,8 @@ export class BulkEntryFlow {
       Logger.info(`[bulk-confirm] saveLeadEvents returned ${eventIds.length} ids: ${eventIds.join(',')}`);
 
       let summaryId: string | null = null;
-      if (Object.keys(pending.parsed.summary.counters).length > 0) {
+      // Re-entering a report whose leads were deleted: its summary is still there.
+      if (!saved.summary && Object.keys(pending.parsed.summary.counters).length > 0) {
         const summaryDoc: DailySummaryDocument = {
           date: pending.parsed.header.date,
           follower: ownerFollower(pending.parsed, owner),
@@ -201,6 +230,8 @@ export class BulkEntryFlow {
       Logger.error(`[bulk-confirm] token=${token} FAILED`, err as Error);
       await ctx.answerCbQuery('❌ មានបញ្ហា / error');
       await ctx.reply('❌ មានបញ្ហាពេលរក្សាទុក។ សូមសាកម្តងទៀត។');
+    } finally {
+      this.confirming.delete(pending.hash);
     }
   }
 
@@ -315,6 +346,23 @@ export class BulkEntryFlow {
  * The follower stored on the records: the owner's registered name, else the
  * `(name)` as typed, else the old free-text name line.
  */
+const DUPLICATE_TEXT = 'ℹ️ របាយការណ៍នេះបានរក្សាទុករួចហើយ — ច្បាប់ចម្លងទីពីរមិនត្រូវបានរក្សាទុកទេ។';
+
+/** Already saved = its leads are (or, for a counters-only report, its summary is). */
+export function isDuplicate(saved: { leads: boolean; summary: boolean }, hasLeads: boolean): boolean {
+  return hasLeads ? saved.leads : saved.summary;
+}
+
+function bulkReportHash(parsed: BulkReportParseResult, owner: OwnerDecision | null): string {
+  return reportHash({
+    date: parsed.header.date,
+    page: parsed.header.page,
+    owner: owner?.owner?.employee_id ?? ownerFollower(parsed, owner),
+    counters: parsed.summary.counters,
+    drafts: parsed.drafts,
+  });
+}
+
 function ownerFollower(parsed: BulkReportParseResult, owner: OwnerDecision | null): string | null {
   return owner?.owner?.name ?? parsed.header.owner_name ?? parsed.header.follower ?? null;
 }

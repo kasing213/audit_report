@@ -48,6 +48,15 @@ export async function ensureIndexes<T extends Document>(collection: Collection<T
       }
     );
 
+    // Duplicate-paste check (savedReport)
+    await collection.createIndex(
+      { report_hash: 1 },
+      {
+        name: 'report_hash_idx',
+        sparse: true
+      }
+    );
+
     Logger.info('Database indexes created successfully');
   } catch (error) {
     Logger.error('Failed to create indexes', error as Error);

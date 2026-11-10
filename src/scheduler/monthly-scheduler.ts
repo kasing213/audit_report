@@ -66,8 +66,9 @@ export class MonthlyScheduler {
       return;
     }
 
-    // Schedule monthly report on 1st day of month at 12:01 AM (00:01)
-    cron.schedule('1 0 1 * *', () => {
+    // 10:00 on the 2nd, not just after midnight on the 1st: staff enter the
+    // last day's reports the next day, and those must be in the month's file.
+    cron.schedule('0 10 2 * *', () => {
       Logger.info('Monthly report scheduled task triggered');
       this.generateAndSendMonthlyReport();
     }, {
@@ -75,7 +76,7 @@ export class MonthlyScheduler {
       timezone: process.env.TIMEZONE || 'Asia/Phnom_Penh'
     });
 
-    Logger.info('Monthly report scheduler started - will send reports on 1st day at 12:01 AM');
+    Logger.info('Monthly report scheduler started - will send reports on the 2nd at 10:00');
     Logger.info(`Timezone: ${process.env.TIMEZONE || 'Asia/Phnom_Penh'}`);
     Logger.info(`Target audit chat ID: ${this.auditChatId}`);
   }

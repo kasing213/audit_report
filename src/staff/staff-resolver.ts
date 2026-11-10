@@ -62,17 +62,27 @@ function pickOne(hits: StaffMember[]): StaffMember | null {
   return active.length === 1 ? active[0] : null;
 }
 
-/** A typed name → one employee, by learned spelling, name, name part, or username. Ambiguous → null. */
+/** Roster entries a typed (normalized) name could mean: full name, name part or username. */
+function rosterMatches(staff: StaffMember[], n: string): StaffMember[] {
+  const compact = n.replace(/\s/g, '');
+  return staff.filter(s => nameKeys(s).some(k => k === n || k === compact));
+}
+
+/** A typed name → one employee: exact registered name first, then learned spelling, then name part or username. Ambiguous → null. */
 export function findStaffByName(staff: StaffMember[], aliases: StaffAlias[], text: string): StaffMember | null {
   const n = normalizeStaffName(text);
   if (!n) return null;
+  // A registered full name always beats a learned spelling, so one wrong
+  // learned alias can't keep taking the real person's reports.
+  const compact = n.replace(/\s/g, '');
+  const exact = pickOne(staff.filter(s => normalizeStaffName(s.name).replace(/\s/g, '') === compact));
+  if (exact) return exact;
   const byAlias = aliases
     .filter(a => a.normalized === n)
     .map(a => staff.find(s => s.employee_id === a.employee_id))
     .filter((s): s is StaffMember => !!s);
   if (byAlias.length) return pickOne(byAlias);
-  const compact = n.replace(/\s/g, '');
-  return pickOne(staff.filter(s => nameKeys(s).some(k => k === n || k === compact)));
+  return pickOne(rosterMatches(staff, n));
 }
 
 /**
@@ -87,9 +97,10 @@ export function resolveSender(
   const byId = staff.find(s => s.telegram_chat_id === String(telegramId));
   if (byId) return { member: byId, matched_by: 'id' };
   if (username) {
-    const un = username.toLowerCase();
+    // Whole parts only ("bery" in Bery_roeun, not in berylin), 4+ letters.
+    const parts = new Set(username.toLowerCase().split(/[^\p{L}\p{M}]+/u));
     const hit = pickOne(staff.filter(s =>
-      s.status === 'ACTIVE' && normalizeStaffName(s.name).split(' ').some(t => t.length >= 3 && un.includes(t))));
+      s.status === 'ACTIVE' && normalizeStaffName(s.name).split(' ').some(t => t.length >= 4 && parts.has(t))));
     if (hit) return { member: hit, matched_by: 'username' };
   }
   return { member: null, matched_by: null };
@@ -107,7 +118,8 @@ export function decideOwner(
   ownerName: string | null,
 ): OwnerDecision {
   const { member: sender, matched_by } = resolveSender(staff, from.id, from.username);
-  const problems: OwnerProblem[] = sender ? [] : ['unregistered_sender'];
+  // A username match is a guess about an account nobody registered: flag it.
+  const problems: OwnerProblem[] = matched_by === 'id' ? [] : ['unregistered_sender'];
   const base = { sender, sender_matched_by: matched_by, owner_name: ownerName, learn_alias: null };
   // A username is self-chosen: it may identify the sender, never grant admin.
   const isAdmin = matched_by === 'id' && !!sender?.is_admin;
@@ -117,11 +129,18 @@ export function decideOwner(
   }
   const named = findStaffByName(staff, aliases, ownerName);
   if (named) {
-    if (sender && named.employee_id !== sender.employee_id && !isAdmin) problems.push('other_person');
+    // Only a sender known by Telegram id outranks the typed name; a username
+    // match is just a guess.
+    if (sender && matched_by === 'id' && named.employee_id !== sender.employee_id && !isAdmin) {
+      // Usually a colleague's report text pasted as-is: credit who sent it.
+      return { ...base, owner: sender, problems: [...problems, 'other_person'] };
+    }
     return { ...base, owner: named, problems };
   }
   if (sender && !isAdmin) {
-    return { ...base, owner: sender, problems, learn_alias: matched_by === 'id' ? normalizeStaffName(ownerName) : null };
+    // Learn a new spelling only if it could mean nobody else ("Srey" could mean several people).
+    const learnable = matched_by === 'id' && rosterMatches(staff, normalizeStaffName(ownerName)).length === 0;
+    return { ...base, owner: sender, problems, learn_alias: learnable ? normalizeStaffName(ownerName) : null };
   }
   return { ...base, owner: null, problems: [...problems, 'unknown_name'] };
 }
@@ -135,6 +154,36 @@ export function enteredBy(sender: StaffMember | null | undefined, from: { id: nu
   };
 }
 
+/**
+ * The leads this account may /edit or /delete: its own, ones it entered, or
+ * any for an admin. Only stable ids count; a username (which can change hands)
+ * is used just for old leads saved before the Telegram id was stored. With no
+ * roster to check against, only the leads this account entered.
+ */
+export async function changeableEvents<T extends { employee_id?: string | null; entered_by?: EnteredBy; follower?: string | null }>(
+  directory: StaffDirectory,
+  from: { id: number; username: string | null },
+  events: T[],
+): Promise<T[]> {
+  const staff = await directory.list();
+  const { member, matched_by } = staff ? resolveSender(staff, from.id, from.username) : { member: null, matched_by: null };
+  const me = matched_by === 'id' ? member : null;
+  if (me?.is_admin) return events;
+  const username = from.username?.toLowerCase();
+  const legacy = (e: T) => e.entered_by?.telegram_id === undefined || e.entered_by?.telegram_id === null;
+  return events.filter(e =>
+    (me && e.employee_id === me.employee_id)
+    || e.entered_by?.telegram_id === from.id
+    || (legacy(e) && !!username && e.entered_by?.username?.toLowerCase() === username)
+    // Before ownership was stored: the follower on the lead is exactly your
+    // registered name (no name parts or learned spellings: this grants access).
+    || (!!me && !e.employee_id && !e.entered_by && !!e.follower && compactName(e.follower) === compactName(me.name)));
+}
+
+const compactName = (name: string) => normalizeStaffName(name).replace(/\s/g, '');
+
+export const NOT_YOURS_TEXT = '❌ ទិន្នន័យនេះជារបស់បុគ្គលិកផ្សេង — មានតែម្ចាស់ ឬ admin ទេដែលអាចកែ ឬលុបបាន។';
+
 /** When on, a report with an owner problem is refused instead of saved with a warning. */
 export function staffOwnershipEnforced(): boolean {
   return process.env.STAFF_OWNERSHIP_ENFORCE === 'true';
@@ -143,7 +192,7 @@ export function staffOwnershipEnforced(): boolean {
 const PROBLEM_TEXT: Record<OwnerProblem, (d: OwnerDecision) => string> = {
   missing_name: () => 'សូមដាក់ឈ្មោះរបស់អ្នកក្នុងវង់ក្រចក នៅបន្ទាត់ Page ឧ. 🚩Page Sun Tv (Bery)',
   unknown_name: d => `រកមិនឃើញឈ្មោះ «${d.owner_name}» ក្នុងបញ្ជីបុគ្គលិកទេ`,
-  other_person: d => `«${d.owner_name}» ជារបាយការណ៍របស់ ${d.owner?.name} — មានតែ admin ទេដែលអាចបញ្ចូលជំនួសគេបាន`,
+  other_person: d => `«${d.owner_name}» មិនមែនជាឈ្មោះរបស់អ្នកទេ — របាយការណ៍នេះជារបស់ ${d.owner?.name}។ មានតែ admin ទេដែលអាចបញ្ចូលជំនួសគេបាន`,
   unregistered_sender: () => 'គណនី Telegram នេះមិនទាន់បានចុះឈ្មោះជាបុគ្គលិកទេ',
 };
 

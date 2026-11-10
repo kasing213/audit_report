@@ -5,6 +5,9 @@ import {
 } from '../../src/staff/staff-resolver';
 import { BulkEntryFlow } from '../../src/bot/flows/bulk-entry-flow';
 import { FULL_FORMAT_REPORT } from '../bulk/full-format-fixture';
+import { extractOwnerName } from '../../src/parser/bulk-report-parser';
+import { EditCommand } from '../../src/bot/commands/edit-command';
+import { DeleteCommand } from '../../src/bot/commands/delete-command';
 
 // Mirrors production (30/10/26): Bery's registered name carries a hidden
 // character, Theary is a group admin, Bery's second account is unregistered.
@@ -17,6 +20,9 @@ const STAFF: StaffMember[] = [
   member('bery', 'លោកគ្រូ​Bery', '2101995560', { telegram_username: 'sunhiring' }),
   member('sony', 'ឆៃ សុនី', '5011482628', { telegram_username: 'sony1681' }),
   member('ka', 'Srey Ka', '6264359963'),
+  member('pich', 'Srey Pich', '7000000001'),
+  member('neang', 'Srey Neang', '7000000002'),
+  member('dara', 'Sok Dara', '7000000003'),
 ];
 const BERY_ROEUN = { id: 1845110247, username: 'Bery_roeun' };
 const THEARY = { id: 5757448268, username: null };
@@ -63,12 +69,13 @@ test('owner: an admin may enter a report for someone else', () => {
 test('owner: a username that looks like an admin gets no admin rights', () => {
   const d = decideOwner(STAFF, [], { id: 999, username: 'theary_fake' }, 'Bery');
   assert.equal(d.sender?.employee_id, 'theary');
-  assert.deepEqual(d.problems, ['other_person']);
+  assert.equal(d.owner?.employee_id, 'bery', 'a username guess never outranks the typed name');
+  assert.deepEqual(d.problems, ['unregistered_sender']);
 });
 
-test('owner: regular staff naming another person is flagged', () => {
+test('owner: regular staff naming another person is flagged and credited to themselves', () => {
   const d = decideOwner(STAFF, [], SONY, 'Bery');
-  assert.equal(d.owner?.employee_id, 'bery');
+  assert.equal(d.owner?.employee_id, 'sony');
   assert.deepEqual(d.problems, ['other_person']);
 });
 
@@ -89,9 +96,9 @@ test('owner: unregistered account and missing name are flagged', () => {
 test('directory: keeps the last roster when Payment-Tracker stops answering', async () => {
   let calls = 0;
   const dir = new StaffDirectory(async () => { if (calls++ === 0) return STAFF; throw new Error('down'); });
-  assert.equal((await dir.list())?.length, 5);
+  assert.equal((await dir.list())?.length, STAFF.length);
   (dir as any).loadedAt = 0; // force a refresh
-  assert.equal((await dir.list())?.length, 5);
+  assert.equal((await dir.list())?.length, STAFF.length);
   assert.equal(await new StaffDirectory(async () => null).list(), null);
 });
 
@@ -106,6 +113,10 @@ function fakeRepo(aliases: StaffAlias[] = []) {
     saveDailySummary: async (s: any) => { saved.summaries.push(s); return 's1'; },
     saveChangeLog: async () => undefined,
     logAudit: async (a: any) => { saved.audits.push(a); },
+    savedReport: async (hash: string) => ({
+      leads: saved.events.some(d => d.report_hash === hash),
+      summary: saved.summaries.some(d => d.report_hash === hash),
+    }),
   };
   return { repo: repo as any, saved };
 }
@@ -158,7 +169,7 @@ test('bulk: problems warn by default and refuse when enforcement is on', async (
 
   const warn = fakeCtx(SONY);
   await flow.tryBulkEntry(warn.ctx, report);
-  assert.match(warn.replies[0], /⚠️ «Bery» ជារបាយការណ៍របស់/);
+  assert.match(warn.replies[0], /⚠️ «Bery» មិនមែនជាឈ្មោះរបស់អ្នកទេ/);
   assert.ok(warn.ctx.lastExtra?.reply_markup, 'warn mode still offers Confirm');
 
   process.env.STAFF_OWNERSHIP_ENFORCE = 'true';
@@ -181,4 +192,177 @@ test('bulk: without a roster the typed (name) is stored, never the group name', 
   assert.equal(saved.events[0].follower, 'Biry');
   assert.equal(saved.events[0].employee_id, null);
   assert.equal(saved.events[0].entered_by.telegram_id, SONY.id);
+});
+
+const PICH = { id: 7000000001, username: null };
+const NEANG = { id: 7000000002, username: null };
+
+test('owner: the template placeholder is never a name, so it is never learned', () => {
+  const d = decideOwner(STAFF, [], SONY, extractOwnerName('Page ឈ្មោះផេករបស់អ្នក (ឈ្មោះរបស់អ្នក)'));
+  assert.equal(d.owner?.employee_id, 'sony');
+  assert.deepEqual(d.problems, ['missing_name']);
+  assert.equal(d.learn_alias, null);
+});
+
+test('owner: an ambiguous name ("Srey") is not learned for whoever typed it first', () => {
+  const d = decideOwner(STAFF, [], PICH, 'Srey');
+  assert.equal(d.owner?.employee_id, 'pich');
+  assert.equal(d.learn_alias, null);
+});
+
+test('owner: an exact registered name beats a wrongly learned spelling', () => {
+  const wrong: StaffAlias[] = [{ normalized: 'srey neang', employee_id: 'pich' }];
+  assert.equal(decideOwner(STAFF, wrong, NEANG, 'Srey Neang').owner?.employee_id, 'neang');
+});
+
+test('sender: a username only matches a whole name part of 4+ letters, and is always flagged', () => {
+  assert.equal(resolveSender(STAFF, 1, 'soksan_kh').member, null, '"sok" is too short to identify Sok Dara');
+  assert.equal(resolveSender(STAFF, 1, 'berylin').member, null, '"bery" inside "berylin" is not a name part');
+  assert.equal(decideOwner(STAFF, [], BERY_ROEUN, null).problems.includes('unregistered_sender'), true);
+});
+
+test('bulk: the same report pasted twice (every field equal) is saved once', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+
+  const first = fakeCtx(BERY);
+  await flow.tryBulkEntry(first.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(first.ctx, tokenOf(first.ctx));
+  const eventsAfterFirst = saved.events.length;
+  assert.ok(eventsAfterFirst > 0);
+
+  const again = fakeCtx(BERY);
+  await flow.tryBulkEntry(again.ctx, FULL_FORMAT_REPORT);
+  assert.match(again.replies[0], /បានរក្សាទុករួចហើយ/);
+  assert.equal(again.ctx.lastExtra, undefined, 'no Confirm button for a duplicate');
+  assert.equal(saved.events.length, eventsAfterFirst);
+  assert.equal(saved.summaries.length, 1);
+});
+
+test('bulk: two identical pastes confirmed one after the other still save once', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+  const a = fakeCtx(BERY);
+  const b = fakeCtx(BERY);
+  await flow.tryBulkEntry(a.ctx, FULL_FORMAT_REPORT);
+  await flow.tryBulkEntry(b.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(a.ctx, tokenOf(a.ctx));
+  const n = saved.events.length;
+  await flow.handleConfirm(b.ctx, tokenOf(b.ctx));
+  assert.equal(saved.events.length, n);
+  assert.equal(saved.summaries.length, 1);
+});
+
+test('bulk: a corrected report (one field different) is not a duplicate', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+  const first = fakeCtx(BERY);
+  await flow.tryBulkEntry(first.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(first.ctx, tokenOf(first.ctx));
+  const n = saved.events.length;
+
+  const fixed = fakeCtx(BERY);
+  await flow.tryBulkEntry(fixed.ctx, FULL_FORMAT_REPORT.replace('(Biry)', '(Bery)'));
+  await flow.handleConfirm(fixed.ctx, tokenOf(fixed.ctx));
+  assert.ok(saved.events.length > n);
+});
+
+// ── /edit and /delete: only the lead's owner, whoever entered it, or an admin ──
+
+const leadOf = (employee_id: string | null, entered: { id: number; username: string | null }) => ({
+  date: '2026-11-01', customer: { name: 'C', phone: '012345678' }, page: 'Sun Tv', follower: null,
+  status_text: null, source: { telegram_msg_id: 'm', model: 'bulk-telegram' }, created_at: new Date(),
+  employee_id, entered_by: { telegram_id: entered.id, username: entered.username, employee_id, name: null },
+});
+
+async function runPhoneStep(Cmd: any, from: { id: number; username: string | null }, events: any[]) {
+  const repo: any = { findEventsByPhone: async () => events };
+  const cmd = new Cmd(repo, new StaffDirectory(async () => STAFF));
+  const { ctx, replies } = fakeCtx(from);
+  await cmd.handleCommand(ctx);
+  await cmd.handlePending(ctx, '012345678');
+  return replies[replies.length - 1];
+}
+
+for (const [label, Cmd] of [['edit', EditCommand], ['delete', DeleteCommand]] as const) {
+  test(`${label}: a colleague's lead is refused`, async () => {
+    assert.match(await runPhoneStep(Cmd, SONY, [leadOf('bery', BERY)]), /មានតែម្ចាស់ ឬ admin/);
+  });
+
+  test(`${label}: your own lead, and any lead for an admin, is offered`, async () => {
+    assert.match(await runPhoneStep(Cmd, BERY, [leadOf('bery', BERY)]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+    assert.match(await runPhoneStep(Cmd, THEARY, [leadOf('bery', BERY)]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  });
+
+  test(`${label}: an old lead with no ids is matched by the username that entered it`, async () => {
+    const old = { ...leadOf(null, SONY), entered_by: { telegram_id: undefined, username: 'sony1681', employee_id: null, name: null } };
+    assert.match(await runPhoneStep(Cmd, SONY, [old]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  });
+
+  test(`${label}: a username alone never unlocks a lead that stored a different Telegram id`, async () => {
+    assert.match(await runPhoneStep(Cmd, SONY, [leadOf(null, { id: 1, username: 'sony1681' })]), /មានតែម្ចាស់ ឬ admin/);
+  });
+}
+
+test('edit/delete buttons under a saved report also refuse a colleague', async () => {
+  const lead = leadOf('bery', BERY);
+  const edit = new EditCommand({ findEventById: async () => lead } as any, new StaffDirectory(async () => STAFF));
+  const del = new DeleteCommand({} as any, new StaffDirectory(async () => STAFF));
+  const a = fakeCtx(SONY);
+  await edit.startEditFromEvent(a.ctx, 'e1');
+  assert.match(a.replies[0], /មានតែម្ចាស់ ឬ admin/);
+  const b = fakeCtx(SONY);
+  await del.startDeleteFromEvent(b.ctx, lead as any);
+  assert.match(b.replies[0], /មានតែម្ចាស់ ឬ admin/);
+  assert.equal(del.isPending(SONY.id), false);
+});
+
+test('edit with no staff roster: only leads this account entered', async () => {
+  const repo: any = { findEventsByPhone: async () => [leadOf('bery', BERY), leadOf('sony', SONY)] };
+  const cmd = new EditCommand(repo, new StaffDirectory(async () => null));
+  const { ctx, replies } = fakeCtx(SONY);
+  await cmd.handleCommand(ctx);
+  await cmd.handlePending(ctx, '012345678');
+  assert.match(replies[replies.length - 1], /ទិន្នន័យដែលរកឃើញ \(1\)/);
+});
+
+test('bulk: a report whose leads were deleted can be pasted again; its summary is not doubled', async () => {
+  const { repo, saved } = fakeRepo(BIRY_ALIAS);
+  const flow = new BulkEntryFlow(repo, new StaffDirectory(async () => STAFF));
+  const first = fakeCtx(BERY);
+  await flow.tryBulkEntry(first.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(first.ctx, tokenOf(first.ctx));
+  const n = saved.events.length;
+  saved.events.length = 0; // staff /delete'd every lead
+
+  const again = fakeCtx(BERY);
+  await flow.tryBulkEntry(again.ctx, FULL_FORMAT_REPORT);
+  await flow.handleConfirm(again.ctx, tokenOf(again.ctx));
+  assert.equal(saved.events.length, n);
+  assert.equal(saved.summaries.length, 1);
+});
+
+test('owner: an unregistered account guessed by username never outranks the typed name', () => {
+  const d = decideOwner(STAFF, [], BERY_ROEUN, 'Srey Ka');
+  assert.equal(d.owner?.employee_id, 'ka');
+});
+
+test('owner: the placeholder with hidden Khmer spaces is still no name', () => {
+  assert.equal(extractOwnerName('Page x (ឈ្មោះ​របស់​អ្នក)'), null);
+});
+
+test('edit: a lead from before ownership was stored is matched by its follower name', async () => {
+  const old = { ...leadOf(null, SONY), employee_id: undefined, entered_by: undefined, follower: 'ឆៃ សុនី' };
+  assert.match(await runPhoneStep(EditCommand, SONY, [old]), /ទិន្នន័យដែលរកឃើញ \(1\)/);
+  assert.match(await runPhoneStep(EditCommand, BERY, [old]), /មានតែម្ចាស់ ឬ admin/);
+});
+
+test('edit: a dashboard lead (telegram_id 0) is not unlocked by the username "dashboard"', async () => {
+  const dash = { ...leadOf(null, SONY), entered_by: { telegram_id: 0, username: 'dashboard', employee_id: null, name: null } };
+  assert.match(await runPhoneStep(EditCommand, { id: 55, username: 'dashboard' }, [dash]), /មានតែម្ចាស់ ឬ admin/);
+});
+
+test('edit: an old lead naming only part of your name ("សុនី") does not unlock it', async () => {
+  const old = { ...leadOf(null, SONY), employee_id: undefined, entered_by: undefined, follower: 'សុនី' };
+  assert.match(await runPhoneStep(EditCommand, SONY, [old]), /មានតែម្ចាស់ ឬ admin/);
 });
