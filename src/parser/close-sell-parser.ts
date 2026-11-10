@@ -1,3 +1,4 @@
+import { extractOwnerName } from './bulk-report-parser';
 import { toInternationalPhone } from '../utils/phone-utils';
 import { isReasonCode, ReasonCode } from '../constants/reason-codes';
 import { getTodayDate } from '../utils/time';
@@ -14,7 +15,7 @@ export interface CloseSellParseResult {
   page: string | null;
   phone: string | null;            // slash-joined when multi-phone (e.g. "0123/0987")
   phones: string[];                // individual phones, for lookups
-  follower: string | null;         // first §2.loc.1 tour-leader name (never the closer)
+  follower: string | null;         // the (name) on the page line: whose customer it is (never a tour leader or the closer)
   closer: string | null;           // §2.loc.2 ឈ្មោះអ្នកបិទលក់ only
   tour_leaders: string[];          // §2.loc.1 a-e non-empty
   origin: string | null;           // §2.loc.3 ភ្ញៀវមកពី
@@ -177,7 +178,8 @@ function splitSections(text: string): SectionMap {
 function extractPage(preamble: string): string | null {
   for (const line of preamble.split('\n')) {
     const trimmed = line.trim().replace(/^🚩\s*/, '');
-    const m = trimmed.match(/^(?:page|Page|ផេក)\s+(.+)$/);
+    // "page Sun Tv", "page=Sun Tv" and "page: Sun Tv" are all written.
+    const m = trimmed.match(/^(?:page|ផេក)(?:\s*[=:]\s*|\s+)(.+)$/i);
     if (m && m[1].trim()) return m[1].trim();
   }
   return null;
@@ -403,9 +405,7 @@ function packNote(p: {
   if (p.origin) parts.push(`ភ្ញៀវមកពី${p.origin}`);
   for (const ob of p.obstacles) parts.push(ob.text);
   for (const [label, value] of financialLines(p.financial)) parts.push(`${label}=${value}`);
-  // The first tour leader is already stored as the follower; list them all
-  // only when there is more than one.
-  if (p.tour_leaders.length > 1) {
+  if (p.tour_leaders.length > 0) {
     parts.push(`អ្នកដឹកនាំ៖ ${p.tour_leaders.join(', ')}`);
   }
   if (p.description) parts.push(p.description);
@@ -457,9 +457,11 @@ export function parseCloseSellReport(text: string): CloseSellParseResult | null 
   const wants = extractWants(sections.s1);
   const first_contact = extractFirstContact(sections.s1);
 
-  // Follower = the staff who followed/led the customer (§2.loc.1). The closer
-  // (§2.loc.2) is a different role and is never promoted into follower.
-  const follower = tour_leaders[0] || null;
+  // Follower = whose customer it is: the (name) on the page line, as in the
+  // bulk report. Tour leaders (§2.loc.1) only showed the customer around and
+  // the closer (§2.loc.2) closed it; neither is ever promoted into follower.
+  const follower = extractOwnerName(page);
+  if (!follower) warnings.push('សូមដាក់ឈ្មោះអ្នក Follow ក្នុងវង់ក្រចក នៅបន្ទាត់ page ឧ. 🚩page Sun Tv (Bery)');
   const packed_note = packNote({
     result_note,
     origin,

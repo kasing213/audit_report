@@ -223,10 +223,10 @@ export class CloseSellEntryFlow {
     lines.push(`📅 <b>Date:</b> ${escapeHtml(parsed.date)}`);
     if (parsed.page) lines.push(`📣 <b>Page:</b> ${escapeHtml(parsed.page)}`);
     lines.push(`📞 <b>Phone:</b> <code>${escapeHtml(parsed.phone || '?')}</code>`);
-    lines.push(`👤 <b>Follower (អ្នកដឹកនាំ):</b> ${escapeHtml(parsed.follower || '—')}${staffMark(parsed.follower, staff?.follower, staff)}`);
+    lines.push(`👤 <b>Follower (អ្នក Follow):</b> ${escapeHtml(parsed.follower || '—')}${staffMark(parsed.follower, staff?.follower, staff)}`);
     lines.push(`🤝 <b>Closer (អ្នកបិទលក់):</b> ${escapeHtml(parsed.closer || '—')}${staffMark(parsed.closer, staff?.closer, staff)}`);
-    if (parsed.tour_leaders.length > 1) {
-      lines.push(`👥 <b>អ្នកដឹកនាំទាំងអស់:</b> ${escapeHtml(parsed.tour_leaders.join(', '))}`);
+    if (parsed.tour_leaders.length > 0) {
+      lines.push(`👥 <b>អ្នកដឹកនាំមើលគំរោង:</b> ${escapeHtml(parsed.tour_leaders.join(', '))}`);
     }
     if (parsed.origin) lines.push(`📍 <b>From:</b> ${escapeHtml(parsed.origin)}`);
     for (const w of parsed.wants) {

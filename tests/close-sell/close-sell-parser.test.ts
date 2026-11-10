@@ -1,4 +1,6 @@
 import test from 'node:test';
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import assert from 'node:assert/strict';
 import { parseCloseSellReport } from '../../src/parser/close-sell-parser';
 import { CloseSellEntryFlow } from '../../src/bot/flows/close-sell-entry-flow';
@@ -8,14 +10,14 @@ import { StaffDirectory } from '../../src/staff/staff-resolver';
 // with the fields under test filled in. Empty fields stay as bare `X=` lines,
 // which is how staff actually paste it back.
 function template(f: {
-  leader?: string; closer?: string; booked?: string; notBooked?: string;
+  page?: string; leader?: string; closer?: string; booked?: string; notBooked?: string;
   origin?: string; tooExpensive?: string; businessOwners?: string; workers?: string;
 }): string {
   return [
     '💯Close sell',
     '#របាយការណ៍ថ្ងៃទី 24/10/26',
     '',
-    '🚩page TestPage',
+    `🚩page ${f.page ?? 'TestPage'}`,
     'B/Close sell',
     '1.Date visited',
     '   4/លេខទូរស័ព្ទ = 012345678',
@@ -43,9 +45,9 @@ function template(f: {
   ].join('\n');
 }
 
-test('close-sell: tour leader is the follower, closer stays the closer', () => {
-  const p = parseCloseSellReport(template({ leader: 'Dara', closer: 'Sok', booked: '1', notBooked: '0' }))!;
-  assert.equal(p.follower, 'Dara');
+test('close-sell: the follower is the (name) on the page line; tour leaders and closer stay separate', () => {
+  const p = parseCloseSellReport(template({ page: 'TestPage (Seyi)', leader: 'Dara', closer: 'Sok', booked: '1', notBooked: '0' }))!;
+  assert.equal(p.follower, 'Seyi');
   assert.equal(p.closer, 'Sok');
   assert.deepEqual(p.tour_leaders, ['Dara']);
   assert.equal(p.booked, 1);
@@ -174,9 +176,31 @@ test('close-sell: the follower is saved under their registered name, as bulk rep
     editMessageText: async () => undefined,
     editMessageReplyMarkup: async () => undefined,
   };
-  assert.equal(await flow.tryCloseSellEntry(ctx, template({ leader: 'Biry', booked: '1' })), true);
+  assert.equal(await flow.tryCloseSellEntry(ctx, template({ page: 'TestPage (Biry)', leader: 'Sok', booked: '1' })), true);
   const token = ctx.lastExtra.reply_markup.inline_keyboard[0][0].callback_data.split(':')[1];
   await flow.handleConfirm(ctx, token);
   assert.equal(saved[0].follower, 'Bery');
   assert.equal(saved[0].employee_id, 'bery');
+});
+
+test('close-sell: a real report — Seyi customer, shown around by Sros and Sony', () => {
+  const text = readFileSync(join(__dirname, 'seyi-report.txt'), 'utf8')
+    .replace('🚩 page=ទិញដីផ្ទះតូបកក់100$=ភ្ញៀវសុឺអុី', '🚩 page=ទិញដីផ្ទះតូបកក់100$ (សុឺអុី)');
+  const p = parseCloseSellReport(text)!;
+  assert.equal(p.follower, 'សុឺអុី');
+  assert.deepEqual(p.tour_leaders, ['គ្រូស្រីស្រស់', 'គ្រូសុនី']);
+  assert.equal(p.closer, 'ស្រីស្រស់');
+  assert.equal(p.page, 'ទិញដីផ្ទះតូបកក់100$ (សុឺអុី)', 'page= with an equals sign is read');
+  assert.match(p.packed_note, /អ្នកដឹកនាំ៖ គ្រូស្រីស្រស់, គ្រូសុនី/);
+});
+
+test('close-sell: no (name) on the page line → no follower and a warning; a tour leader never takes the credit', () => {
+  const p = parseCloseSellReport(template({ leader: 'Dara', closer: 'Sok' }))!;
+  assert.equal(p.follower, null);
+  assert.ok(p.warnings.some((w) => /ឈ្មោះអ្នក Follow/.test(w)));
+  assert.match(p.packed_note, /អ្នកដឹកនាំ៖ Dara/);
+});
+
+test('close-sell: the template placeholder (ឈ្មោះអ្នក Follow) left unfilled is no follower', () => {
+  assert.equal(parseCloseSellReport(template({ page: 'Sun Tv (ឈ្មោះអ្នក Follow)' }))!.follower, null);
 });

@@ -133,7 +133,7 @@ function extractPage(lines: string[]): string | null {
 
 // The /help template's own placeholder: left in, it means no name was given.
 // Compared with hidden characters and spaces removed (Khmer keyboards add them).
-const PLACEHOLDER_NAMES = new Set(['ឈ្មោះរបស់អ្នក', 'yourname']);
+const PLACEHOLDER_NAMES = new Set(['ឈ្មោះរបស់អ្នក', 'ឈ្មោះអ្នកfollow', 'yourname']);
 
 export function extractOwnerName(page: string | null): string | null {
   const m = page?.match(/\(([^()]+)\)\s*$/);
