@@ -44,7 +44,7 @@
  * │                                                                 │
  * │ Receives automatically:                                         │
  * │   - Daily JPG report at 11:59 PM (per group + consolidated)    │
- * │   - Monthly Excel report on 1st of month at 12:01 AM           │
+ * │   - Monthly Excel report on 2nd of month at 10:00 AM           │
  * │   - Promise reminders at 8:00 AM daily                         │
  * │                                                                 │
  * │ Same commands as Summary group                                  │

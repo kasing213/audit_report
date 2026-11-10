@@ -46,7 +46,8 @@ export class ExcelReportGenerator {
 
   private formatTime(date: Date | null): string {
     if (!date) return 'N/A';
-    return new Date(date).toLocaleTimeString();
+    // Business time, not the server's (Railway runs in UTC).
+    return new Date(date).toLocaleTimeString('en-GB', { timeZone: process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh' });
   }
 
   public async generateMonthlyReport(year: number, month: number): Promise<{ buffer: Buffer; followers: string[] }> {

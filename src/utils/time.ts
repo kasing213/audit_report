@@ -100,9 +100,8 @@ export function toZonedDateTime(dateStr: string, timeStr: string = '00:00', time
 
 /**
  * The calendar month before `now`'s month in `timezoneEnv` (default report
- * timezone). The monthly cron fires at 00:01 Cambodia on the 1st, which is
- * still the previous day in UTC, so server-local month math picks the wrong
- * month.
+ * timezone). Server-local month math can pick the wrong month near midnight,
+ * since Cambodia is UTC+7, so read the month in the report timezone.
  */
 export function getPreviousMonth(timezoneEnv?: string, now: Date = new Date()): { year: number; month: number } {
   const timeZone = timezoneEnv || process.env.REPORT_TIMEZONE || process.env.TIMEZONE || 'Asia/Phnom_Penh';
