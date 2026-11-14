@@ -63,9 +63,11 @@ export function financialLines(f: CloseSellParseResult['financial']): Array<[str
   return out;
 }
 
+// Close-sell has its own list (no c, and `I.ផ្សេងៗ` is "other"), unlike the
+// sales-entry a-j list where I is ចាំរកថ្ងៃទំនេរមកមើល. So i here is J.
 const REASON_LETTER_TO_CODE: Record<string, ReasonCode> = {
   a: 'A', b: 'B', c: 'C', d: 'D', e: 'E',
-  f: 'F', g: 'G', h: 'H', i: 'I', j: 'J'
+  f: 'F', g: 'G', h: 'H', i: 'J', j: 'J'
 };
 
 function parseDdMmYy(raw: string): string | null {

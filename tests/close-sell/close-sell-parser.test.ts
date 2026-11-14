@@ -233,3 +233,17 @@ test('close-sell: the follower is read the way staff write it — ភ្ញៀ�
 test('close-sell: the template placeholder ភ្ញៀវ=ឈ្មោះអ្នក Follow left unfilled is no follower', () => {
   assert.equal(parseCloseSellReport(template({ page: 'Sun Tv ភ្ញៀវ=ឈ្មោះអ្នក Follow' }))!.follower, null);
 });
+
+test("close-sell: I.ផ្សេងៗ in the handed-out template is reason J (other), not I", () => {
+  const p = parseCloseSellReport(readFileSync(join(__dirname, "other-obstacle-report.txt"), "utf8"))!;
+  assert.equal(p.primary_reason_code, "J");
+  assert.deepEqual(p.obstacles.map(o => o.text), ["ផ្សេងៗ=កក់Jl129"]);
+});
+
+test("close-sell: each template line keeps its own reason (no c line, so d-h are not shifted)", () => {
+  const line = (l: string) => parseCloseSellReport(template({}).replace("      b.ទីតាំងមិនត្រូវ=", `      ${l}`))!.primary_reason_code;
+  assert.equal(line("d គ្មានចំណាប់អារម្មណ៍=1"), "D");
+  assert.equal(line("g.ខូចCBC=1"), "G");
+  assert.equal(line("h.ដីរឺផ្ទះតូចពេក=1"), "H");
+  assert.equal(line("I.ផ្សេងៗ=ចាំប្រពន្ធ"), "J");
+});
