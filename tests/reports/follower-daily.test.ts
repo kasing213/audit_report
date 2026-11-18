@@ -6,8 +6,10 @@ import {
   closeSellInfo,
   groupByFollower,
   paginateGroup,
-  followerPageCaption
+  followerPageCaption,
+  reportCountRows
 } from '../../src/reports/follower-daily';
+import { dupeBadge, dupeEventId, dupeFlag, dupeOrdinals, nextOrdinal, phoneKeyRegexes, phoneKeys } from '../../src/reports/dupe-flags';
 import { ExcelReportGenerator, uniqueSheetBase } from '../../src/reports/excel-report';
 import { ReportDataService } from '../../src/reports/data-service';
 import { getPreviousMonth } from '../../src/utils/time';
@@ -73,7 +75,7 @@ test('messages come from 1.Messege, message-only is messages minus numbers given
   assert.equal(p.totalMessages, 12);
   assert.equal(p.totalWithNumber, 2);
   assert.equal(p.totalMessageOnly, 10);
-  assert.equal(followerPageCaption(p, '2026-11-01'), '📊 Bery — 2026-11-01\nMessages: 12 · Numbers: 2 · Message only: 10');
+  assert.equal(followerPageCaption(p, '2026-11-01'), '📊 Bery — 2026-11-01\nMessages: 12 · Numbers: 2 · Message only: 10 · Closing: 0');
 });
 
 test('the same phone twice counts as one number', () => {
@@ -86,19 +88,93 @@ test('the same phone twice counts as one number', () => {
 
 test('a follower who only sent counters still gets a report', () => {
   const pages = buildFollowerDailyPages([], [sum('Seyi', { messege: 5 }), sum('Sros', { fake: 1 })]);
-  assert.deepEqual(pages.map(p => [p.follower, p.totalMessages, p.totalMessageOnly]), [['Seyi', 5, 5]]);
+  assert.deepEqual(pages.map(p => [p.follower, p.totalMessages, p.totalMessageOnly]), [['Seyi', 5, 5], ['Sros', null, null]]);
+  assert.equal(pages[1].counters.fake, 1);
 });
 
 test('without a 1.Messege counter there is no message-only figure', () => {
   const [p] = buildFollowerDailyPages([ev('Bery')]);
   assert.equal(p.totalMessages, null);
   assert.equal(p.totalMessageOnly, null);
-  assert.equal(followerPageCaption(p, '2026-11-01'), '📊 Bery — 2026-11-01\nNumbers: 1');
+  // Still printed, as 0: the boss reads a missing figure as "not reported".
+  assert.equal(followerPageCaption(p, '2026-11-01'), '📊 Bery — 2026-11-01\nMessages: 0 · Numbers: 1 · Message only: 0 · Closing: 0');
 });
 
-test('closing shows in the caption only on a day that has one', () => {
+test('closing is in the caption with its count', () => {
   const [p] = buildFollowerDailyPages([ev('Bery'), ev('Bery', 'closesell-telegram')]);
-  assert.match(followerPageCaption(p, '2026-11-01'), /Numbers: 1 · Closing: 1$/);
+  assert.match(followerPageCaption(p, '2026-11-01'), /Numbers: 1 · Message only: 0 · Closing: 1$/);
+});
+
+// ── Report counts: every template line, 0 when not sent ──
+
+test('report counts list every template line, summed over the day, 0 when missing', () => {
+  const [p] = buildFollowerDailyPages(
+    [ev('Bery', 'bulk-telegram', { promise_date: '2026-11-03' }), ev('Bery')],
+    [sum('Bery', { messege: 3, all_pages: 2, telegram: 1, message_connected_by_telegram: 2 }), sum('Bery', { all_pages: 1, messenger: 4 })]
+  );
+  const rows = reportCountRows(p.counters, p.totalDatingVisits);
+  const a = Object.fromEntries(rows.sectionA.map(r => [r.label.trim(), r.value]));
+  assert.equal(a['1. Messege'], 3);
+  assert.equal(a['2. ភ្ញៀវចូលគ្រប់ផេក (client came)'], 3);
+  assert.equal(a['3. Fake (ក្លែងក្លាយ)'], 0);
+  assert.equal(a['10. Dating visit (សន្យាមកមើល)'], 1);
+  assert.equal(rows.sectionA.length, 12);
+  const b = Object.fromEntries(rows.channels.map(r => [r.label, r]));
+  assert.equal(rows.channels.length, 6);
+  assert.equal(b['e. Telegram'].total, 1);
+  assert.deepEqual(b['a. Messenger'].by, [0, 2, 0, 0]); // message / telegram / phone / other
+  assert.equal(b['a. Messenger'].total, 4);              // `messenger` and `message` are one row
+  assert.equal(b['d. Group'].total, 0);
+});
+
+// ── Repeat numbers: 2nd time yellow, 3rd+ red ──
+
+function at(iso: string, phone: string, extra: Partial<LeadEventDocument> = {}): LeadEventDocument {
+  return ev('Bery', 'bulk-telegram', { _id: `id${++seq}`, customer: { name: null, phone }, created_at: new Date(iso), ...extra });
+}
+
+test('phone keys ignore +855, a leading 0, spaces and split a/b', () => {
+  assert.deepEqual(phoneKeys('+855 12 345 678'), ['12345678']);
+  assert.deepEqual(phoneKeys('012345678/0987654321'), ['12345678', '987654321']);
+  assert.deepEqual(phoneKeys(''), []);
+  assert.ok(phoneKeyRegexes(['12345678'])[0].test('012-345-678'));
+  assert.ok(!phoneKeyRegexes(['12345678'])[0].test('0123456789'));
+});
+
+test('a number is flagged the 2nd (yellow) and 3rd+ (red) time it is reported', () => {
+  const first = at('2026-11-01T01:00:00Z', '+85512345678');
+  const second = at('2026-11-02T01:00:00Z', '012345678');
+  const third = at('2026-11-03T01:00:00Z', '012 345 678/099999999');
+  const other = at('2026-11-03T02:00:00Z', '+85599111222');
+  const d = dupeOrdinals([second, third, other], [first, second, third, other]);
+  assert.equal(d.get(dupeEventId(second)), 2);
+  assert.equal(d.get(dupeEventId(third)), 3);
+  assert.equal(d.get(dupeEventId(other)), 1);
+  assert.deepEqual([1, 2, 3, 7].map(dupeFlag), [null, 'yellow', 'red', 'red']);
+  assert.equal(dupeBadge(2), '🟡 2nd');
+  assert.equal(dupeBadge(3), '🔴 3rd');
+  assert.equal(dupeBadge(1), '');
+});
+
+test('the same paste, close-sells, imports and deleted rows are not repeats', () => {
+  const tel = at('2026-11-02T01:00:00Z', '012345678', { report_hash: 'h1' });
+  const dating = at('2026-11-02T01:00:00Z', '012345678', { report_hash: 'h1' });
+  const closing = at('2026-11-01T01:00:00Z', '012345678', { source: { telegram_msg_id: 'c', model: 'closesell-telegram' } });
+  const imported = at('2026-10-01T01:00:00Z', '012345678', { source: { telegram_msg_id: 'i', model: 'csv-import' } });
+  const deleted = at('2026-10-02T01:00:00Z', '012345678', { deleted: true });
+  const d = dupeOrdinals([tel, dating], [tel, dating, closing, imported, deleted]);
+  assert.equal(d.get(dupeEventId(tel)), 1);
+  assert.equal(d.get(dupeEventId(dating)), 1);
+  assert.equal(nextOrdinal('012345678', [tel, dating, closing]), 2);
+});
+
+test('a later Dating-only entry is neither flagged nor counted', () => {
+  const lead = at('2026-11-01T01:00:00Z', '012345678');
+  const visit = at('2026-11-05T01:00:00Z', '012345678', { source: { telegram_msg_id: 'bulk-tg-1-dating-1', model: 'bulk-telegram' } });
+  const again = at('2026-11-06T01:00:00Z', '012345678');
+  const d = dupeOrdinals([visit, again], [lead, visit, again]);
+  assert.equal(d.get(dupeEventId(visit)), undefined);
+  assert.equal(d.get(dupeEventId(again)), 2);
 });
 
 // ── Close-sell closer and counts ──

@@ -11,8 +11,11 @@ import {
   buildFollowerDailyPages,
   closeSellInfo,
   followerPageCaption,
-  followerPageFilename
+  followerPageFilename,
+  reportCountRows
 } from './follower-daily';
+import { parseBulkReport } from '../parser/bulk-report-parser';
+import { dupeEventId, dupeFlag, dupeOrdinals, ordinalLabel, phoneKeyRegexes, phoneKeys } from './dupe-flags';
 
 export interface FollowerDailyImage {
   follower: string;
@@ -26,23 +29,34 @@ function formatTimeIn(date: Date | null | undefined, timeZone: string): string {
   return new Date(date).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone });
 }
 
-function followerPageView(p: FollowerDailyPage, date: string, timeZone: string) {
+function followerPageView(p: FollowerDailyPage, date: string, timeZone: string, dupes: Map<string, number>) {
+  const firstPage = p.page === 1;
   return {
     ...p,
     date,
     multiPage: p.pages > 1,
-    showFollowUps: p.followUps.length > 0 || (p.totalFollowUps === 0 && p.page === 1),
-    // Closings are rare: the section only appears on a day that has one.
-    showClosings: p.closings.length > 0,
-    hasMessages: p.totalMessages !== null,
-    followUpRows: p.followUps.map((e, i) => ({
-      n: p.followUpStart + i + 1,
-      time: formatTimeIn(e.created_at, timeZone),
-      name: e.customer?.name || '',
-      phone: e.customer?.phone || '',
-      page: e.page || '',
-      reason: formatReasonDisplay(e.reason_code ?? null, e.status_text)
-    })),
+    // The counts and both sections show on page 1 even at 0: the boss reads
+    // a missing figure as "not reported".
+    showCounts: firstPage,
+    counts: reportCountRows(p.counters, p.totalDatingVisits),
+    showFollowUps: p.followUps.length > 0 || firstPage,
+    showClosings: p.closings.length > 0 || (p.totalClosings === 0 && firstPage),
+    totalMessagesShown: p.totalMessages ?? 0,
+    totalMessageOnlyShown: p.totalMessageOnly ?? 0,
+    followUpRows: p.followUps.map((e, i) => {
+      const ordinal = dupes.get(dupeEventId(e));
+      const flag = dupeFlag(ordinal);
+      return {
+        n: p.followUpStart + i + 1,
+        time: formatTimeIn(e.created_at, timeZone),
+        name: e.customer?.name || '',
+        phone: e.customer?.phone || '',
+        page: e.page || '',
+        reason: formatReasonDisplay(e.reason_code ?? null, e.status_text),
+        flag,
+        flagLabel: flag ? ordinalLabel(ordinal!) : ''
+      };
+    }),
     closingRows: p.closings.map((e, i) => {
       const info = closeSellInfo(e);
       return {
@@ -68,7 +82,8 @@ function followerPageView(p: FollowerDailyPage, date: string, timeZone: string) 
 export async function renderFollowerDailyImages(
   pages: FollowerDailyPage[],
   date: string,
-  timeZone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh'
+  timeZone = process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh',
+  dupes: Map<string, number> = new Map()
 ): Promise<FollowerDailyImage[]> {
   if (pages.length === 0) return [];
   const template = handlebars.compile(
@@ -85,7 +100,7 @@ export async function renderFollowerDailyImages(
       const page = await browser.newPage();
       // Narrow page + 2x scale: large, sharp text once Telegram shrinks it.
       await page.setViewport({ width: 900, height: 600, deviceScaleFactor: 2 });
-      await page.setContent(template(followerPageView(p, date, timeZone)), { waitUntil: 'networkidle0' });
+      await page.setContent(template(followerPageView(p, date, timeZone, dupes)), { waitUntil: 'networkidle0' });
       await page.evaluateHandle('document.fonts.ready');
       const buffer = await page.screenshot({ type: 'jpeg', quality: 90, fullPage: true }) as Buffer;
       await page.close();
@@ -120,9 +135,18 @@ export class JpgReportGenerator {
     const tz = timezone || process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
     const events = await this.dataService.getLeadEventsByEntryDay(date, undefined, tz);
     const summaries = await this.dataService.getDailySummariesByEntryDay(date, tz);
+    // Re-read each saved report: reports saved before a parser fix lack the
+    // lines it now reads, and would print a false 0 for them.
+    for (const s of summaries) {
+      if (s.raw_text) s.counters = { ...s.counters, ...parseBulkReport(s.raw_text).summary.counters };
+    }
     const pages = buildFollowerDailyPages(events, summaries);
-    Logger.info(`Daily per-follower report for ${date}: ${events.length} entries, ${summaries.length} bulk counters -> ${pages.length} image(s)`);
-    return renderFollowerDailyImages(pages, date, tz);
+    const keys = Array.from(new Set(events.flatMap(e => phoneKeys(e.customer?.phone))));
+    const history = await this.dataService.getLeadEventsByPhoneRegexes(phoneKeyRegexes(keys));
+    const dupes = dupeOrdinals(events, history);
+    const repeats = Array.from(dupes.values()).filter(n => n >= 2).length;
+    Logger.info(`Daily per-follower report for ${date}: ${events.length} entries, ${summaries.length} bulk counters, ${repeats} repeat number(s) -> ${pages.length} image(s)`);
+    return renderFollowerDailyImages(pages, date, tz, dupes);
   }
 
   private async loadTemplate(): Promise<HandlebarsTemplateDelegate> {
