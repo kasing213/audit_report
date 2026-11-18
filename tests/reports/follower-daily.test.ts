@@ -115,7 +115,7 @@ test('report counts list every template line, summed over the day, 0 when missin
   const rows = reportCountRows(p.counters, p.totalDatingVisits);
   const a = Object.fromEntries(rows.sectionA.map(r => [r.label.trim(), r.value]));
   assert.equal(a['1. Messege'], 3);
-  assert.equal(a['2. ភ្ញៀវចូលគ្រប់ផេក'], 3);
+  assert.equal(a['2. ភ្ញៀវចូលគ្រប់ផេក (client came)'], 3);
   assert.equal(a['3. Fake (ក្លែងក្លាយ)'], 0);
   assert.equal(a['10. Dating visit (សន្យាមកមើល)'], 1);
   assert.equal(rows.sectionA.length, 12);

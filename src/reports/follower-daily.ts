@@ -179,7 +179,7 @@ export const SECTION_A_ROWS: Array<[key: string, label: string]> = [
   ['messege', '1. Messege'],
   ['night', '   a. Night (ទទួលពេលយប់)'],
   ['pv', '   b. PV (ភ្ញៀវខេត្ត)'],
-  ['all_pages', '2. ភ្ញៀវចូលគ្រប់ផេក'],
+  ['all_pages', '2. ភ្ញៀវចូលគ្រប់ផេក (client came)'],
   ['fake', '3. Fake (ក្លែងក្លាយ)'],
   ['messenger_before', '4. ភ្ញៀវធ្លាប់ទាក់ទងក្នុង Messenger'],
   ['old_customer', '5. ភ្ញៀវចាស់ធ្លាប់មើលគំរោងរួច'],
