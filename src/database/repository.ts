@@ -142,6 +142,15 @@ export class SalesCaseRepository {
    * record saved as "0123/0987" matches when querying "0123").
    * Caller is expected to pass already-normalized phones.
    */
+  /** Every non-deleted event whose phone matches one of `regexes`, no limit (see reports/dupe-flags). */
+  async findEventsByPhoneRegexes(regexes: RegExp[]): Promise<LeadEventDocument[]> {
+    if (regexes.length === 0) return [];
+    return await this.leadsEventsCollection
+      .find({ deleted: { $ne: true }, $or: regexes.map(r => ({ 'customer.phone': { $regex: r } })) })
+      .project<LeadEventDocument>({ customer: 1, source: 1, report_hash: 1, created_at: 1, deleted: 1 })
+      .toArray();
+  }
+
   async findEventsByPhones(phones: string[], limit: number = 20): Promise<LeadEventDocument[]> {
     const cleaned = phones.map(p => (p ?? '').trim()).filter(Boolean);
     if (cleaned.length === 0) return [];

@@ -191,3 +191,86 @@ test('bulk: "Jim" or the group name on the name line is never a follower', () =>
   assert.equal(biry.header.follower, null);
   assert.equal(biry.header.owner_name, 'Biry');
 });
+
+// ── Every header line of the team's template is read (2026-11-16 audit) ──
+
+const ALL_FIELDS_REPORT = [
+  '_ស .💞Follow up', '#របាយការណ៍ថ្ងៃទី16/11/26', 'Sok', '🚩Page Sun Tv (Sok)',
+  'A.Follow (Boots Page)',
+  '    1.Messege=11',
+  '       a.Night(ទទួលពេលយប=12',
+  '       b.PV(ភ្ញៀវខេត្ត)=13',
+  '          👉បរិយាយខេត្តណា=Kampot',
+  '    2.ភ្ញៀវចូលគ្រប់ផេក=15',
+  '    3..Fack(ក្លែងក្លាយ)=16',
+  '    4.ភ្ញៀវធ្លាប់ទាក់ទងក្នុងMesseger=17',
+  '    5.ភ្ញៀវចាស់ធ្លាប់មើលគំរោងរួច=18',
+  '    6.Liked(ចុចមេដៃ)=19',
+  '    7.Other(ផ្សេងៗ)=20',
+  'comment =21',
+  '☎️9.Phone (ចំនួនលេខទូរស័ព្ទ)= 01',
+  'Tel1=012345678', '       Name=A', '       Pv=PP',
+  'a.messageវ៉ៃលេខ 23', '   1/Connected by message=24', '   2/Connected by telegram=25', '   3/Connected by Phone=26', '   4/Connected by other=27',
+  'b.Comment=5', '   1/Connected by message=28', '   2/Connected by telegram=29', '   3/Connected by Phone=30', '   4/Connected by other=31',
+  'c. Callin 32', '   1/Connected by message=33', '   2/Connected by telegram=34', '   3/Connected by Phone=35', '   4/Connected by other=36',
+  'd Group=', '   1/Connected by message=37', '   2/Connected by telegram=38', '   3/Connected by Phone=39', '   4/Connected by other=40',
+  'e.Telegram=2', '   1/Connected by message=41', '   2/Connected by telegram=42', '   3/Connected by Phone=43', '   4/Connected by other=44',
+  'f Other=6', '   1/Connected by message=45', '   2/Connected by telegram=46', '   3/Connected by Phone=47', '   4/Connected by other 48',
+  '/🥰10 .Dating visit (សន្យាមកមើល)', '   1/លេខទូរស័ព្ =012345678', '       a ថ្ងៃ.ខែ.ឆ្នាំម៉ោង5:34pm20/11/26',
+].join('\n');
+
+test('all fields: Khmer-only, typo and emoji section-A lines are read', () => {
+  const { counters } = parseBulkReport(ALL_FIELDS_REPORT).summary;
+  assert.deepEqual(
+    [counters.messege, counters.night, counters.pv, counters.all_pages, counters.fake, counters.messenger_before,
+      counters.old_customer, counters.liked, counters.follow_other, counters.follow_comment, counters.phone],
+    [11, 12, 13, 15, 16, 17, 18, 19, 20, 21, 1]
+  );
+});
+
+test('all fields: 7.Other and comment are not overwritten by Connected-by rows b and f', () => {
+  const { counters } = parseBulkReport(ALL_FIELDS_REPORT).summary;
+  assert.equal(counters.follow_other, 20);
+  assert.equal(counters.other, 6);
+  assert.equal(counters.follow_comment, 21);
+  assert.equal(counters.comment, 5);
+});
+
+test('all fields: the whole Connected-by grid is read, Telegram row and column', () => {
+  const { counters } = parseBulkReport(ALL_FIELDS_REPORT).summary;
+  assert.equal(counters.telegram, 2);
+  assert.equal(counters.telegram_connected_by_telegram, 42);
+  assert.equal(counters.message_connected_by_telegram, 25);
+  assert.equal(counters.callin, 32);
+  assert.equal(counters.group_connected_by_other, 40);
+  assert.equal(counters.other_connected_by_other, 48); // no "=" before the number
+  const grid = Object.keys(counters).filter(k => k.includes('_connected_by_'));
+  assert.equal(grid.length, 24);
+});
+
+test('all fields: a clean report has no warnings; the Dating line is still read', () => {
+  const r = parseBulkReport(ALL_FIELDS_REPORT);
+  assert.deepEqual(r.warnings, []);
+  assert.equal(r.drafts[0].promise_date, '2026-11-20');
+});
+
+test('warning: a number on a line the parser cannot place', () => {
+  const r = parseBulkReport(ALL_FIELDS_REPORT.replace('    7.Other(ផ្សេងៗ)=20', '    7.Other(ផ្សេងៗ)=20\n    ភ្ញៀវថ្មី=3'));
+  assert.deepEqual(r.warnings, ['Line not read (number ignored): ភ្ញៀវថ្មី=3']);
+});
+
+test('warning: 9.Phone does not match the Tel numbers read', () => {
+  const r = parseBulkReport(ALL_FIELDS_REPORT.replace('= 01', '= 3'));
+  assert.deepEqual(r.warnings, ['9.Phone says 3 but 1 Tel number(s) were read']);
+});
+
+test('the real full-format and flat reports raise no warnings', () => {
+  assert.deepEqual(parseBulkReport(FULL_FORMAT_REPORT).warnings, []);
+  assert.deepEqual(parseBulkReport(FLAT_FORMAT_REPORT).warnings, []);
+});
+
+test('all fields: the same report pasted flat (line breaks lost) reads the same counters', () => {
+  const full = parseBulkReport(ALL_FIELDS_REPORT).summary.counters;
+  const flat = parseBulkReport(ALL_FIELDS_REPORT.replace(/\s*\n\s*/g, ' ')).summary.counters;
+  assert.deepEqual(flat, full);
+});

@@ -72,6 +72,16 @@ export class ReportDataService {
     }
   }
 
+  /** Every non-deleted lead event whose phone matches one of `regexes` (see dupe-flags). */
+  public async getLeadEventsByPhoneRegexes(regexes: RegExp[]): Promise<LeadEventDocument[]> {
+    try {
+      return await this.repository.findEventsByPhoneRegexes(regexes);
+    } catch (error) {
+      console.error('Error fetching lead events by phone:', error);
+      return [];
+    }
+  }
+
   public async getMonthlyLeadEvents(year: number, month: number, groupId?: string, follower?: string): Promise<LeadEventDocument[]> {
     try {
       const startDate = `${year}-${month.toString().padStart(2, '0')}-01`;

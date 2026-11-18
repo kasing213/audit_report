@@ -51,6 +51,20 @@
         .booked { color: #1e8e3e; font-weight: bold; }
         .tag { font-size: 13px; background: #fff3cd; border: 1px solid #e0c060; border-radius: 3px; padding: 0 4px; }
         .none { color: #777; font-style: italic; padding: 6px 2px; }
+        .counts h2 { background-color: #6c4fc2; }
+        .counts .grid { display: flex; gap: 14px; align-items: flex-start; }
+        .counts table { font-size: 15px; }
+        .counts td, .counts th { padding: 4px 8px; }
+        .counts .a { flex: 0 0 44%; }
+        .counts .b { flex: 1; }
+        .counts .b th, .counts .b td.num { text-align: center; }
+        .counts td.zero { color: #aaa; }
+        /* Repeat numbers: after the zebra rule so the colour wins. */
+        tr.dupe-yellow td { background-color: #fff3b0; }
+        tr.dupe-red td { background-color: #ffc9c9; }
+        .dupe { font-size: 13px; font-weight: bold; border-radius: 3px; padding: 0 4px; margin-left: 4px; }
+        tr.dupe-yellow .dupe { background: #e0b000; color: #222; }
+        tr.dupe-red .dupe { background: #c62828; color: white; }
     </style>
 </head>
 <body>
@@ -63,13 +77,43 @@
         </div>
     </div>
 
+    {{#if showCounts}}
+    <div class="section counts">
+        <h2>Report counts</h2>
+        <div class="grid">
+            <table class="a">
+                <thead><tr><th>A. Follow (Boots Page)</th><th></th></tr></thead>
+                <tbody>
+                    {{#each counts.sectionA}}
+                    <tr><td>{{this.label}}</td><td class="num {{#unless this.value}}zero{{/unless}}">{{this.value}}</td></tr>
+                    {{/each}}
+                </tbody>
+            </table>
+            <table class="b">
+                <thead>
+                    <tr><th style="text-align:left">B. Connected by</th><th>Total</th><th>message</th><th>telegram</th><th>phone</th><th>other</th></tr>
+                </thead>
+                <tbody>
+                    {{#each counts.channels}}
+                    <tr>
+                        <td style="text-align:left">{{this.label}}</td>
+                        <td class="num {{#unless this.total}}zero{{/unless}}"><b>{{this.total}}</b></td>
+                        {{#each this.by}}<td class="num {{#unless this}}zero{{/unless}}">{{this}}</td>{{/each}}
+                    </tr>
+                    {{/each}}
+                </tbody>
+            </table>
+        </div>
+    </div>
+    {{/if}}
+
     {{#if showFollowUps}}
     <div class="section followups">
         <h2>1 · Follow-ups</h2>
         <div class="totals">
-            {{#if hasMessages}}Messages: <b>{{totalMessages}}</b> &nbsp;·&nbsp;{{/if}}
+            Messages: <b>{{totalMessagesShown}}</b> &nbsp;·&nbsp;
             Gave a number: <b>{{totalWithNumber}}</b>
-            {{#if hasMessages}}&nbsp;·&nbsp; Message only (no number): <b>{{totalMessageOnly}}</b>{{/if}}
+            &nbsp;·&nbsp; Message only (no number): <b>{{totalMessageOnlyShown}}</b>
         </div>
         {{#if followUpRows.length}}
         <table>
@@ -78,11 +122,11 @@
             </thead>
             <tbody>
                 {{#each followUpRows}}
-                <tr>
+                <tr{{#if this.flag}} class="dupe-{{this.flag}}"{{/if}}>
                     <td class="num">{{this.n}}</td>
                     <td class="time">{{this.time}}</td>
                     <td>{{this.name}}</td>
-                    <td>{{this.phone}}</td>
+                    <td>{{this.phone}}{{#if this.flag}}<span class="dupe">{{this.flagLabel}}</span>{{/if}}</td>
                     <td>{{this.page}}</td>
                     <td>{{this.reason}}</td>
                 </tr>

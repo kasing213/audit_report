@@ -142,9 +142,27 @@ export function extractOwnerName(page: string | null): string | null {
   return name && !PLACEHOLDER_NAMES.has(bare!) ? name : null;
 }
 
-function extractCounters(section: string): Record<string, number> {
+// Section A ("A.Follow (Boots Page)") items, keyed by their number: staff
+// often write the label in Khmer only (`2.ភ្ញៀវចូលគ្រប់ផេក=`), with a typo
+// (`3..Fack`) or behind an emoji (`☎️9.Phone`), which the Latin-label match
+// below cannot read. `7.Other` gets its own key so `f Other=` (Connected-by
+// row f) does not overwrite it.
+const SECTION_A_KEYS: Record<string, string> = {
+  '1': 'messege', '2': 'all_pages', '3': 'fake', '4': 'messenger_before',
+  '5': 'old_customer', '6': 'liked', '7': 'follow_other', '9': 'phone'
+};
+
+// Lines inside Tel blocks and the reason list: never a counter.
+const NOT_A_COUNTER_LINE = /^\s*(?:[☎️☎]\s*)?(?:T\s*e?\s*l?\s*\d{0,2}\s*=|Nam(?:e)?\b|Pv\s*=|[a-jA-J][.)\s]*[ក-៿])/i;
+
+function extractCounters(section: string, warnings: string[] = []): Record<string, number> {
   const counters: Record<string, number> = {};
   const lines = section.split('\n');
+  const unread = (line: string) => {
+    if (/=\s*0*[1-9]\d*\s*$/.test(line) && !NOT_A_COUNTER_LINE.test(line)) {
+      warnings.push(`Line not read (number ignored): ${line.trim()}`);
+    }
+  };
   // List-marker prefixes look like `1.`, `1)`, `A.`, `a)`, or nested combos
   // like `1.a.`. We require a `.`, `)`, or `/` separator so a bare leading
   // letter (F in "Follow up", C in "Cold", etc.) is NOT mistaken for a list
@@ -175,14 +193,32 @@ function extractCounters(section: string): Record<string, number> {
       continue;
     }
 
-    const match = line.match(/^\s*(?:\d+[.)/]\s*)?(?:[a-jA-J][.)/]\s*)?([A-Za-z][^=]*?)\s*=\s*(\d+)\s*$/);
-    if (!match) continue;
+    // Section A by number: `1.Messege=8`, `2.ភ្ញៀវចូលគ្រប់ផេក=3`, `3..Fack(...)=1`, `☎️9.Phone (...)= 01`.
+    const numbered = line.match(/^\s*(?:[☎️☎]\s*)*(\d{1,2})\.+\s*[^=\n/]*?=\s*(\d+)\s*$/);
+    if (numbered && SECTION_A_KEYS[numbered[1]]) {
+      counters[SECTION_A_KEYS[numbered[1]]] = parseInt(numbered[2], 10);
+      continue;
+    }
+
+    // `comment =N` in section A is its own count, not row b of Connected by.
+    const followComment = line.match(/^\s*comment\s*=\s*(\d+)\s*$/i);
+    if (followComment) {
+      counters.follow_comment = parseInt(followComment[1], 10);
+      continue;
+    }
+
+    // `4/Connected by other 48`: the `=` is sometimes left out.
+    const connectedNoEq = line.match(/^\s*\d+[.)/]\s*(Connected by\s+[A-Za-z]+)\s+(\d+)\s*$/i);
+    const match = connectedNoEq
+      ? [line, connectedNoEq[1], connectedNoEq[2]]
+      : line.match(/^\s*(?:\d+[.)/]\s*)?(?:[a-jA-J][.)/]\s*)?([A-Za-z][^=]*?)\s*=\s*(\d+)\s*$/);
+    if (!match) { unread(line); continue; }
     const rawLabel = match[1];
     const latinOnly = rawLabel.match(/^([A-Za-z][A-Za-z0-9 _\/]+)/);
-    if (!latinOnly) continue;
+    if (!latinOnly) { unread(line); continue; }
     const key = normalizeKey(latinOnly[1]);
     const val = parseInt(match[2], 10);
-    if (!key || !Number.isFinite(val)) continue;
+    if (!key || !Number.isFinite(val)) { unread(line); continue; }
     if (key === 'tel' || /^tel\d*$/.test(key)) continue;
 
     const isConnectedBy = /^connected_by_/.test(key);
@@ -533,7 +569,7 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   const header: BulkReportHeader = { date: headerDate, follower, page, owner_name: extractOwnerName(page) };
 
   const bounds = findSectionBounds(normalized);
-  const counters = extractCounters(normalized.slice(0, bounds.datingStart));
+  const counters = extractCounters(normalized.slice(0, bounds.datingStart), warnings);
 
   const reasonList = findReasonList(normalized, bounds.datingStart);
   const slotRegion = normalized.slice(0, reasonList ? reasonList.start : bounds.datingStart);
@@ -552,6 +588,10 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   }
   for (let n = 1; n <= totalTelSlotsExpected; n++) {
     if (!merged.has(n)) emptySlots++;
+  }
+  const telPhones = drafts.filter(d => d.customer_phone).length;
+  if (typeof counters.phone === 'number' && counters.phone !== telPhones) {
+    warnings.push(`9.Phone says ${counters.phone} but ${telPhones} Tel number(s) were read`);
   }
 
   const datingEntries = parseDatingSection(normalized, bounds.datingStart);

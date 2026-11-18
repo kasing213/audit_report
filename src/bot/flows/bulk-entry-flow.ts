@@ -10,6 +10,7 @@ import {
 import { Logger } from '../../utils/logger';
 import { reportHash } from '../../utils/report-hash';
 import { formatReasonDisplay } from '../../constants/reason-codes';
+import { dupeBadge, nextOrdinal, phoneKeyRegexes, phoneKeys } from '../../reports/dupe-flags';
 
 interface PendingBulk {
   parsed: BulkReportParseResult;
@@ -95,7 +96,17 @@ export class BulkEntryFlow {
     this.gcExpired();
     Logger.info(`[bulk-confirm] preview created token=${token} user=${userId} chat=${chatId} drafts=${parsed.drafts.length} counters=${Object.keys(parsed.summary.counters).length} pendingSize=${this.pending.size}`);
 
-    const previewText = this.buildPreview(parsed, owner);
+    // Numbers already reported before: 🟡 2nd time, 🔴 3rd time and after.
+    let stored: LeadEventDocument[] = [];
+    try {
+      const keys = Array.from(new Set(parsed.drafts.flatMap(d => phoneKeys(d.customer_phone))));
+      stored = await this.repository.findEventsByPhoneRegexes(phoneKeyRegexes(keys));
+    } catch (err) {
+      Logger.warn(`[bulk-confirm] repeat-number lookup failed: ${(err as Error).message}`);
+    }
+    const badges = new Map(parsed.drafts.map(d => [d, dupeBadge(nextOrdinal(d.customer_phone, stored))]));
+
+    const previewText = this.buildPreview(parsed, owner, badges);
     const keyboard = Markup.inlineKeyboard([
       [
         Markup.button.callback('✅ បញ្ជាក់ / Confirm', `bulk_confirm:${token}`),
@@ -250,7 +261,11 @@ export class BulkEntryFlow {
     await ctx.reply('🚫 បានលុបរបាយការណ៍។');
   }
 
-  private buildPreview(parsed: BulkReportParseResult, owner: OwnerDecision | null): string {
+  private buildPreview(
+    parsed: BulkReportParseResult,
+    owner: OwnerDecision | null,
+    badges: Map<unknown, string> = new Map(),
+  ): string {
     const { header, drafts, summary, empty_slots, warnings } = parsed;
     const lines: string[] = [];
     lines.push('📋 <b>Bulk Daily Report</b>');
@@ -268,8 +283,9 @@ export class BulkEntryFlow {
         const reason = d.reason_code ? formatReasonDisplay(d.reason_code) : '—';
         const name = d.customer_name || '(no name)';
         const promise = d.promise_date ? ` · 📅 ${d.promise_date}` : '';
+        const badge = badges.get(d) ? ` ${badges.get(d)}` : '';
         lines.push(
-          `• <code>${escapeHtml(d.slot)}</code> ${escapeHtml(d.customer_phone || '?')} · ${escapeHtml(name)} · ${escapeHtml(reason)}${promise}`,
+          `• <code>${escapeHtml(d.slot)}</code> ${escapeHtml(d.customer_phone || '?')}${badge} · ${escapeHtml(name)} · ${escapeHtml(reason)}${promise}`,
         );
       }
       if (drafts.length > PREVIEW_DRAFT_LIMIT) {
