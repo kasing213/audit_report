@@ -254,6 +254,12 @@ test('all fields: a clean report has no warnings; the Dating line is still read'
   assert.equal(r.drafts[0].promise_date, '2026-11-20');
 });
 
+test('a Connected-by line written with a dot is not a section-A item', () => {
+  const { counters } = parseBulkReport(ALL_FIELDS_REPORT.replace('   1/Connected by message=24', '   1.Connected by message=24')).summary;
+  assert.equal(counters.messege, 11);
+  assert.equal(counters.message_connected_by_message, 24);
+});
+
 test('warning: a number on a line the parser cannot place', () => {
   const r = parseBulkReport(ALL_FIELDS_REPORT.replace('    7.Other(ផ្សេងៗ)=20', '    7.Other(ផ្សេងៗ)=20\n    ភ្ញៀវថ្មី=3'));
   assert.deepEqual(r.warnings, ['Line not read (number ignored): ភ្ញៀវថ្មី=3']);

@@ -20,8 +20,14 @@ export function phoneKeyRegexes(keys: string[]): RegExp[] {
   return keys.map(k => new RegExp(`(^|[^\\d])(\\+?855|0)?[\\s.-]*${k.split('').join('[\\s.-]*')}([^\\d]|$)`));
 }
 
+// A Dating line whose number is not in that paste's Tel list is saved as its
+// own `dating-N` follow-up: a promised visit for a known lead, not a new report.
+function isDatingOnly(e: LeadEventDocument): boolean {
+  return /-dating-\d+$/.test(e.source?.telegram_msg_id || '');
+}
+
 function counts(e: LeadEventDocument): boolean {
-  return !e.deleted && isStaffSalesEntry(e) && !isCloseSell(e);
+  return !e.deleted && isStaffSalesEntry(e) && !isCloseSell(e) && !isDatingOnly(e);
 }
 
 // One paste can hold the same number twice (a Tel slot and its Dating line):

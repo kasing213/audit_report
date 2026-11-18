@@ -168,6 +168,15 @@ test('the same paste, close-sells, imports and deleted rows are not repeats', ()
   assert.equal(nextOrdinal('012345678', [tel, dating, closing]), 2);
 });
 
+test('a later Dating-only entry is neither flagged nor counted', () => {
+  const lead = at('2026-11-01T01:00:00Z', '012345678');
+  const visit = at('2026-11-05T01:00:00Z', '012345678', { source: { telegram_msg_id: 'bulk-tg-1-dating-1', model: 'bulk-telegram' } });
+  const again = at('2026-11-06T01:00:00Z', '012345678');
+  const d = dupeOrdinals([visit, again], [lead, visit, again]);
+  assert.equal(d.get(dupeEventId(visit)), undefined);
+  assert.equal(d.get(dupeEventId(again)), 2);
+});
+
 // ── Close-sell closer and counts ──
 
 test('closer and counts are read from the packed note of older records', () => {

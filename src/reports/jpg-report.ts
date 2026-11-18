@@ -14,6 +14,7 @@ import {
   followerPageFilename,
   reportCountRows
 } from './follower-daily';
+import { parseBulkReport } from '../parser/bulk-report-parser';
 import { dupeEventId, dupeFlag, dupeOrdinals, ordinalLabel, phoneKeyRegexes, phoneKeys } from './dupe-flags';
 
 export interface FollowerDailyImage {
@@ -39,7 +40,7 @@ function followerPageView(p: FollowerDailyPage, date: string, timeZone: string, 
     showCounts: firstPage,
     counts: reportCountRows(p.counters, p.totalDatingVisits),
     showFollowUps: p.followUps.length > 0 || firstPage,
-    showClosings: p.closings.length > 0 || firstPage,
+    showClosings: p.closings.length > 0 || (p.totalClosings === 0 && firstPage),
     totalMessagesShown: p.totalMessages ?? 0,
     totalMessageOnlyShown: p.totalMessageOnly ?? 0,
     followUpRows: p.followUps.map((e, i) => {
@@ -134,6 +135,11 @@ export class JpgReportGenerator {
     const tz = timezone || process.env.REPORT_TIMEZONE || 'Asia/Phnom_Penh';
     const events = await this.dataService.getLeadEventsByEntryDay(date, undefined, tz);
     const summaries = await this.dataService.getDailySummariesByEntryDay(date, tz);
+    // Re-read each saved report: reports saved before a parser fix lack the
+    // lines it now reads, and would print a false 0 for them.
+    for (const s of summaries) {
+      if (s.raw_text) s.counters = { ...s.counters, ...parseBulkReport(s.raw_text).summary.counters };
+    }
     const pages = buildFollowerDailyPages(events, summaries);
     const keys = Array.from(new Set(events.flatMap(e => phoneKeys(e.customer?.phone))));
     const history = await this.dataService.getLeadEventsByPhoneRegexes(phoneKeyRegexes(keys));

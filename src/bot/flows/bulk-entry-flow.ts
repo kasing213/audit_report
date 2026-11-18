@@ -104,7 +104,7 @@ export class BulkEntryFlow {
     } catch (err) {
       Logger.warn(`[bulk-confirm] repeat-number lookup failed: ${(err as Error).message}`);
     }
-    const badges = new Map(parsed.drafts.map(d => [d, dupeBadge(nextOrdinal(d.customer_phone, stored))]));
+    const badges = new Map(parsed.drafts.map(d => [d, d.slot.startsWith('dating-') ? '' : dupeBadge(nextOrdinal(d.customer_phone, stored))]));
 
     const previewText = this.buildPreview(parsed, owner, badges);
     const keyboard = Markup.inlineKeyboard([

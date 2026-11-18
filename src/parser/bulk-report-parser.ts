@@ -195,7 +195,7 @@ function extractCounters(section: string, warnings: string[] = []): Record<strin
 
     // Section A by number: `1.Messege=8`, `2.ភ្ញៀវចូលគ្រប់ផេក=3`, `3..Fack(...)=1`, `☎️9.Phone (...)= 01`.
     const numbered = line.match(/^\s*(?:[☎️☎]\s*)*(\d{1,2})\.+\s*[^=\n/]*?=\s*(\d+)\s*$/);
-    if (numbered && SECTION_A_KEYS[numbered[1]]) {
+    if (numbered && SECTION_A_KEYS[numbered[1]] && !/Connected by/i.test(line)) {
       counters[SECTION_A_KEYS[numbered[1]]] = parseInt(numbered[2], 10);
       continue;
     }
