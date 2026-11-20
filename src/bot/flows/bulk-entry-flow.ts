@@ -45,7 +45,7 @@ export class BulkEntryFlow {
     if (!hasHeader) return false;
     // Look for Tel lines after restoring line breaks: a report copied out of
     // Telegram can arrive with every field on one line.
-    const hasTel = /(^|\n)\s*T\s*el?\s*\d{1,2}\s*=/i.test(unflattenReport(text));
+    const hasTel = /(^|\n)\s*(?:👉\s*)?T\s*el?\s*\d{1,2}\s*=/i.test(unflattenReport(text));
     return hasTel;
   }
 
@@ -297,9 +297,9 @@ export class BulkEntryFlow {
     if (counterKeys.length > 0) {
       lines.push('');
       lines.push(`<b>Counters (${counterKeys.length}):</b>`);
-      const pieces = counterKeys.slice(0, 12).map(k => `${escapeHtml(k)}=${summary.counters[k]}`);
+      const pieces = counterKeys.slice(0, 20).map(k => `${escapeHtml(k)}=${summary.counters[k]}`);
       lines.push(pieces.join(' · '));
-      if (counterKeys.length > 12) lines.push(`… +${counterKeys.length - 12} more`);
+      if (counterKeys.length > 20) lines.push(`… +${counterKeys.length - 20} more`);
     }
 
     if (warnings.length > 0) {
