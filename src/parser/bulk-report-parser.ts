@@ -125,7 +125,8 @@ function extractPage(lines: string[]): string | null {
   for (const line of lines) {
     const trimmed = line.trim().replace(/^🚩\s*/, '');
     if (/^(Pae|Page|ផេក)/i.test(trimmed)) {
-      return trimmed;
+      // "Page name : suntv(សុនី)" → "Page suntv(សុនី)": "name :" is the template's label.
+      return trimmed.replace(/^(Page)\s*name\s*:\s*/i, '$1 ');
     }
   }
   return null;
@@ -155,9 +156,22 @@ const SECTION_A_KEYS: Record<string, string> = {
 // Lines inside Tel blocks and the reason list: never a counter.
 const NOT_A_COUNTER_LINE = /^\s*(?:[☎️☎]\s*)?(?:T\s*e?\s*l?\s*\d{0,2}\s*=|Nam(?:e)?\b|Pv\s*=|[a-jA-J][.)\s]*[ក-៿])/i;
 
-function extractCounters(section: string, warnings: string[] = []): Record<string, number> {
+// The Nov 2026 template's lines the readers below can't place: `3.1` would be
+// read as item 3 (fake), `aCall in` has no marker separator, `f Other` would be
+// keyed `f_other`, and the ☎️ total has a Khmer-only label. Keys match the
+// daily report's rows. Read only before the first Tel line, so a-j reasons
+// stay reasons.
+const HEADER_COUNTERS: Array<[RegExp, string]> = [
+  [/សរុបឈ្មោះ/, 'fake_names'],
+  [/^\s*a\.?\s*Call\s*in/i, 'call_in'],
+  [/^\s*f[.\s]\s*Other/i, 'other'],
+  [/សរុបចំនួនទូរស័ព្ទ/, 'phone'],
+];
+
+function extractCounters(section: string, warnings: string[] = [], headerEnd: number = section.length): Record<string, number> {
   const counters: Record<string, number> = {};
   const lines = section.split('\n');
+  const headerLineCount = section.slice(0, headerEnd).split('\n').length;
   const unread = (line: string) => {
     if (/=\s*0*[1-9]\d*\s*$/.test(line) && !NOT_A_COUNTER_LINE.test(line)) {
       warnings.push(`Line not read (number ignored): ${line.trim()}`);
@@ -171,6 +185,14 @@ function extractCounters(section: string, warnings: string[] = []): Record<strin
   for (let li = 0; li < lines.length; li++) {
     const line = lines[li];
     if (/^\s*$/.test(line)) { currentCategory = null; continue; }
+
+    if (li < headerLineCount) {
+      const value = line.match(/=\s*(\d+)\s*$/);
+      // Khmer keyboards drop zero-width spaces inside words.
+      const bare = line.replace(/[​-‍﻿]/g, '');
+      const rule = value && HEADER_COUNTERS.find(([re]) => re.test(bare));
+      if (value && rule) { counters[rule[1]] = parseInt(value[1], 10); continue; }
+    }
 
     // Category header for connection-breakdown grid: `a.Messager=`, `b.Comment=`,
     // `c.Call in=`, `d Group=`, `e.Telegram=`, `f Other=`. Value slot is empty.
@@ -220,6 +242,8 @@ function extractCounters(section: string, warnings: string[] = []): Record<strin
     const val = parseInt(match[2], 10);
     if (!key || !Number.isFinite(val)) { unread(line); continue; }
     if (key === 'tel' || /^tel\d*$/.test(key)) continue;
+    // `c ខ្ញុំមិនមែនអ្នកសំរេច=1` is a slot's reason, not a counter named "c".
+    if (/^[a-j]$/.test(key)) continue;
 
     const isConnectedBy = /^connected_by_/.test(key);
     const finalKey = isConnectedBy && currentCategory ? `${currentCategory}_${key}` : key;
@@ -229,7 +253,7 @@ function extractCounters(section: string, warnings: string[] = []): Record<strin
 }
 
 function findSectionBounds(text: string): { headerEnd: number; telStart: number; datingStart: number } {
-  const telMatch = text.match(/\n\s*(?:☎️\s*)?\d*\.?\s*Phone\s*[（(]/i) || text.match(/\n\s*Tel\s*\d*\s*=/i);
+  const telMatch = text.match(/\n\s*(?:☎️\s*)?\d*\.?\s*Phone\s*[（(]/i) || text.match(/\n\s*(?:👉\s*)?Tel\s*\d*\s*=/i);
   const telStart = telMatch ? telMatch.index ?? text.length : text.length;
 
   const datingRegex = /Dating visit|សន្យាមកមើល/;
@@ -257,7 +281,7 @@ interface TelBlock {
  * `=`). A header without a number is the slot after the previous one.
  */
 function extractTelBlocks(region: string): TelBlock[] {
-  const telRegex = /(^|\n)[ \t]*(?:[☎️☎][ \t]*)?T[ \t]*(?:e[ \t]*l?)?[ \t]*(\d{1,2})?[ \t]*(?:=|(?=[ \t]+[+\d]))[ \t]*([^\n]*)/gi;
+  const telRegex = /(^|\n)[ \t]*(?:[☎️☎][ \t]*)?(?:👉[ \t]*)?T[ \t]*(?:e[ \t]*l?)?[ \t]*(\d{1,2})?[ \t]*(?:=|(?=[ \t]+[+\d]))[ \t]*([^\n]*)/gi;
   const starts: Array<{ num: number; index: number; value: string }> = [];
   let prev = 0;
   let m: RegExpExecArray | null;
@@ -535,9 +559,9 @@ const FIELD_START = [
   'T[ \\t]*(?:e[ \\t]*l?)?[ \\t]*\\d{0,2}[ \\t]*(?:=|[ \\t]+[+\\d])',
   'Nam(?:e)?[ \\t]*=', 'Name\\b', 'Pv[ \\t]*=', 'comment\\b',
   // a-j items: a.ថ្លៃពេក, c ខ្ញុំ..., a.Night(, c. Callin, d Group=
-  '[a-jA-J](?:\\.[ \\t]?|[ \\t])?[\\u1780-\\u17FF]', '[a-jA-J]\\.[ \\t]?[A-Za-z]', '[a-fA-F][ \\t][A-Z][a-z]+[ \\t]*=',
+  '[a-jA-J](?:\\.[ \\t]?|[ \\t])?[\\u1780-\\u17FF]', '[a-jA-J]\\.[ \\t]?[A-Za-z]', '[a-fA-F][ \\t][A-Z][a-z]+[ \\t]*=', 'aCall\\b',
   // numbered items: 1.Messege, 3..Fack, 2.ភ្ញៀវ; 1/Connected, 1/លេខ, 1/1-3day (not dates)
-  '\\d{1,2}\\.+[^\\d\\s]', '\\d{1,2}\\/(?:[A-Za-z\\u1780-\\u17FF]|\\d{1,2}-\\d)',
+  '\\d{1,2}\\.+[^\\d\\s]', '\\d\\.\\d\\.[^\\d\\s]', '\\d{1,2}\\/(?:[A-Za-z\\u1780-\\u17FF]|\\d{1,2}-\\d)',
 ].join('|');
 
 /**
@@ -569,7 +593,7 @@ export function parseBulkReport(text: string): BulkReportParseResult {
   const header: BulkReportHeader = { date: headerDate, follower, page, owner_name: extractOwnerName(page) };
 
   const bounds = findSectionBounds(normalized);
-  const counters = extractCounters(normalized.slice(0, bounds.datingStart), warnings);
+  const counters = extractCounters(normalized.slice(0, bounds.datingStart), warnings, bounds.telStart);
 
   const reasonList = findReasonList(normalized, bounds.datingStart);
   const slotRegion = normalized.slice(0, reasonList ? reasonList.start : bounds.datingStart);
